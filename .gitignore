@@ -1,0 +1,11 @@
+# Artefacts produced by running run-claude.bat
+run-claude-*.log
+run-claude-state.md
+run-claude.lock
+*.bak
+
+# Windows "downloaded from the internet" alternate data streams
+*:Zone.Identifier
+
+# Local Claude Code settings
+.claude/
