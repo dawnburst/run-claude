@@ -216,6 +216,7 @@ test\run-tests.bat    the regression suite, 43 cases
 test\bin\claude.cmd   a stub CLI, so the suite costs nothing and no quota
 CLAUDE.md             developer handoff: architecture, solved cmd.exe landmines
 README.md             this file
+LICENSE               MIT
 ```
 
 All `.bat` and `.cmd` files use **CRLF** line endings and must keep them — cmd can
@@ -291,3 +292,10 @@ a crash, so read it when a run dies quietly.
 - An inline prompt cannot contain a double quote (see above).
 
 None of these are scheduled work. If you want one, say so before building it.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE). Use it, adapt it, redistribute it; just keep the
+copyright notice. No warranty.
