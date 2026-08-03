@@ -131,8 +131,13 @@ Fixed now, before a second command exists to disagree:
 | `1` | at least one `claude` call failed |
 | `2` | bad parameters |
 | `3` | another run holds the lock |
+| `4` | the runner itself failed — a bug in `lmi` |
 
-A future command may define its own `1`, `4`, `5`; only `0` and `2` are reserved.
+A future command may define its own `1`, `3`, `4`; only `0` and `2` are reserved.
+
+`4` is distinct from `1` on purpose: "claude reported a problem" and "the runner
+crashed" call for different responses, and collapsing them would hide the second
+behind the first.
 
 ---
 
@@ -237,12 +242,20 @@ open while `lmi` takes a byte-range lock, and those two mechanisms do not reliab
 block each other in both directions. Within `lmi` it is exact. The asymmetry is
 acceptable because the transition is short and ends when the `.bat` is retired.
 
-**State protocol.** Byte-for-byte identical to the `.bat`: the unattended header,
-iteration number, state-file path, the numbered protocol, the current state file
-inline under `## CURRENT STATE`, then the task under `## TASK`. The state-file
-template is likewise identical. `run-claude.bat`'s `:write_prompt_head`,
-`:write_prompt_tail` and `:write_state_template` are the authoritative source for
-the literal text.
+**State protocol.** Identical to the `.bat` apart from the tool's own name: the
+unattended header, iteration number, state-file path, the numbered protocol, the
+current state file inline under `## CURRENT STATE`, then the task under `## TASK`.
+The state-file template is likewise identical. `run-claude.bat`'s
+`:write_prompt_head`, `:write_prompt_tail` and `:write_state_template` are the
+authoritative source for the literal text.
+
+**The one substitution.** That text names the tool in three places — "You were
+started by the script run-claude.bat with the -p flag", "See the TASK section of
+the prompt supplied by run-claude.bat", and "state file created by run-claude.bat
+on <time>". `lmi` says `lmi schedule` in all three. Claiming otherwise would tell
+claude something false about its own invocation. This does not affect state-file
+interoperability, which depends only on the `TASK_STATUS` first line and the
+section headings.
 
 **Completion check.** Read **line 1 only**, strip a leading BOM, and match
 `^\s*TASK_STATUS:\s*COMPLETE\b`. Python's `re` supports `\b`, so this is exactly
