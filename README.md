@@ -229,7 +229,7 @@ lmi\                  the Python reimplementation
   commands\
     schedule\         the lmi schedule command: config/validation, paths,
                       prompt composition, the state file, the iteration loop
-tests\                pytest suite for lmi, 77 cases, mirrors the lmi\ tree
+tests\                pytest suite for lmi, 107 cases, mirrors the lmi\ tree
 README.md             this file
 LICENSE               MIT
 ```
@@ -371,14 +371,17 @@ lmi schedule "<prompt or prompt-file>" [-t "YYYY-MM-DD HH:MM"] [-i minutes]
 
 Run `lmi --help` for the list of available commands, and
 `lmi schedule --help` for the authoritative flag list. The
-[Options](#options) table above applies to `lmi schedule` unchanged, with one
-deliberate difference:
+[Options](#options) table above applies to `lmi schedule` unchanged, with two
+deliberate differences:
 
 - **`-t` must be quoted.** The `.bat` tolerates an unquoted
   `-t 2026-08-05 22:00` as two loose tokens; `lmi schedule` rejects it with a
   usage error. Supporting the unquoted form would make `-t` consume
   arguments greedily, which risks silently swallowing the prompt argument
   that follows it. Always write `-t "2026-08-05 22:00"`.
+- **`-l` and `-s` expand a leading `~` themselves**, so a quoted
+  `-s "~/notes/state.md"` — which the shell leaves untouched — still lands in
+  your home directory instead of creating a directory literally named `~`.
 
 ### What lmi fixes
 
@@ -417,7 +420,7 @@ python3 -m pytest tests/ -v
 No install is required first — pytest puts the repository root on `sys.path`,
 so the suite runs against a clean checkout. A virtual environment is only
 needed to exercise the installed `lmi` console script itself, not to run the
-tests. Currently **77 tests, all passing**.
+tests. Currently **107 tests, all passing**.
 
 ### Platform status — be precise about this
 
