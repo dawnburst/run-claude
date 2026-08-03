@@ -1597,6 +1597,16 @@ def test_the_lock_is_free_again_afterwards(tmp_path, fake_claude):
     assert main(["schedule", "x", "-d", str(tmp_path)]) == 0
 
 
+def test_semantic_validation_reaches_the_cli_as_exit_2(tmp_path, fake_claude):
+    """Until this task, run() was a placeholder, so build_config was only ever
+    called directly by unit tests and no test proved an LmiError raised inside
+    it becomes an exit status. Cover the wiring end to end."""
+    assert main(["schedule", "x", "-d", str(tmp_path), "-i", "5"]) == 2
+    assert main(["schedule", "x", "-d", str(tmp_path), "-c", "3"]) == 2
+    assert main(["schedule", "x", "-d", str(tmp_path), "-i", "1", "-c", "0"]) == 2
+    assert main(["schedule", "x", "-d", str(tmp_path), "-t", "nonsense"]) == 2
+
+
 def test_an_internal_failure_is_written_to_the_log(tmp_path, fake_claude, monkeypatch):
     """A crash in the runner must land in the log, not only on the terminal -
     otherwise an unattended run that died is undiagnosable afterwards."""
@@ -1888,7 +1898,7 @@ HELP = "Run Claude Code unattended, looping in the foreground"
 - [ ] **Step 7: Run the whole suite**
 
 Run: `python3 -m pytest tests/ -v`
-Expected: 72 tests pass.
+Expected: 73 tests pass.
 
 - [ ] **Step 8: Commit**
 
