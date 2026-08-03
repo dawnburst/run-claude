@@ -12,7 +12,16 @@ from ...core.errors import EXIT_USAGE, LmiError
 # line 1 still says IN_PROGRESS. This is landmine 14 in CLAUDE.md.
 # \b (not "whitespace or end of line") matches the .bat's PowerShell regex,
 # so "COMPLETE." counts and "COMPLETED" does not.
-COMPLETE_RE = re.compile(r"^\s*TASK_STATUS:\s*COMPLETE\b")
+# re.IGNORECASE is required, not a stylistic choice: the .bat's PowerShell
+# "-match" operator is case-insensitive by default (the case-sensitive form
+# is the distinct "-cmatch", which is not used). A state file is meant to be
+# interchangeable between run-claude.bat and lmi schedule, so
+# "task_status: complete" on line 1 must be COMPLETE to both or neither.
+# Do NOT tighten this to case-sensitive later - that would silently diverge
+# from the .bat again. Being case-insensitive cannot reopen landmine 14: the
+# read below is still line-1-only, so lenient casing cannot make prose
+# deeper in the file match.
+COMPLETE_RE = re.compile(r"^\s*TASK_STATUS:\s*COMPLETE\b", re.IGNORECASE)
 
 STATE_TEMPLATE = """\
 TASK_STATUS: IN_PROGRESS
@@ -84,11 +93,27 @@ def _now_str():
 
 
 def check_complete(path):
+    # A fixed head read (rather than a binary readline()) so a UTF-16 first
+    # line - whose newline byte 0x0A shows up as half of a 2-byte code unit -
+    # is never cut mid code-unit before decoding. The status line is always
+    # short, so 4096 bytes comfortably covers it regardless of encoding.
     try:
         with open(path, "rb") as fh:
-            first = fh.readline()
+            head = fh.read(4096)
     except OSError:
         return False
-    if first.startswith(b"\xef\xbb\xbf"):
-        first = first[3:]
-    return COMPLETE_RE.search(first.decode("utf-8", "replace")) is not None
+    if not head:
+        return False
+    # PowerShell's Get-Content auto-detects UTF-16 from its BOM, so a state
+    # file hand-edited in a Windows editor may arrive that way. Handle it the
+    # same way prompt.py does: decode as UTF-16 when either byte-order BOM is
+    # present, otherwise treat it as UTF-8 (stripping a UTF-8 BOM if any).
+    if head[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = head.decode("utf-16", "replace")
+    else:
+        if head.startswith(b"\xef\xbb\xbf"):
+            head = head[3:]
+        text = head.decode("utf-8", "replace")
+    lines = text.splitlines()
+    first_line = lines[0] if lines else ""
+    return COMPLETE_RE.search(first_line) is not None

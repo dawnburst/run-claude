@@ -62,6 +62,30 @@ def test_completed_does_not_count(tmp_path):
     assert check_complete(p) is False
 
 
+def test_lowercase_status_line_is_complete_case_insensitively(tmp_path):
+    """MANDATORY. run-claude.bat's PowerShell '-match' is case-insensitive
+    by default ('-cmatch' is the case-sensitive form, and it is not used),
+    so a first line of 'task_status: complete' is COMPLETE to the .bat. A
+    state file must be interchangeable between the two tools."""
+    p = tmp_path / "s.md"
+    p.write_text("task_status: complete\n", encoding="utf-8")
+    assert check_complete(p) is True
+
+    # The word-boundary must still hold regardless of case.
+    p2 = tmp_path / "s2.md"
+    p2.write_text("Task_Status: Completed\n", encoding="utf-8")
+    assert check_complete(p2) is False
+
+
+def test_utf16_encoded_state_file_is_detected(tmp_path):
+    """PowerShell's Get-Content auto-detects UTF-16 from its BOM. A state
+    file hand-edited in a Windows editor may be UTF-16, and must not be
+    silently treated as never complete."""
+    p = tmp_path / "s.md"
+    p.write_bytes("TASK_STATUS: COMPLETE\n".encode("utf-16"))
+    assert check_complete(p) is True
+
+
 def test_missing_or_empty_file_is_not_complete(tmp_path):
     assert check_complete(tmp_path / "absent.md") is False
     (tmp_path / "empty.md").write_text("", encoding="utf-8")
