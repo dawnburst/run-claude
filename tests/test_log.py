@@ -16,12 +16,10 @@ def test_tags(tmp_path, capsys):
     log = Logger(tmp_path / "run.log")
     log.warn("careful")
     log.error("broken")
-    log.quota("limits")
     out = capsys.readouterr().out
     assert "[WARN] careful" in out
     assert "[ERROR] broken" in out
-    assert "[QUOTA] limits" in out
-    assert (tmp_path / "run.log").read_text(encoding="utf-8").count("[") == 3
+    assert (tmp_path / "run.log").read_text(encoding="utf-8").count("[") == 2
 
 
 def test_blank_line(tmp_path, capsys):
@@ -55,10 +53,10 @@ def test_an_unwritable_log_never_raises_and_keeps_the_console(tmp_path, capsys):
     log.line("first")                # must not raise
     log.error("second")
     log.warn("third")
-    log.quota("fourth")
+    log.line("fourth")               # a later line still gets through
     captured = capsys.readouterr()
     # Every line still reached the console.
-    for text in ("first", "[ERROR] second", "[WARN] third", "[QUOTA] fourth"):
+    for text in ("first", "[ERROR] second", "[WARN] third", "fourth"):
         assert text in captured.out
     # And the reason was reported once, on stderr, not once per line.
     assert captured.err.count("cannot be written") == 1

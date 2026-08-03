@@ -42,8 +42,10 @@ class Logger:
     def error(self, msg):
         self.line("[ERROR] " + msg)
 
-    def quota(self, msg):
-        self.line("[QUOTA] " + msg)
+    # No quota() here on purpose. [WARN] and [ERROR] are tags any command
+    # could want; a claude usage limit means nothing to `lmi install`. A
+    # command that needs its own tag writes it inline, the way runner.py does
+    # with [QUOTA] - shared code should not learn one command's vocabulary.
 
     @staticmethod
     def _to_console(msg, stream=None):
