@@ -31,10 +31,6 @@ QUOTA_RE = re.compile(
 )
 
 
-def _now_str():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
 def run(args):
     cfg = build_config(args)
     run_ts = paths.timestamp()
@@ -86,9 +82,9 @@ def _claude_argv(cfg, state_path, claude):
         ["--add-dir", str(state_path.parent)] + cfg.user_flags
 
 
-def _run_locked(cfg, log, state_path, run_ts, claude):
+def _log_header(cfg, log, state_path, argv, claude):
     log.line("=" * 75)
-    log.line("lmi schedule starting at " + _now_str())
+    log.line("lmi schedule starting at " + paths.now_str())
     log.line("Working directory: " + str(cfg.work_dir))
     # The resolved configuration, which README's Logging section promises and
     # the .bat's header prints: where the prompt came from, which claude is
@@ -98,7 +94,7 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
     else:
         log.line("Prompt    : inline text: " + (cfg.prompt_text or ""))
     log.line("claude    : " + str(claude))
-    log.line("Flags     : " + " ".join(_claude_argv(cfg, state_path, claude)[1:]))
+    log.line("Flags     : " + " ".join(argv[1:]))
     log.line("State file: " + str(state_path))
     log.line("Log file  : " + str(log.path))
     log.line("Iterations: %d" % cfg.max_runs)
@@ -107,7 +103,59 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
         log.line("Start time: " + cfg.at.strftime("%Y-%m-%d %H:%M"))
     log.line("=" * 75)
 
+
+def _log_iteration_result(log, label, rc, duration):
+    """Record how one iteration ended. Returns True if it succeeded.
+
+    Both shapes carry the four facts run-claude.bat's :iter_ok and :iter_failed
+    do - which iteration, when it ended, claude's exit code, how long it took -
+    because the log is an unattended run's only record and the duration is what
+    reveals a hung or slowing iteration.
+    """
+    finished = paths.now_str()
+    if rc == 0:
+        log.line(
+            "=== Iteration %s finished %s - exit code 0 - %ds ==="
+            % (label, finished, duration)
+        )
+        return True
+    what = (
+        "the iteration was skipped"
+        if rc == ITERATION_ERROR_RC
+        else "claude exit code %d" % rc
+    )
+    log.error(
+        "=== Iteration %s FAILED at %s - %s - %ds ==="
+        % (label, finished, what, duration)
+    )
+    log.error("The runner is NOT stopping. The output above holds the reason.")
+    return False
+
+
+def _log_summary(log, state_path, runs, fails):
+    log.line("")
+    log.line("=" * 75)
+    log.line("lmi schedule finished at " + paths.now_str())
+    log.line("%d run/s, %d succeeded, %d failed." % (runs, runs - fails, fails))
+    log.line("State file: " + str(state_path))
+    log.line("Log file  : " + str(log.path))
+    log.line("=" * 75)
+    if fails:
+        log.error(
+            "%d iteration/s failed - search the log for [ERROR] and [QUOTA]." % fails
+        )
+
+
+def _run_locked(cfg, log, state_path, run_ts, claude):
+    # Fixed for the whole run, so built once rather than per iteration.
+    argv = _claude_argv(cfg, state_path, claude)
+    _log_header(cfg, log, state_path, argv, claude)
+
     state.prepare(state_path, cfg.resume, run_ts, log)
+    # The task text never changes, so it is read and decoded once instead of on
+    # every iteration. Doing it here also means an undecodable prompt file ends
+    # the run before the first iteration is announced, rather than part-way in.
+    task = prompt.read_prompt_source(cfg)
     _wait_until(cfg.at, log)
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="lmi-schedule-"))
@@ -116,15 +164,15 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
     try:
         for iteration in range(1, cfg.max_runs + 1):
             label = "%d of %d" % (iteration, cfg.max_runs)
-            started = _now_str()
+            started = paths.now_str()
             start_clock = time.time()
             log.line("")
             log.line("--- iteration %s started %s ---" % (label, started))
 
             try:
                 rc = _one_iteration(
-                    cfg, log, state_path, claude, tmp_dir, iteration, label,
-                    started
+                    cfg, log, state_path, argv, task, tmp_dir, iteration,
+                    label, started
                 )
             except LmiError:
                 # A usage error is deterministic - a prompt file that is not
@@ -146,29 +194,11 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
                 for line in traceback.format_exc().rstrip().splitlines():
                     log.error("  " + line)
             runs += 1
-            finished = _now_str()
-            duration = int(time.time() - start_clock)
-            if rc == 0:
-                log.line(
-                    "=== Iteration %s finished %s - exit code 0 - %ds ==="
-                    % (label, finished, duration)
-                )
-            else:
+            if not _log_iteration_result(
+                log, label, rc, int(time.time() - start_clock)
+            ):
                 fails += 1
                 exit_code = EXIT_CALL_FAILED
-                what = (
-                    "the iteration was skipped"
-                    if rc == ITERATION_ERROR_RC
-                    else "claude exit code %d" % rc
-                )
-                log.error(
-                    "=== Iteration %s FAILED at %s - %s - %ds ==="
-                    % (label, finished, what, duration)
-                )
-                log.error(
-                    "The runner is NOT stopping. The output above holds the "
-                    "reason."
-                )
 
             if state.check_complete(state_path):
                 log.line(
@@ -180,28 +210,18 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
             if cfg.interval_min > 0:
                 secs = cfg.interval_min * 60
                 nxt = datetime.fromtimestamp(time.time() + secs)
-                log.line("Next iteration at " + nxt.strftime("%Y-%m-%d %H:%M:%S"))
+                log.line("Next iteration at " + paths.now_str(nxt))
                 time.sleep(secs)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    log.line("")
-    log.line("=" * 75)
-    log.line("lmi schedule finished at " + _now_str())
-    log.line("%d run/s, %d succeeded, %d failed." % (runs, runs - fails, fails))
-    log.line("State file: " + str(state_path))
-    log.line("Log file  : " + str(log.path))
-    log.line("=" * 75)
-    if fails:
-        log.error(
-            "%d iteration/s failed - search the log for [ERROR] and [QUOTA]." % fails
-        )
+    _log_summary(log, state_path, runs, fails)
     return exit_code
 
 
-def _one_iteration(cfg, log, state_path, claude, tmp_dir, n, label, started):
+def _one_iteration(cfg, log, state_path, argv, task, tmp_dir, n, label, started):
     body = state.read_body(state_path)
-    composed = prompt.compose(cfg, state_path, label, started, body)
+    composed = prompt.compose(cfg, state_path, label, started, body, task)
 
     prompt_path = tmp_dir / ("prompt-%d.txt" % n)
     # open(), not Path.write_text(..., newline=...): that keyword arrived in
@@ -210,8 +230,6 @@ def _one_iteration(cfg, log, state_path, claude, tmp_dir, n, label, started):
     with open(str(prompt_path), "w", encoding="utf-8", newline="\n") as fh:
         fh.write(composed)
     out_path = tmp_dir / ("out-%d.txt" % n)
-
-    argv = _claude_argv(cfg, state_path, claude)
 
     log.line("--- claude output ---")
     with open(prompt_path, "rb") as stdin_fh, \
@@ -228,12 +246,15 @@ def _one_iteration(cfg, log, state_path, claude, tmp_dir, n, label, started):
     log.line("--- end of claude output ---")
 
     if QUOTA_RE.search(output):
-        log.quota(
-            "*** Possible quota, rate limit or overload problem in the claude "
-            "output above."
+        # Tagged inline: [QUOTA] is this command's vocabulary, not something
+        # the shared Logger should know about.
+        log.line(
+            "[QUOTA] *** Possible quota, rate limit or overload problem in the "
+            "claude output above."
         )
-        log.quota(
-            "*** Check your usage before trusting the result of this iteration."
+        log.line(
+            "[QUOTA] *** Check your usage before trusting the result of this "
+            "iteration."
         )
     return completed.returncode
 

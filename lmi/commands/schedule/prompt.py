@@ -103,14 +103,19 @@ def read_prompt_source(cfg):
         )
 
 
-def compose(cfg, state_path, iter_label, started_str, state_body):
+def compose(cfg, state_path, iter_label, started_str, state_body, task):
+    """Build one iteration's prompt.
+
+    `task` is the already-decoded prompt text. The caller reads it once before
+    the loop via read_prompt_source(), because it never changes between
+    iterations while `state_body` does.
+    """
     head = HEAD.format(
         iter_label=iter_label,
         started=started_str,
         work_dir=cfg.work_dir,
         state_file=state_path,
     )
-    task = read_prompt_source(cfg)
     if not task.endswith("\n"):
         task += "\n"
     fence = _fence_for(state_body)
