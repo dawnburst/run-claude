@@ -1419,6 +1419,12 @@ Delivers a working `lmi schedule`.
 - Create: `lmi/core/lock.py`, `lmi/commands/schedule/runner.py`, `tests/conftest.py`, `tests/commands/schedule/test_runner.py`
 - Modify: `lmi/commands/schedule/__init__.py`
 
+**Per-iteration logging is required, not optional.** `run-claude.bat`'s `:iter_ok`
+and `:iter_failed` log a line after *every* iteration carrying four facts: which
+iteration, when it ended, claude's exit code, and how long it took in seconds.
+An unattended runner's log is the only record anyone has afterwards, and the
+duration is the signal that reveals a hung or slowing iteration. Do not drop it.
+
 **Interfaces:**
 - Consumes: everything above.
 - Produces: `lmi.core.lock.single_instance_lock(path)` — a context manager raising `LockBusy` when held elsewhere; `lmi.core.lock.LockBusy`; `runner.run(args) -> int`; `runner.QUOTA_RE`.
@@ -1903,7 +1909,7 @@ HELP = "Run Claude Code unattended, looping in the foreground"
 - [ ] **Step 7: Run the whole suite**
 
 Run: `python3 -m pytest tests/ -v`
-Expected: 75 tests pass.
+Expected: 77 tests pass.
 
 - [ ] **Step 8: Commit**
 
