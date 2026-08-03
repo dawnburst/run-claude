@@ -7,6 +7,7 @@ claude it was started by run-claude.bat would be false.
 
 import re
 
+from ...core import text as textlib
 from ...core.errors import EXIT_USAGE, LmiError
 
 # Everything through "## CURRENT STATE - {state_file}" and the blank line
@@ -88,18 +89,12 @@ def read_prompt_source(cfg):
     if cfg.prompt_file is None:
         return cfg.prompt_text
     raw = cfg.prompt_file.read_bytes()
-    # Sniff the BOM. The .bat could only detect UTF-16 and warn; decoding it
-    # properly is free here. ANSI text carries no BOM and stays undetectable
-    # by construction - that limit is unchanged.
-    if raw.startswith(b"\xef\xbb\xbf"):
-        return raw.decode("utf-8-sig")
-    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
-        try:
-            return raw.decode("utf-16")
-        except UnicodeDecodeError:
-            pass
+    # Sniff the BOM, through the same helper the state file uses. The .bat
+    # could only detect UTF-16 and warn; decoding it properly is free here.
+    # ANSI text carries no BOM and stays undetectable by construction - that
+    # limit is unchanged.
     try:
-        return raw.decode("utf-8")
+        return textlib.decode_with_bom(raw)
     except UnicodeDecodeError as exc:
         raise LmiError(
             "the prompt file %s is not UTF-8 and has no byte order mark; "

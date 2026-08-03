@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from lmi.commands.schedule.state import (
-    check_complete, prepare, write_template,
+    check_complete, prepare, read_body, write_template,
 )
 from lmi.core.errors import LmiError
 from lmi.core.log import Logger
@@ -35,6 +35,33 @@ def test_prose_mentioning_complete_lower_down_is_NOT_complete(tmp_path):
         encoding="utf-8",
     )
     assert check_complete(p) is False
+
+
+def test_complete_on_line_two_after_a_blank_line_is_NOT_complete(tmp_path):
+    """MANDATORY. The fixture that actually kills the whole-file mutation.
+
+    The prose case above cannot: COMPLETE_RE is ^-anchored and has no
+    re.MULTILINE, so a mid-line mention matches nothing even when the search
+    runs over the entire file - the test stayed green under the mutation and
+    guarded nothing. Here line 1 is blank and line 2 is the status line, so
+    over the whole file `^\\s*` spans the newline and the regex DOES match
+    (wrong: the loop stops with the task unfinished), while a line-1-only
+    read sees "" and correctly says not complete.
+
+    Mutating check_complete's last two lines to
+    `return COMPLETE_RE.search(text) is not None` must turn this red.
+    """
+    p = tmp_path / "s.md"
+    p.write_text(
+        "\nTASK_STATUS: COMPLETE\n\n## Goal\n\nbarely started\n",
+        encoding="utf-8",
+    )
+    assert check_complete(p) is False
+
+    # Whitespace-only first line, same reasoning - \s* also eats spaces.
+    p2 = tmp_path / "s2.md"
+    p2.write_text("   \nTASK_STATUS: COMPLETE\n", encoding="utf-8")
+    assert check_complete(p2) is False
 
 
 def test_utf8_bom_before_complete_still_counts(tmp_path):
@@ -90,6 +117,29 @@ def test_missing_or_empty_file_is_not_complete(tmp_path):
     assert check_complete(tmp_path / "absent.md") is False
     (tmp_path / "empty.md").write_text("", encoding="utf-8")
     assert check_complete(tmp_path / "empty.md") is False
+
+
+# --- read_body: the same decoding as check_complete ----------------------
+
+def test_read_body_decodes_utf16_like_the_completion_check_does(tmp_path):
+    """The two reads must agree. check_complete deliberately decodes UTF-16
+    from its BOM; the body read used to be utf-8/errors=replace, so the very
+    same file was inlined into the next prompt as mojibake."""
+    p = tmp_path / "s.md"
+    p.write_bytes("TASK_STATUS: IN_PROGRESS\n## Goal\nשלום\n".encode("utf-16"))
+    body = read_body(p)
+    assert "שלום" in body
+    assert "\x00" not in body and "�" not in body
+
+
+def test_read_body_strips_a_utf8_bom(tmp_path):
+    p = tmp_path / "s.md"
+    p.write_bytes(b"\xef\xbb\xbfTASK_STATUS: IN_PROGRESS\n")
+    assert read_body(p).startswith("TASK_STATUS")
+
+
+def test_read_body_of_a_missing_file_is_empty(tmp_path):
+    assert read_body(tmp_path / "absent.md") == ""
 
 
 # --- template and prepare ------------------------------------------------

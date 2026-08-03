@@ -3,6 +3,7 @@
 import os
 import re
 
+from ...core import text as textlib
 from ...core.errors import EXIT_USAGE, LmiError
 
 # Only the FIRST line is ever tested against this. A whole-file search is
@@ -92,6 +93,22 @@ def _now_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def read_body(path):
+    """The state file as text, for inlining into the next prompt.
+
+    Decoded through the same BOM logic as check_complete, deliberately: a
+    UTF-16 state file that the completion check reads correctly must not be
+    inlined into the prompt as mojibake. errors="replace" because a state file
+    claude has half-written must never end the run.
+    """
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return ""
+    return textlib.decode_with_bom(raw, "replace")
+
+
 def check_complete(path):
     # A fixed head read (rather than a binary readline()) so a UTF-16 first
     # line - whose newline byte 0x0A shows up as half of a 2-byte code unit -
@@ -105,15 +122,7 @@ def check_complete(path):
     if not head:
         return False
     # PowerShell's Get-Content auto-detects UTF-16 from its BOM, so a state
-    # file hand-edited in a Windows editor may arrive that way. Handle it the
-    # same way prompt.py does: decode as UTF-16 when either byte-order BOM is
-    # present, otherwise treat it as UTF-8 (stripping a UTF-8 BOM if any).
-    if head[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        text = head.decode("utf-16", "replace")
-    else:
-        if head.startswith(b"\xef\xbb\xbf"):
-            head = head[3:]
-        text = head.decode("utf-8", "replace")
-    lines = text.splitlines()
+    # file hand-edited in a Windows editor may arrive that way.
+    lines = textlib.decode_with_bom(head, "replace").splitlines()
     first_line = lines[0] if lines else ""
     return COMPLETE_RE.search(first_line) is not None
