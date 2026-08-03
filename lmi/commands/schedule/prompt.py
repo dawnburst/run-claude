@@ -5,8 +5,13 @@ one substitution: the tool names itself `lmi schedule`, because telling
 claude it was started by run-claude.bat would be false.
 """
 
+import re
+
 from ...core.errors import EXIT_USAGE, LmiError
 
+# Everything through "## CURRENT STATE - {state_file}" and the blank line
+# after it. The fence that follows is generated in compose(), not baked in
+# here - see _fence_for below for why.
 HEAD = """\
 # Unattended automated run
 
@@ -47,14 +52,36 @@ current contents are copied under CURRENT STATE below.
 
 ## CURRENT STATE - {state_file}
 
-```markdown
 """
 
-TAIL = """```
-
+# The part after the closing fence. The fence line itself is generated in
+# compose(), so this starts with the blank line that used to follow it.
+TAIL = """
 ## TASK
 
 """
+
+
+def _fence_for(body):
+    """Pick a backtick fence long enough that `body` cannot close it early.
+
+    The state file is written by claude and may legitimately contain its own
+    fenced code block (e.g. under "Notes and blockers"). A fixed 3-backtick
+    fence around the whole CURRENT STATE block would be closed by that inner
+    fence, and everything after it - potentially including the literal text
+    "## TASK" - would leak out of the block and into the document, leaving
+    two "## TASK" headings and no way for claude to tell which is real.
+
+    CommonMark's own rule for this is to make the closing fence at least as
+    long as the opening one, so: find the longest run of consecutive
+    backticks anywhere in the body, and use one more than that (minimum 3).
+    That makes the fence unclosable by the body's own content, whatever the
+    content is. This length is *computed*, not fixed at 3 - do not
+    "simplify" it back to a literal ``` later, that is the bug being fixed.
+    """
+    runs = re.findall(r"`+", body)
+    longest = max((len(r) for r in runs), default=0)
+    return "`" * max(3, longest + 1)
 
 
 def read_prompt_source(cfg):
@@ -91,4 +118,12 @@ def compose(cfg, state_path, iter_label, started_str, state_body):
     task = read_prompt_source(cfg)
     if not task.endswith("\n"):
         task += "\n"
-    return head + state_body + TAIL + task
+    fence = _fence_for(state_body)
+    return (
+        head
+        + fence + "markdown\n"
+        + state_body
+        + fence + "\n"
+        + TAIL
+        + task
+    )

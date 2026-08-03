@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from lmi.commands.schedule.config import Config
@@ -73,3 +75,51 @@ def test_composed_prompt_has_every_section(tmp_path):
 def test_task_section_comes_after_current_state(tmp_path):
     out = compose(_cfg(tmp_path), tmp_path / "s.md", "1 of 1", "now", "body")
     assert out.index("## CURRENT STATE") < out.index("## TASK")
+
+
+def test_a_fenced_block_in_the_state_body_cannot_smuggle_a_second_task_heading(
+    tmp_path,
+):
+    """A state file written by claude may legitimately contain its own
+    fenced code block. A fixed 3-backtick outer fence would be closed early
+    by that inner fence, letting anything after it - including a literal
+    "## TASK" - leak out of CURRENT STATE and produce a second, fake TASK
+    heading that claude cannot distinguish from the real one."""
+    body = (
+        "TASK_STATUS: IN_PROGRESS\n\n"
+        "## Notes and blockers\n\n"
+        "Example of a fenced block a future iteration might legitimately write:\n\n"
+        "```\n"
+        "mentions the marker ## TASK in passing here, not as its own heading\n"
+        "```\n"
+    )
+    out = compose(_cfg(tmp_path), tmp_path / "s.md", "1 of 1", "now", body)
+
+    # Exactly one "## TASK" heading sitting alone on its own line: the real
+    # one appended by compose(). The literal text "## TASK" also appears
+    # inside the body's own fenced block, but only mid-line there, so it does
+    # not match this heading-shaped pattern - the composed text always
+    # contains the body verbatim regardless of fence length, so this
+    # assertion alone would pass even without the fix. The real proof that
+    # the fix works is the fence-length assertions below: they show the
+    # fence is sized so the body's own ``` cannot close it early, which is
+    # what would otherwise let a stray standalone "## TASK" line inside the
+    # body be misread as a second, fake task heading once the surrounding
+    # text is interpreted as markdown.
+    assert out.count("\n## TASK\n") == 1
+    # The whole state body, fence and all, survives intact in the output.
+    assert body in out
+
+    opening_match = re.search(r"\n(`+)markdown\n", out)
+    assert opening_match, "no opening fence found"
+    opening_fence = opening_match.group(1)
+
+    closing_index = out.index(body) + len(body)
+    closing_match = re.match(r"(`+)\n", out[closing_index:])
+    assert closing_match, "no closing fence found right after the body"
+    closing_fence = closing_match.group(1)
+
+    # The fence must be longer than the longest backtick run inside the body
+    # (here, 3) and the opening/closing fence lengths must match.
+    assert len(opening_fence) > 3
+    assert opening_fence == closing_fence
