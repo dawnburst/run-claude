@@ -86,6 +86,7 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
         for iteration in range(1, cfg.max_runs + 1):
             label = "%d of %d" % (iteration, cfg.max_runs)
             started = _now_str()
+            start_clock = time.time()
             log.line("")
             log.line("--- iteration %s started %s ---" % (label, started))
 
@@ -93,10 +94,24 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
                 cfg, log, state_path, claude, tmp_dir, iteration, label, started
             )
             runs += 1
-            if rc != 0:
+            finished = _now_str()
+            duration = int(time.time() - start_clock)
+            if rc == 0:
+                log.line(
+                    "=== Iteration %s finished %s - exit code 0 - %ds ==="
+                    % (label, finished, duration)
+                )
+            else:
                 fails += 1
                 exit_code = EXIT_CALL_FAILED
-                log.error("claude exited with code %d. The runner continues." % rc)
+                log.error(
+                    "=== Iteration %s FAILED at %s - claude exit code %d - %ds ==="
+                    % (label, finished, rc, duration)
+                )
+                log.error(
+                    "The runner is NOT stopping. The claude output above holds "
+                    "the reason."
+                )
 
             if state.check_complete(state_path):
                 log.line(

@@ -1,4 +1,5 @@
 import os
+import re
 
 from lmi.cli import main
 
@@ -75,6 +76,22 @@ def test_claude_output_reaches_the_log(tmp_path, fake_claude):
     main(["schedule", "x", "-d", str(tmp_path)])
     log = next(tmp_path.glob("run-claude-*.log"))
     assert "fake claude call 1" in log.read_text(encoding="utf-8")
+
+
+def test_per_iteration_completion_is_logged_with_a_duration(tmp_path, fake_claude):
+    """Fix round 1: run-claude.bat logs a finish line - iteration, exit code,
+    duration - after every iteration, success or failure. The runner must
+    keep carrying that information into the log, not just onto the terminal,
+    since the log is the only record of an unattended run afterwards."""
+    assert main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2"]) == 0
+    log = next(tmp_path.glob("run-claude-*.log")).read_text(encoding="utf-8")
+    # Two iterations, each with its own completion line naming the iteration
+    # and carrying a numeric duration in seconds - a line with no digits
+    # before the trailing "s" (i.e. the duration silently dropped) must fail.
+    matches = re.findall(r"Iteration 1 of 2 finished.*?\d+s", log)
+    assert matches, "no per-iteration completion line with a duration found"
+    matches2 = re.findall(r"Iteration 2 of 2 finished.*?\d+s", log)
+    assert matches2, "second iteration's completion line is missing"
 
 
 def test_at_in_the_past_starts_immediately(tmp_path, fake_claude):
