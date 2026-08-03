@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import List, Optional
 import shlex
 
+from ...core import fs
 from ...core.errors import EXIT_USAGE, LmiError
 
 AT_FORMAT = "%Y-%m-%d %H:%M"
@@ -104,21 +105,48 @@ def build_config(args):
     if args.workdir is None:
         work_dir = Path.cwd()
     else:
-        work_dir = Path(args.workdir)
-        if not work_dir.is_dir():
+        kind, reason = fs.classify(args.workdir)
+        if kind == fs.DIR:
+            work_dir = Path(args.workdir).resolve()
+        elif kind == fs.MISSING:
             raise LmiError(
                 "working directory does not exist: " + str(args.workdir), EXIT_USAGE
             )
-        work_dir = work_dir.resolve()
+        elif kind == fs.UNKNOWN:
+            raise LmiError(
+                "working directory cannot be used: %s (%s)"
+                % (args.workdir, reason),
+                EXIT_USAGE,
+            )
+        else:
+            # It exists and is a file, or a fifo. "does not exist" sent people
+            # looking for a typo in a path that was right all along.
+            raise LmiError(
+                "working directory is not a directory: " + str(args.workdir),
+                EXIT_USAGE,
+            )
 
-    candidate = Path(args.prompt)
+    # argparse accepts an empty positional, and Path("") is PosixPath('.'),
+    # which classifies as a directory - so `lmi schedule ""` used to complain
+    # that the prompt is a directory. It is simply missing.
+    if not args.prompt.strip():
+        raise LmiError(
+            "the prompt is empty: give the prompt text, or the path of a "
+            "UTF-8 file containing it",
+            EXIT_USAGE,
+        )
+
     prompt_text, prompt_file = None, None
-    if candidate.is_dir():
+    # fs.classify, not Path.is_dir(): an inline prompt reaching 256 bytes
+    # without a slash makes the raw pathlib call raise ENAMETOOLONG. Anything
+    # the OS will not classify is simply not a path, so it is prompt text.
+    kind, _ = fs.classify(args.prompt)
+    if kind == fs.DIR:
         raise LmiError(
             "the prompt argument is a directory: " + args.prompt, EXIT_USAGE
         )
-    if candidate.is_file():
-        prompt_file = candidate.resolve()
+    if kind == fs.FILE:
+        prompt_file = Path(args.prompt).resolve()
     else:
         prompt_text = args.prompt
 

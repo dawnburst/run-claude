@@ -75,7 +75,61 @@ def test_dotfile_does_not_count_as_having_an_extension():
     assert has_extension("a.b.c") is True
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_an_over_long_log_path_is_a_usage_error_not_a_crash(tmp_path):
+    """pathlib swallows ENOENT/ENOTDIR/EBADF/ELOOP only, so Path.is_dir() on
+    a 256-byte name raises ENAMETOOLONG. That used to leave the CLI with a raw
+    traceback and exit 1 - the code that means a claude call failed."""
+    long_name = "a" * 300
+    with pytest.raises(LmiError) as exc:
+        resolve_log(_cfg(tmp_path, log_arg=str(tmp_path / long_name)), TS)
+    assert exc.value.code == 2
+
+
+def test_an_over_long_state_path_is_a_usage_error_not_a_crash(tmp_path):
+    with pytest.raises(LmiError) as exc:
+        resolve_state(_cfg(tmp_path, state_arg=str(tmp_path / ("s" * 300))))
+    assert exc.value.code == 2
+
+
+def test_an_unknown_user_tilde_is_a_usage_error_not_a_crash(tmp_path):
+    """expanduser() raises RuntimeError when it cannot find that user's home,
+    which reached the CLI as a traceback and exit 1. The tilde expansion
+    itself stays - it is what makes a quoted -s "~/x" work."""
+    for kw in ("state_arg", "log_arg"):
+        with pytest.raises(LmiError) as exc:
+            cfg = _cfg(tmp_path, **{kw: "~nosuchuser42/x.log"})
+            resolve_state(cfg) if kw == "state_arg" else resolve_log(cfg, TS)
+        assert exc.value.code == 2
+
+
+def test_a_leading_tilde_is_still_expanded(tmp_path):
+    """Deliberate deviation from the .bat, documented in the README: a quoted
+    -s "~/x" must land in the home directory, not in a folder named '~'."""
+    got = resolve_state(_cfg(tmp_path, state_arg="~/lmi-test-state.md"))
+    assert str(got).startswith(str(Path.home()))
+    assert "~" not in str(got)
+
+
+def test_a_state_path_that_is_an_existing_directory_is_refused(tmp_path):
+    """os.replace moves a directory happily, so `-s ~/notes` used to rename
+    the whole folder to ~/notes.<ts>.bak and write a file in its place."""
+    d = tmp_path / "notes"
+    d.mkdir()
+    (d / "keep.md").write_text("precious\n", encoding="utf-8")
+    with pytest.raises(LmiError) as exc:
+        resolve_state(_cfg(tmp_path, state_arg=str(d)))
+    assert exc.value.code == 2
+    assert "directory" in str(exc.value)
+    assert (d / "keep.md").exists()
+
+
+@pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 1)() == 0,
+    # os.geteuid is Unix-only, and this argument is evaluated at import time:
+    # a bare os.geteuid() made the whole module raise AttributeError during
+    # collection on Windows, silently losing every test in it.
+    reason="root ignores directory permissions",
+)
 def test_unwritable_log_parent_is_a_clear_error(tmp_path):
     ro = tmp_path / "ro"
     ro.mkdir()

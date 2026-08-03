@@ -9,6 +9,7 @@ create a file called logdir instead of a directory.
 from datetime import datetime
 from pathlib import Path
 
+from ...core import fs
 from ...core.errors import EXIT_USAGE, LmiError
 
 TS_FORMAT = "%Y%m%d-%H%M%S"
@@ -25,6 +26,40 @@ def has_extension(name):
     return "." in name[1:]
 
 
+def _classify(path, what):
+    """fs.classify, but an unanswerable path is a usage error.
+
+    Path.is_dir() raises ENAMETOOLONG rather than returning False, so an
+    over-long -l or -s used to crash with a traceback and exit 1 - the code
+    that means "a claude call failed". A bad path is exit 2.
+    """
+    kind, reason = fs.classify(path)
+    if kind == fs.UNKNOWN:
+        raise LmiError(
+            "the %s path cannot be used: %s (%s)" % (what, path, reason),
+            EXIT_USAGE,
+        )
+    return kind
+
+
+def _expand(raw, what):
+    """Path(raw).expanduser().absolute(), without the one way it can explode.
+
+    expanduser() raises RuntimeError for a "~someuser" whose home it cannot
+    look up - a typo in -s "~claude/state.md" is enough - and that reached the
+    CLI as a traceback and exit 1, the code that means a claude call failed.
+    The tilde expansion itself stays: it is what makes a quoted -s "~/x" work,
+    since the shell never sees the tilde.
+    """
+    try:
+        return Path(raw).expanduser().absolute()
+    except RuntimeError as exc:
+        raise LmiError(
+            "the %s path cannot be expanded: %s (%s)" % (what, raw, exc),
+            EXIT_USAGE,
+        )
+
+
 def _ensure_parent(path, what):
     # The .bat attempts the mkdir and only fails if the directory is still
     # missing afterwards; a missing parent is not itself an error.
@@ -32,7 +67,7 @@ def _ensure_parent(path, what):
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
-    if not path.parent.is_dir():
+    if _classify(path.parent, what) != fs.DIR:
         raise LmiError(
             "the folder for the %s does not exist and could not be created: %s"
             % (what, path),
@@ -43,7 +78,16 @@ def _ensure_parent(path, what):
 
 def resolve_state(cfg):
     raw = cfg.state_arg or str(cfg.work_dir / STATE_NAME)
-    return _ensure_parent(Path(raw).expanduser().absolute(), "state file")
+    path = _expand(raw, "state file")
+    # A directory would be renamed to <name>.<ts>.bak by the backup step -
+    # os.replace happily moves directories - and a state file written in its
+    # place, so `-s ~/notes` silently ate a whole folder. The prompt argument
+    # already refuses a directory; so does this.
+    if _classify(path, "state file") == fs.DIR:
+        raise LmiError(
+            "the state file path is an existing directory: %s" % path, EXIT_USAGE
+        )
+    return _ensure_parent(path, "state file")
 
 
 def resolve_log(cfg, run_ts):
@@ -53,10 +97,10 @@ def resolve_log(cfg, run_ts):
 
     raw = cfg.log_arg
     trailing = raw.endswith("/") or raw.endswith("\\")
-    path = Path(raw).expanduser().absolute()
+    path = _expand(raw, "log file")
 
     # Order matches run-claude.bat's :resolve_log exactly.
-    if path.is_dir():                       # 1 existing directory
+    if _classify(path, "log file") == fs.DIR:   # 1 existing directory
         return _ensure_parent(path / name, "log file")
     if trailing:                            # 2 folder, not yet created
         return _ensure_parent(path / name, "log file")

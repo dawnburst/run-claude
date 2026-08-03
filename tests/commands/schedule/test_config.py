@@ -80,6 +80,53 @@ def test_prompt_that_is_a_directory_is_a_usage_error(tmp_path):
     assert "directory" in str(exc.value)
 
 
+def test_a_long_inline_prompt_is_text_not_a_crash():
+    """MANDATORY. Path(prompt).is_dir() raises ENAMETOOLONG once any
+    slash-free run reaches 256 bytes - a 143-character Hebrew sentence does
+    it. That was an unhandled OSError: a raw traceback and exit 1, the code
+    that means "a claude call failed", before the lock and before any log."""
+    long_prompt = "א" * 143
+    assert len(long_prompt.encode("utf-8")) >= 256
+    cfg = build_config(_args(prompt=long_prompt))
+    assert cfg.prompt_text == long_prompt and cfg.prompt_file is None
+
+    # And the ASCII boundary, both sides of it.
+    for n in (255, 256, 4096):
+        assert build_config(_args(prompt="x" * n)).prompt_text == "x" * n
+
+
+def test_a_prompt_with_a_nul_byte_is_text_not_a_crash():
+    """os.stat raises ValueError, not OSError, for an embedded NUL."""
+    assert build_config(_args(prompt="a\x00b")).prompt_text == "a\x00b"
+
+
+def test_an_empty_prompt_reports_a_missing_argument(tmp_path):
+    """Path("") is PosixPath('.'), which is a directory, so an empty prompt
+    used to be reported as "the prompt argument is a directory"."""
+    for value in ("", "   "):
+        with pytest.raises(LmiError) as exc:
+            build_config(_args(prompt=value))
+        assert exc.value.code == 2
+        assert "empty" in str(exc.value)
+        assert "directory" not in str(exc.value)
+
+
+def test_a_workdir_that_is_a_file_says_not_a_directory(tmp_path):
+    f = tmp_path / "afile.txt"
+    f.write_text("x", encoding="utf-8")
+    with pytest.raises(LmiError) as exc:
+        build_config(_args(workdir=str(f)))
+    assert exc.value.code == 2
+    assert "not a directory" in str(exc.value)
+    assert "does not exist" not in str(exc.value)
+
+
+def test_an_over_long_workdir_is_a_usage_error(tmp_path):
+    with pytest.raises(LmiError) as exc:
+        build_config(_args(workdir=str(tmp_path / ("d" * 300))))
+    assert exc.value.code == 2
+
+
 def test_prompt_file_is_detected(tmp_path):
     p = tmp_path / "task.md"
     p.write_text("from a file\n", encoding="utf-8")
