@@ -113,7 +113,7 @@ def test_lmi_error_carries_its_exit_code():
 
 - [ ] **Step 2: Run and verify they fail**
 
-Run: `python -m pytest tests/test_cli.py -v`
+Run: `python3 -m pytest tests/test_cli.py -v`
 Expected: collection error — `ModuleNotFoundError: No module named 'lmi'`.
 
 - [ ] **Step 3: Write `pyproject.toml`**
@@ -283,12 +283,24 @@ def run(args):
 - [ ] **Step 7: Install and run the tests**
 
 ```bash
-python -m pip install -e ".[dev]"
-python -m pytest tests/ -v
-lmi --help
-lmi --version
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/python -m pytest tests/ -v
+.venv/bin/lmi --help
+.venv/bin/lmi --version
 ```
 Expected: 6 tests pass; `lmi --help` lists `schedule`; `lmi --version` prints `lmi 0.1.0`.
+
+> **Install into a repo-local `.venv`, never into the user or system Python.**
+> This machine's Python is externally managed (PEP 668), so a bare
+> `pip install -e .` fails and `--break-system-packages` "fixes" it by writing an
+> editable install into `~/.local` that points at this disposable worktree. When
+> the worktree goes away, `import lmi` breaks machine-wide for reasons that look
+> unrelated to this project. Keep it inside the repo.
+>
+> Tests themselves need no install — pytest puts the repo root on `sys.path`, so
+> `python3 -m pytest tests/ -v` works from a clean checkout. The venv exists to
+> exercise the `lmi` console script.
 
 - [ ] **Step 8: Commit**
 
@@ -437,7 +449,7 @@ def test_unquoted_two_token_at_is_rejected():
 
 - [ ] **Step 2: Run and verify they fail**
 
-Run: `python -m pytest tests/commands/schedule/test_config.py -v`
+Run: `python3 -m pytest tests/commands/schedule/test_config.py -v`
 Expected: `ModuleNotFoundError: No module named 'lmi.commands.schedule.config'`.
 
 - [ ] **Step 3: Implement `config.py`**
@@ -602,7 +614,7 @@ Create empty `tests/commands/__init__.py` and `tests/commands/schedule/__init__.
 
 - [ ] **Step 5: Run the tests**
 
-Run: `python -m pytest tests/ -v`
+Run: `python3 -m pytest tests/ -v`
 Expected: 22 tests pass (6 from Task 1, 16 here).
 
 - [ ] **Step 6: Commit**
@@ -720,7 +732,7 @@ def test_unwritable_log_parent_is_a_clear_error(tmp_path):
 
 - [ ] **Step 2: Run and verify they fail**
 
-Run: `python -m pytest tests/commands/schedule/test_paths.py -v`
+Run: `python3 -m pytest tests/commands/schedule/test_paths.py -v`
 Expected: `ModuleNotFoundError: No module named 'lmi.commands.schedule.paths'`.
 
 - [ ] **Step 3: Implement `paths.py`**
@@ -795,7 +807,7 @@ def resolve_log(cfg, run_ts):
 
 - [ ] **Step 4: Run the tests**
 
-Run: `python -m pytest tests/ -v`
+Run: `python3 -m pytest tests/ -v`
 Expected: 32 tests pass.
 
 - [ ] **Step 5: Commit**
@@ -865,7 +877,7 @@ def test_appends_rather_than_truncating(tmp_path):
 
 - [ ] **Step 2: Run and verify they fail**
 
-Run: `python -m pytest tests/test_log.py -v`
+Run: `python3 -m pytest tests/test_log.py -v`
 Expected: `ModuleNotFoundError: No module named 'lmi.core.log'`.
 
 - [ ] **Step 3: Implement `log.py`**
@@ -899,7 +911,7 @@ class Logger:
 
 - [ ] **Step 4: Run the tests**
 
-Run: `python -m pytest tests/ -v`
+Run: `python3 -m pytest tests/ -v`
 Expected: 37 tests pass.
 
 - [ ] **Step 5: Commit**
@@ -1061,7 +1073,7 @@ def test_failed_backup_reuses_the_file_rather_than_clobbering(tmp_path, monkeypa
 
 - [ ] **Step 2: Run and verify they fail**
 
-Run: `python -m pytest tests/commands/schedule/test_state.py -v`
+Run: `python3 -m pytest tests/commands/schedule/test_state.py -v`
 Expected: `ModuleNotFoundError: No module named 'lmi.commands.schedule.state'`.
 
 - [ ] **Step 3: Implement `state.py`**
@@ -1165,7 +1177,7 @@ def check_complete(path):
 
 - [ ] **Step 4: Run the tests**
 
-Run: `python -m pytest tests/ -v`
+Run: `python3 -m pytest tests/ -v`
 Expected: 50 tests pass.
 
 - [ ] **Step 5: Commit**
@@ -1270,7 +1282,7 @@ def test_task_section_comes_after_current_state(tmp_path):
 
 - [ ] **Step 2: Run and verify they fail**
 
-Run: `python -m pytest tests/commands/schedule/test_prompt.py -v`
+Run: `python3 -m pytest tests/commands/schedule/test_prompt.py -v`
 Expected: `ModuleNotFoundError: No module named 'lmi.commands.schedule.prompt'`.
 
 - [ ] **Step 3: Implement `prompt.py`**
@@ -1376,7 +1388,7 @@ def compose(cfg, state_path, iter_label, started_str, state_body):
 
 - [ ] **Step 4: Run the tests**
 
-Run: `python -m pytest tests/ -v`
+Run: `python3 -m pytest tests/ -v`
 Expected: 58 tests pass.
 
 - [ ] **Step 5: Commit**
@@ -1595,7 +1607,7 @@ def test_an_internal_failure_is_written_to_the_log(tmp_path, fake_claude, monkey
 
 - [ ] **Step 3: Run and verify they fail**
 
-Run: `python -m pytest tests/commands/schedule/test_runner.py -v`
+Run: `python3 -m pytest tests/commands/schedule/test_runner.py -v`
 Expected: `ModuleNotFoundError: No module named 'lmi.core.lock'`.
 
 - [ ] **Step 4: Implement `core/lock.py`**
@@ -1869,7 +1881,7 @@ HELP = "Run Claude Code unattended, looping in the foreground"
 
 - [ ] **Step 7: Run the whole suite**
 
-Run: `python -m pytest tests/ -v`
+Run: `python3 -m pytest tests/ -v`
 Expected: 72 tests pass.
 
 - [ ] **Step 8: Commit**
@@ -1888,7 +1900,7 @@ git commit -s -m "feat: the iteration loop, the lock and the claude invocation"
 
 - [ ] **Step 1: Add an `lmi` section to README.md**
 
-Cover: `pip install -e ".[dev]"` (or `pipx install .`), that `lmi schedule` takes the same flags as `run-claude.bat` with the option table applying to both, `lmi --help` and `lmi schedule --help`, running the suite with `python -m pytest tests/ -v`, and the exit codes.
+Cover: a repo-local venv for development (`python3 -m venv .venv && .venv/bin/python -m pip install -e ".[dev]"`) and `pipx install .` for real use, that `lmi schedule` takes the same flags as `run-claude.bat` with the option table applying to both, `lmi --help` and `lmi schedule --help`, running the suite with `python3 -m pytest tests/ -v`, and the exit codes.
 
 State plainly: `lmi` is intended to replace `run-claude.bat`, but the `.bat` **stays until the two verifications below pass**; and macOS and Windows are unverified so far.
 
@@ -1900,7 +1912,7 @@ State plainly: `lmi` is intended to replace `run-claude.bat`, but the `.bat` **s
 - [ ] **Step 3: Verify the suite once more and commit**
 
 ```bash
-python -m pytest tests/ -v
+python3 -m pytest tests/ -v
 git add README.md
 git commit -s -m "docs: document lmi and the gates on retiring run-claude.bat"
 ```
