@@ -43,8 +43,23 @@ if sf:
             "TASK_STATUS: IN_PROGRESS\\n\\n## Goal\\n\\n"
             "only then may line 1 say TASK_STATUS: COMPLETE\\n"
         )
+    elif os.environ.get("FAKE_BLANK_FIRST_LINE"):
+        # Landmine 14, the shape the ^-anchored regex CAN match: line 1 is
+        # blank, line 2 says COMPLETE. A whole-file search matches it because
+        # ^\\s* happily spans the newline; a line-1-only read does not.
+        open(sf, "w", encoding="utf-8").write(
+            "\\nTASK_STATUS: COMPLETE\\n\\n## Goal\\n\\nnot really done\\n"
+        )
     elif at and int(at) == n:
         open(sf, "w", encoding="utf-8").write("TASK_STATUS: COMPLETE\\n")
+
+if os.environ.get("FAKE_WRECK_TMP"):
+    # Delete the runner's whole temp workspace, prompt file and all, the way a
+    # cleanup script or an over-eager tmpreaper would. The next iteration then
+    # cannot write its prompt - the case that used to abort the loop.
+    import glob, shutil, tempfile
+    for d in glob.glob(os.path.join(tempfile.gettempdir(), "lmi-schedule-*")):
+        shutil.rmtree(d, ignore_errors=True)
 
 sys.exit(int(os.environ.get("FAKE_RC", "0")))
 """
