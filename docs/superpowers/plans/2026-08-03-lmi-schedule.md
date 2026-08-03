@@ -1099,7 +1099,11 @@ from ...core.errors import EXIT_USAGE, LmiError
 # line 1 still says IN_PROGRESS. This is landmine 14 in CLAUDE.md.
 # \b (not "whitespace or end of line") matches the .bat's PowerShell regex,
 # so "COMPLETE." counts and "COMPLETED" does not.
-COMPLETE_RE = re.compile(r"^\s*TASK_STATUS:\s*COMPLETE\b")
+# IGNORECASE is not a style choice: the .bat matches with PowerShell's
+# -match, which is case-insensitive by default (-cmatch is the sensitive
+# form and is not used). Without it, `task_status: complete` would be
+# complete to the .bat and unfinished to lmi, for the same state file.
+COMPLETE_RE = re.compile(r"^\s*TASK_STATUS:\s*COMPLETE\b", re.IGNORECASE)
 
 STATE_TEMPLATE = """\
 TASK_STATUS: IN_PROGRESS
@@ -1184,7 +1188,8 @@ def check_complete(path):
 - [ ] **Step 4: Run the tests**
 
 Run: `python3 -m pytest tests/ -v`
-Expected: 50 tests pass.
+Expected: 52 tests pass (50 from the brief, plus 2 for the case-insensitive
+and UTF-16 boundary cases found in review).
 
 - [ ] **Step 5: Commit**
 
@@ -1395,7 +1400,7 @@ def compose(cfg, state_path, iter_label, started_str, state_body):
 - [ ] **Step 4: Run the tests**
 
 Run: `python3 -m pytest tests/ -v`
-Expected: 58 tests pass.
+Expected: 60 tests pass.
 
 - [ ] **Step 5: Commit**
 
@@ -1898,7 +1903,7 @@ HELP = "Run Claude Code unattended, looping in the foreground"
 - [ ] **Step 7: Run the whole suite**
 
 Run: `python3 -m pytest tests/ -v`
-Expected: 73 tests pass.
+Expected: 75 tests pass.
 
 - [ ] **Step 8: Commit**
 
