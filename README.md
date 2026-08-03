@@ -435,6 +435,19 @@ platform-specific paths have **never been executed**:
 Do not describe cross-platform support as proven. It is unverified, not
 assumed working.
 
+**The interpreter floor, however, is verified.** The full suite (107 tests) and
+an end-to-end CLI run both pass on **CPython 3.9.23** — single run, a loop that
+stops early on `TASK_STATUS: COMPLETE`, a failing `claude` call leaving the
+runner alive at exit 1, quota detection, argument validation, and two concurrent
+runs where the second is refused with exit 3. This matters because one real bug
+was found exactly here: `Path.write_text(..., newline=...)` needs Python 3.10, so
+before it was fixed every run died at the first iteration on 3.9. A syntax-level
+check cannot catch a parameter added in a later version — only running the older
+interpreter can.
+
+So: the **3.9 floor** is tested. **Linux** is tested. **Windows and macOS** are
+not.
+
 ### The two verification gates before run-claude.bat can be retired
 
 Both of these must pass before `run-claude.bat` is removed from this
