@@ -301,6 +301,12 @@ Expected: 6 tests pass; `lmi --help` lists `schedule`; `lmi --version` prints `l
 > Tests themselves need no install — pytest puts the repo root on `sys.path`, so
 > `python3 -m pytest tests/ -v` works from a clean checkout. The venv exists to
 > exercise the `lmi` console script.
+>
+> **On Debian and Ubuntu (including WSL), `python3 -m venv` may fail** with
+> `ensurepip is not available`: those distributions split it into a separate
+> `python3.<minor>-venv` package. Either install that package, or use
+> `virtualenv .venv` instead — the result is equivalent for this project. Do not
+> fall back to installing outside a venv.
 
 - [ ] **Step 8: Commit**
 
