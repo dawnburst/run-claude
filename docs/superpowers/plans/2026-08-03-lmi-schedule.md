@@ -628,6 +628,7 @@ git commit -s -m "feat: parse and validate lmi schedule arguments"
 Create `tests/commands/schedule/test_paths.py`:
 
 ```python
+import os
 from pathlib import Path
 
 import pytest
@@ -704,6 +705,7 @@ def test_dotfile_does_not_count_as_having_an_extension():
     assert has_extension("a.b.c") is True
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
 def test_unwritable_log_parent_is_a_clear_error(tmp_path):
     ro = tmp_path / "ro"
     ro.mkdir()
@@ -1503,10 +1505,12 @@ def test_default_flags_and_add_dir_reach_the_cli(tmp_path, fake_claude):
     assert "--add-dir" in argv
 
 
-def test_user_flags_are_appended(tmp_path, fake_claude):
+def test_user_flags_are_appended_after_the_defaults(tmp_path, fake_claude):
     main(["schedule", "hello", "-d", str(tmp_path), "-f", "--verbose --model x"])
     argv = (fake_claude.dir / "argv-1.txt").read_text().splitlines()
-    assert argv[-2:] == ["--model", "x"] or "--verbose" in argv
+    # Order matters: defaults, then --add-dir, then the user's flags last.
+    assert argv[-3:] == ["--verbose", "--model", "x"]
+    assert argv.index("--allowed-tools=Edit,Write") < argv.index("--verbose")
 
 
 def test_the_composed_prompt_reaches_claude_on_stdin(tmp_path, fake_claude):
