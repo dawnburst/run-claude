@@ -13,16 +13,34 @@ from ...core import fs
 from ...core.errors import EXIT_USAGE, LmiError
 
 TS_FORMAT = "%Y%m%d-%H%M%S"
+# The stamp that appears in log lines and in the state template. One
+# definition because it is a shared protocol detail: run-claude.bat's logs and
+# lmi's are meant to be comparable, so it must not drift between the runner
+# and the state file.
+NOW_FORMAT = "%Y-%m-%d %H:%M:%S"
 STATE_NAME = "run-claude-state.md"
 LOG_PREFIX = "run-claude-"
 
 
 def timestamp():
+    """The stamp used in generated file names."""
     return datetime.now().strftime(TS_FORMAT)
 
 
+def now_str(when=None):
+    """The stamp used in log lines and in the state template."""
+    return (when or datetime.now()).strftime(NOW_FORMAT)
+
+
 def has_extension(name):
-    """Mirror cmd's %%~xF: a dot after the first character. '.hidden' has none."""
+    """Mirror cmd's %%~xF: a dot after the first character. '.hidden' has none.
+
+    Deliberately not `bool(Path(name).suffix)`, which looks equivalent and is
+    not: pathlib reports no suffix for a trailing dot, so 'logs.' and '..'
+    would flip from "use as the log file" to "create a directory". cmd's
+    %%~xF yields '.' for 'logs.', so this hand-rolled form is the faithful
+    one. The suite has no trailing-dot case, so the swap looks safe and is not.
+    """
     return "." in name[1:]
 
 

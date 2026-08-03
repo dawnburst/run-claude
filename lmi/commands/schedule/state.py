@@ -5,6 +5,7 @@ import re
 
 from ...core import text as textlib
 from ...core.errors import EXIT_USAGE, LmiError
+from . import paths
 
 # Only the FIRST line is ever tested against this. A whole-file search is
 # wrong and fails silently: real claude restates the protocol sentence
@@ -84,13 +85,7 @@ def prepare(path, resume, run_ts, log):
         )
     else:
         log.line("State file       : created new")
-    write_template(path, _now_str())
-
-
-def _now_str():
-    from datetime import datetime
-
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    write_template(path, paths.now_str())
 
 
 def read_body(path):
