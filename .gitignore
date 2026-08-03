@@ -9,3 +9,9 @@ run-claude.lock
 
 # Local Claude Code settings
 .claude/
+
+# Python build/test artefacts
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
