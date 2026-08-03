@@ -14,6 +14,12 @@ moment the state file reports the task is done.
 Pure `cmd.exe` plus PowerShell for time handling. No install step, no
 dependencies beyond the Claude Code CLI itself.
 
+This repository also contains `lmi schedule`, a Python reimplementation of
+this same runner, intended to eventually replace it. See
+[lmi schedule — the Python successor](#lmi-schedule--the-python-successor)
+below. The `.bat` documented in this section is unaffected and stays exactly
+as described until that section's two verification gates pass.
+
 ---
 
 ## Requirements
@@ -215,6 +221,15 @@ runner-test-task.md   a deliberately 5-step task file, used to exercise the loop
 test\run-tests.bat    the regression suite, 43 cases
 test\bin\claude.cmd   a stub CLI, so the suite costs nothing and no quota
 CLAUDE.md             developer handoff: architecture, solved cmd.exe landmines
+pyproject.toml        packaging for lmi: name, entry point, Python >=3.9, pytest
+lmi\                  the Python reimplementation
+  cli.py              top-level argparse parser and command dispatch
+  core\               errors and exit codes shared by every command, the
+                      single-instance lock (fcntl / msvcrt), logging
+  commands\
+    schedule\         the lmi schedule command: config/validation, paths,
+                      prompt composition, the state file, the iteration loop
+tests\                pytest suite for lmi, 77 cases, mirrors the lmi\ tree
 README.md             this file
 LICENSE               MIT
 ```
@@ -229,6 +244,10 @@ produced, so a regression is recognisable rather than mysterious.
 ---
 
 ## Testing
+
+This section covers `run-claude.bat`'s own suite. `lmi schedule` has a
+separate one, run with `python3 -m pytest tests/ -v` — see
+[Testing lmi](#testing-lmi) below.
 
 ```bat
 cd test
@@ -292,6 +311,146 @@ a crash, so read it when a run dies quietly.
 - An inline prompt cannot contain a double quote (see above).
 
 None of these are scheduled work. If you want one, say so before building it.
+
+---
+
+## lmi schedule — the Python successor
+
+`lmi` is a Python CLI, built to eventually replace `run-claude.bat`. Its
+`schedule` subcommand is that replacement: it runs the Claude Code CLI
+unattended in a foreground loop, taking the same eight flags with the same
+meanings (`-t -i -c -d -f -l -s -r`), the same state-file protocol, and the
+same default file names (`run-claude-state.md`, `run-claude-<timestamp>.log`)
+as the `.bat` above — a state file written by one is a valid state file for
+the other. Everything in [Usage](#usage) and
+[How the iteration loop works](#how-the-iteration-loop-works) above describes
+`lmi schedule` too, except where this section says otherwise.
+
+**`lmi` is intended to replace `run-claude.bat`, but the `.bat` stays in this
+repository, unmodified and undeprecated, until both verification gates below
+have passed.** Treat it as the current, supported tool until then.
+
+Requires Python 3.9 or newer. No runtime dependencies beyond the standard
+library.
+
+### Installing
+
+For development, in a repo-local virtual environment:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[dev]"
+```
+
+**On Debian and Ubuntu, including WSL,** `python3 -m venv` can fail with
+`ensurepip is not available`: those distributions ship `ensurepip` in a
+separate `python3.<minor>-venv` package. Either install that package, or use
+`virtualenv .venv` instead of `python3 -m venv .venv`.
+
+For real use, once the package is ready to be relied on:
+
+```bash
+pipx install .
+```
+
+**Never install with `pip install --break-system-packages` outside a venv.**
+This machine's Python is externally managed (PEP 668) precisely to stop that;
+doing it anyway leaves an editable install pointing at a directory — such as
+a worktree — that may later be deleted, silently breaking `lmi`.
+
+You do not need to install anything to run the test suite — see
+[Testing lmi](#testing-lmi).
+
+### Usage and options
+
+```
+lmi schedule "<prompt or prompt-file>" [-t "YYYY-MM-DD HH:MM"] [-i minutes]
+             [-c count] [-d workdir] [-f "flags"] [-l logfolder]
+             [-s statefile] [-r]
+```
+
+Run `lmi --help` for the list of available commands, and
+`lmi schedule --help` for the authoritative flag list. The
+[Options](#options) table above applies to `lmi schedule` unchanged, with one
+deliberate difference:
+
+- **`-t` must be quoted.** The `.bat` tolerates an unquoted
+  `-t 2026-08-05 22:00` as two loose tokens; `lmi schedule` rejects it with a
+  usage error. Supporting the unquoted form would make `-t` consume
+  arguments greedily, which risks silently swallowing the prompt argument
+  that follows it. Always write `-t "2026-08-05 22:00"`.
+
+### What lmi fixes
+
+Three behaviors of `run-claude.bat` that fail silently are fixed in `lmi
+schedule`:
+
+- A state file that cannot be written now **raises an error** instead of
+  logging success and looping on an unwritten template forever (landmine 13
+  in `CLAUDE.md`).
+- A crash inside the runner itself is **logged with its full traceback**,
+  not just printed to a terminal nobody may be watching.
+- A **UTF-16** prompt file is **decoded correctly** from its byte order mark,
+  rather than silently mangled through the console codepage (landmine 15).
+  ANSI prompt files remain undetectable by construction, same as the `.bat`.
+
+### Exit codes
+
+`0` and `2` are **global to every `lmi` command**, not just `schedule`: no
+future command may redefine what they mean. The rest are specific to
+`schedule`.
+
+| Code | Meaning | Scope |
+|---|---|---|
+| 0 | All iterations completed fine | global |
+| 1 | At least one claude call failed (the runner still ran to the end) | `schedule` |
+| 2 | Bad parameters, or a missing prerequisite | global |
+| 3 | Another run holds the lock on this state file | `schedule` |
+| 4 | The runner itself crashed — a bug in `lmi`, not in your task | `schedule` |
+
+### Testing lmi
+
+```bash
+python3 -m pytest tests/ -v
+```
+
+No install is required first — pytest puts the repository root on `sys.path`,
+so the suite runs against a clean checkout. A virtual environment is only
+needed to exercise the installed `lmi` console script itself, not to run the
+tests. Currently **77 tests, all passing**.
+
+### Platform status — be precise about this
+
+All development and testing of `lmi` so far happened **on Linux**. Two
+platform-specific paths have **never been executed**:
+
+- The **Windows file-locking branch** (`msvcrt.locking`, in `lmi/core/lock.py`)
+  has only been exercised through its Linux counterpart (`fcntl.flock`).
+- The **console-script installation** (`pipx install .` or a `pip`-generated
+  `lmi` shim) has never been run on Windows or macOS.
+
+Do not describe cross-platform support as proven. It is unverified, not
+assumed working.
+
+### The two verification gates before run-claude.bat can be retired
+
+Both of these must pass before `run-claude.bat` is removed from this
+repository or described as deprecated. Neither has happened yet.
+
+1. **A real end-to-end run on Linux against the actual `claude` CLI**: one
+   single iteration, then a loop that reaches `TASK_STATUS: COMPLETE`. This
+   matters because the two most expensive bugs in this project's history —
+   landmines 13 and 14 in `CLAUDE.md`, a blocked state-file write and a false
+   completion match — were both silent successes that a fake CLI reported as
+   healthy. Only a real run caught either one. The pytest suite above cannot
+   substitute for this.
+2. **A Windows Task Scheduler run with "run whether user is logged on or
+   not."** The development machine's Python is a Microsoft Store install
+   reached through an App Execution Alias, with no `py.exe` launcher, and it
+   is not known whether a `pip`-generated `lmi` shim resolves at all in that
+   non-interactive context. If it does not, that is a finding about
+   **installation**, not about the design of `lmi schedule` — and
+   `run-claude.bat` stays in the repository until it is resolved, regardless.
 
 ---
 
