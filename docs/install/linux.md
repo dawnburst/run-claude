@@ -104,13 +104,108 @@ cd ~/lmi
 
 ---
 
-## Route B — a virtual environment by hand
+## Manual installation
+
+Everything below installs `lmi` without the script. Route B is what the script
+actually does, step by step — reach for it if the script stopped somewhere, if
+you want to see each command, or if you would rather not run a script at all.
+
+---
+
+### Route B — a self-contained executable by hand
+
+The same result as Route A: one file, no pip, no virtual environment, no
+network. Four steps.
+
+#### 1. Get the source onto the machine
+
+```bash
+git clone https://github.com/dawnburst/run-claude.git ~/lmi
+cd ~/lmi
+```
+
+On an air-gapped machine, copy the repository across instead — any transport
+will do, since nothing is fetched from here on.
+
+#### 2. Stage just the package
+
+`zipapp` packs a whole directory, so stage the `lmi` package on its own. Without
+this you would also pack the tests, the docs and any `.venv`, and the archive
+would be far larger than it needs to be.
+
+```bash
+mkdir -p build/stage
+cp -r lmi build/stage/
+find build/stage -name '__pycache__' -type d -exec rm -rf {} +
+```
+
+#### 3. Build the executable
+
+```bash
+python3 -m zipapp build/stage -m "lmi.cli:main" -p "/usr/bin/env python3" -o build/lmi
+chmod +x build/lmi
+```
+
+`-m` names the entry point, the same `lmi.cli:main` that `pyproject.toml`
+declares. `-p` writes the shebang, so the file runs directly. `/usr/bin/env
+python3` rather than a fixed interpreter path keeps it working if `python3`
+moves.
+
+**The output must not be `build/stage/lmi`.** The package being packed is itself
+called `lmi`, so writing the archive inside the staging directory collides with
+it and `zipapp` fails with `IsADirectoryError`.
+
+Check it before going further:
+
+```bash
+./build/lmi --version       # -> lmi 0.1.0
+```
+
+#### 4. Put it on your PATH
+
+Copy rather than symlink — the file is the entire program, so copying it makes
+the clone disposable:
+
+```bash
+mkdir -p ~/.local/bin
+cp build/lmi ~/.local/bin/lmi
+chmod +x ~/.local/bin/lmi
+```
+
+Confirm `~/.local/bin` is on your PATH:
+
+```bash
+echo "$PATH" | tr ':' '\n' | grep -q "$HOME/.local/bin" && echo on-path || echo MISSING
+```
+
+If it prints `MISSING`, add it and open a new terminal:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+Use `~/.zshrc` instead if your shell is zsh (`echo $SHELL` tells you).
+
+Then:
+
+```bash
+which lmi          # -> /home/you/.local/bin/lmi
+lmi --version       # -> lmi 0.1.0
+```
+
+To upgrade, repeat steps 2-4 after a `git pull`. To uninstall,
+`rm ~/.local/bin/lmi`.
+
+---
+
+### Route C — a virtual environment by hand
 
 Use this if you want an editable install, or if you would rather see each step.
 It needs pip, so it also needs the network on a machine without `setuptools`
 and `wheel` already installed. Five steps.
 
-### 1. Clone the repository
+#### 1. Clone the repository
 
 ```bash
 git clone https://github.com/dawnburst/run-claude.git ~/lmi
@@ -121,7 +216,7 @@ Pick a **permanent** location. Do not install from a temporary directory or a
 git worktree you intend to delete — the launcher in step 4 points back at this
 path, and removing it later leaves a dangling command that fails confusingly.
 
-### 2. Create a virtual environment
+#### 2. Create a virtual environment
 
 ```bash
 python3 -m venv .venv
@@ -142,7 +237,7 @@ pip install --user virtualenv 2>/dev/null || python3 -m pip install --user virtu
 virtualenv .venv
 ```
 
-### 3. Install `lmi` into it
+#### 3. Install `lmi` into it
 
 ```bash
 .venv/bin/python -m pip install .
@@ -157,7 +252,7 @@ Ubuntu 24.04 the system Python is externally managed (PEP 668) and will refuse.
 whatever directory you ran it from, which breaks `import lmi` system-wide when
 that directory moves.
 
-### 4. Put the launcher on your PATH
+#### 4. Put the launcher on your PATH
 
 The venv already contains a working launcher at `.venv/bin/lmi`, whose shebang
 pins the venv's interpreter. Link it into a directory on your PATH:
@@ -182,7 +277,7 @@ source ~/.bashrc
 
 Use `~/.zshrc` instead if your shell is zsh (`echo $SHELL` tells you).
 
-### 5. Verify
+#### 5. Verify
 
 ```bash
 which lmi          # -> /home/you/.local/bin/lmi
@@ -195,7 +290,7 @@ shells started afterwards.
 
 ---
 
-## Route C — pipx
+### Route D — pipx
 
 `pipx` gives each tool its own isolated environment and puts the command on
 your PATH for you. Cleaner if you install several tools this way.
@@ -242,12 +337,17 @@ git pull
 ./scripts/install-linux.sh          # re-running is how you upgrade
 ```
 
-Re-running the script reuses the existing environment and reinstalls into it.
-By hand, that is `.venv/bin/python -m pip install .` — which you can skip
-entirely if you installed with `--editable`, since the command already tracks
-your checkout.
+Re-running the script rebuilds the executable and replaces the installed one.
+It writes to a temporary name and moves it into place, so an interrupted upgrade
+cannot leave a half-written file where a working one was.
 
-With pipx: `pipx upgrade lmi`, or `pipx reinstall lmi` after pulling.
+By hand:
+
+- **Route B** — repeat its steps 2 to 4.
+- **Route C** — `.venv/bin/python -m pip install .`, which you can skip entirely
+  if you installed with `--editable`, since the command already tracks your
+  checkout.
+- **Route D** — `pipx upgrade lmi`, or `pipx reinstall lmi` after pulling.
 
 ---
 
@@ -258,14 +358,18 @@ cd ~/lmi
 ./scripts/install-linux.sh --uninstall
 ```
 
-That removes the launcher and `.venv` and leaves the clone in place. Delete the
-clone too if you want it gone:
+That removes the installed command, and `.venv` if a Route C install left one.
+The clone stays; delete it too if you want it gone:
 
 ```bash
 rm -rf ~/lmi
 ```
 
-By hand, the two steps are `rm ~/.local/bin/lmi` and `rm -rf ~/lmi/.venv`.
+The script only removes something it recognises as its own — a symlink into this
+clone, or an executable that really contains `lmi/cli.py`. Anything else at that
+path it refuses to touch.
+
+By hand: `rm ~/.local/bin/lmi`, plus `rm -rf ~/lmi/.venv` if you used Route C.
 
 With pipx: `pipx uninstall lmi`.
 
@@ -273,12 +377,20 @@ With pipx: `pipx uninstall lmi`.
 
 ## Troubleshooting
 
-**`lmi: command not found`** — the symlink is missing, or `~/.local/bin` is not
-on PATH, or you have not opened a new terminal. Run the two checks in Route B step 4.
+**`lmi: command not found`** — the command is missing from `~/.local/bin`, or
+that directory is not on PATH, or you have not opened a new terminal. Run the
+two PATH checks in Route B step 4.
 
-**`bad interpreter: No such file or directory`** — the venv moved or was
-deleted. The launcher's shebang holds an absolute path. Recreate the venv
-(Route B steps 2-3) and relink, or just re-run the install script.
+**`bad interpreter: No such file or directory`** — only affects Route C: the
+virtual environment moved or was deleted, and its launcher's shebang holds an
+absolute path into it. Re-run the install script, which by default produces a
+self-contained executable with no such dependency.
+
+**`/usr/bin/env: 'python3': No such file or directory`** — the executable from
+Route A or B cannot find a `python3`. Its shebang is deliberately
+`/usr/bin/env python3` rather than a fixed path, so this means `python3` is not
+on PATH at all in that context — which is worth knowing if you are running from
+cron or a systemd unit, where PATH is minimal.
 
 **`error: externally-managed-environment`** — you are installing outside the
 venv. Use `.venv/bin/python -m pip`, not bare `pip`.
