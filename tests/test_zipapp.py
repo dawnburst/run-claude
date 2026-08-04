@@ -44,7 +44,11 @@ def built_pyz(tmp_path_factory):
     shutil.copytree(REPO / "lmi", stage / "lmi")
     for junk in stage.rglob("__pycache__"):
         shutil.rmtree(junk, ignore_errors=True)
-    (stage / "__main__.py").write_text(MAIN_PY, encoding="utf-8", newline="\n")
+    # open(), not Path.write_text(..., newline=...): that keyword is 3.10+ and
+    # the floor is 3.9. Using it here broke this very file on 3.9 - the same
+    # mistake the runner was fixed for.
+    with open(str(stage / "__main__.py"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(MAIN_PY)
     target = work / "lmi.pyz"
     zipapp.create_archive(str(stage), str(target))
     return target
