@@ -231,7 +231,7 @@ lmi\                  the Python reimplementation
                       prompt composition, the state file, the iteration loop
 tests\                pytest suite for lmi, 107 cases, mirrors the lmi\ tree
 docs\install\         per-platform install guides, one file each
-scripts\              install scripts: install-linux.sh,
+scripts\              install scripts: install-linux.sh, install-macos.sh,
                       install-windows.cmd, install-windows.ps1
 README.md             this file
 LICENSE               MIT
@@ -346,7 +346,7 @@ your PATH — no `python -m` prefix and nothing to activate.
 | Linux, including WSL | [docs/install/linux.md](docs/install/linux.md) | verified — has an install script |
 | Windows — `cmd.exe` | [docs/install/windows-cmd.md](docs/install/windows-cmd.md) | verified — has an install script |
 | Windows — PowerShell | [docs/install/windows-powershell.md](docs/install/windows-powershell.md) | verified — has an install script |
-| macOS | [docs/install/macos.md](docs/install/macos.md) | **not yet run on a Mac** |
+| macOS | [docs/install/macos.md](docs/install/macos.md) | has an install script — **not yet run on a Mac** |
 
 Each guide gives a scripted route where one exists, the same steps by hand, and
 `pipx` if you prefer it to manage isolation for you — plus a first run,
@@ -378,8 +378,13 @@ It installs `lmi.pyz` plus a two-line `lmi.cmd` shim — the shim is what makes
 the bare `lmi` work, since Windows has no `.pyz` association and does not list
 `.PYZ` in `PATHEXT`. Run the `.cmd` even from PowerShell: it wraps
 `install-windows.ps1` with `-ExecutionPolicy Bypass` for that one invocation,
-because a default Windows refuses to run a local `.ps1`. macOS has no script
-yet; its guide gives the manual steps.
+because a default Windows refuses to run a local `.ps1`.
+
+macOS has `scripts/install-macos.sh`, shaped like the Linux one. Its logic has
+been exercised on Linux and its macOS-specific parts — finding a usable
+`python3`, the `readlink -f`-free ownership check, naming `~/.zshrc` — are
+written from documentation. **It has never run on a Mac.** Treat it as intended
+rather than proven.
 
 **`lmi` needs nothing outside the standard library at runtime** — `dependencies`
 is empty. The only thing that pulls in a third-party package is `pip install .`
