@@ -358,9 +358,18 @@ git clone https://github.com/dawnburst/run-claude.git ~/lmi
 cd ~/lmi && ./scripts/install-linux.sh
 ```
 
-It needs no `sudo`, writes nothing outside the clone and `~/.local/bin`, is safe
-to re-run (that is also how you upgrade), and supports `--uninstall`. Scripts
-for the other platforms are still to come; their guides give the manual steps.
+It builds a **single self-contained executable** with the standard library's
+`zipapp` module, so it needs **no pip, no setuptools, no virtual environment and
+no network** — which also makes it the right route on an air-gapped machine.
+The installed file is the whole program, so **the clone is disposable
+afterwards**. Re-running it is how you upgrade; `--uninstall` reverses it;
+`--venv` and `--editable` give the traditional pip install if you intend to edit
+the source. Scripts for the other platforms are still to come; their guides give
+the manual steps.
+
+**`lmi` needs nothing outside the standard library at runtime** — `dependencies`
+is empty. The only thing that pulls in a third-party package is `pip install .`
+itself, which fetches `setuptools` to build; the zipapp route avoids it.
 
 Two pitfalls the guides exist to steer around:
 

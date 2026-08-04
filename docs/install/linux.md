@@ -19,10 +19,7 @@ Anything from 3.9 up works. `lmi` has no third-party dependencies at runtime.
 
 ---
 
-## Route A — the install script (fastest)
-
-The repository ships a script that does everything in Route B for you, and
-tells you exactly what to fix if anything is wrong.
+## Route A — the install script (recommended)
 
 ```bash
 git clone https://github.com/dawnburst/run-claude.git ~/lmi
@@ -30,49 +27,73 @@ cd ~/lmi
 ./scripts/install-linux.sh
 ```
 
-Then open a new terminal and check:
+Then open a new terminal:
 
 ```bash
 lmi --version       # -> lmi 0.1.0
 ```
 
-That is the whole installation. What the script does:
+That is the whole installation.
 
-1. checks for Python 3.9 or newer
-2. creates `.venv` in the clone, falling back to `virtualenv` if
-   `python3 -m venv` is unavailable, and naming the exact `apt` command if
-   neither works
-3. installs the package into that environment
-4. symlinks the launcher into `~/.local/bin`
-5. verifies it runs, and prints the precise lines to add to your shell profile
-   if that directory is not on your PATH
+By default the script builds a **single self-contained executable** with the
+standard library's `zipapp` module and copies it to `~/.local/bin/lmi`. That
+matters for three reasons:
 
-It never uses `sudo`, writes nothing outside the clone and the link directory,
-and is **safe to run again** — a second run reuses a good environment and
-rebuilds a broken one rather than duplicating anything.
+- **It needs no pip, no setuptools, no wheel, no virtual environment and no
+  network.** It therefore works on an air-gapped machine, and on Debian and
+  Ubuntu where `python3 -m venv` fails because `ensurepip` ships separately.
+- **The installed file is the whole program**, about 44 KB. Once it is in place
+  **the clone is disposable** — delete `~/lmi` and `lmi` keeps working. A
+  virtual-environment install cannot do that; its launcher points back at the
+  clone forever.
+- Re-running the script is how you upgrade, and `--uninstall` reverses it.
 
 ### Options
 
 | Option | Meaning |
 |---|---|
-| `--link-dir DIR` | Where to put the launcher. Default `~/.local/bin`. |
-| `--editable` | Install with `pip -e`, so `lmi` tracks your checkout as you edit it. |
-| `--uninstall` | Remove the launcher and `.venv`. Leaves the clone alone. |
+| `--zipapp` | Single self-contained executable. **The default.** |
+| `--venv` | Traditional pip install into `.venv` instead. Needs pip, and network unless `setuptools` and `wheel` are already local. Keeps the clone load-bearing. |
+| `--editable` | `pip -e`, so `lmi` tracks your checkout. Implies `--venv`. Use this if you intend to edit the source. |
+| `--link-dir DIR` | Where to put the command. Default `~/.local/bin`. |
+| `--uninstall` | Remove the command, and `.venv` if there is one. Leaves the clone. |
 | `-h`, `--help` | Show usage. |
+
+### Air-gapped machines
+
+Use the default. Nothing is fetched. You only need to get two things onto the
+machine yourself, neither of them a Python package:
+
+1. **The source**, since `git clone` cannot reach GitHub. Copy the repository
+   in, then run the script. Alternatively build the executable on a connected
+   machine and carry just that one file — it is portable, and the same file even
+   runs on Windows and macOS.
+2. **The Claude Code CLI, already authenticated.** `lmi` shells out to `claude`,
+   and `claude auth login` is browser-based, so it cannot be automated. This is
+   usually the harder constraint.
+
+`pip install .` is what fails air-gapped, and it is worth knowing why: the
+`[build-system]` table asks for `setuptools>=61`, which pip fetches from PyPI
+into an isolated build environment. `--no-build-isolation` only moves the
+requirement — then `setuptools` **and** `wheel` must already be installed
+locally. The zipapp route sidesteps all of it.
 
 ### If it stops
 
-The script fails loudly rather than half-installing, and every message says
-what to do next. The cases it handles explicitly:
+The script fails loudly rather than half-installing, and every message says what
+to do next. It handles explicitly:
 
-- **Python missing or older than 3.9** — it names the requirement and stops.
-- **No way to create a virtual environment** — it prints both fixes, the
-  `apt install python3-venv` one and the `pip install --user virtualenv` one.
-- **Something already at the link path that is not a symlink** — it refuses to
-  overwrite your file and suggests `--link-dir`.
-- **Run from outside a clone** — it says so instead of creating a stray `.venv`.
-- **A different `lmi` earlier on your PATH** — it warns and shows which one
-  wins, so you are not left wondering why your change had no effect.
+- **Python missing or older than 3.9** — names the requirement and stops.
+- **`--venv` with no way to create one** — prints both fixes and points at the
+  default mode, which needs neither.
+- **`--venv` with no network** — says that is expected and names the default
+  mode instead.
+- **Something already at the target path that it did not install** — refuses to
+  touch it. It only ever removes a symlink into this clone, or a zipapp that
+  actually contains `lmi/cli.py`.
+- **Run from outside a clone** — says so instead of leaving debris.
+- **A different `lmi` earlier on your PATH** — warns and names the winner, so
+  you are not left wondering why nothing changed.
 
 To uninstall:
 
@@ -83,11 +104,11 @@ cd ~/lmi
 
 ---
 
-## Route B — the same thing by hand
+## Route B — a virtual environment by hand
 
-Use this if you would rather see each step, or if the script stopped somewhere
-and you want to continue manually. Nothing to install beyond what you have.
-Five steps.
+Use this if you want an editable install, or if you would rather see each step.
+It needs pip, so it also needs the network on a machine without `setuptools`
+and `wheel` already installed. Five steps.
 
 ### 1. Clone the repository
 
