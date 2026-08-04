@@ -133,3 +133,61 @@ def test_unwritable_log_parent_is_a_clear_error(tmp_path, make_cfg):
         assert exc.value.code == 2
     finally:
         ro.chmod(0o700)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_an_unwritable_working_directory_says_to_pass_d(tmp_path, make_cfg):
+    """One clear error naming -d, not three Permission denied in a row.
+
+    The report this comes from: on Windows, cmd.exe cannot hold a UNC working
+    directory, so launching from \\\\wsl.localhost\\... left the process in
+    C:\\Windows. lmi then aimed its state file, log and lock there and failed
+    three separate times, which read like three faults rather than one wrong
+    directory. Worse, a *writable* system directory would have been scribbled
+    in silently.
+    """
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o500)
+    try:
+        with pytest.raises(LmiError) as exc:
+            resolve_state(make_cfg(ro))
+        assert exc.value.code == 2
+        message = str(exc.value)
+        assert "working directory" in message
+        assert "-d" in message           # the advice, not just the complaint
+    finally:
+        ro.chmod(0o700)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_an_explicit_s_in_an_unwritable_folder_does_not_mention_d(tmp_path, make_cfg):
+    """-s was given, so telling the user to pass -d would be wrong advice."""
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o500)
+    try:
+        with pytest.raises(LmiError) as exc:
+            resolve_state(make_cfg(tmp_path, state_arg=str(ro / "state.md")))
+        assert exc.value.code == 2
+        assert "-d" not in str(exc.value)
+    finally:
+        ro.chmod(0o700)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_an_unwritable_log_folder_is_still_allowed_through(tmp_path, make_cfg):
+    """The guard is deliberately state-only.
+
+    An unwritable log must not abort the run: Logger degrades to console-only
+    and warns once, matching run-claude.bat. A writability guard on the log
+    would undo that on purpose-built behaviour.
+    """
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o500)
+    try:
+        got = resolve_log(make_cfg(tmp_path, log_arg=str(ro)), "20260804-120000")
+        assert got.parent == ro          # resolved, not rejected
+    finally:
+        ro.chmod(0o700)

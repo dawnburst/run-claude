@@ -6,6 +6,7 @@ FOLDER, not a log file. Getting rule 4 wrong makes `-l some/new/logdir`
 create a file called logdir instead of a directory.
 """
 
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -78,7 +79,57 @@ def _expand(raw, what):
         )
 
 
-def _ensure_parent(path, what):
+def _ensure_writable(directory, what, implicit):
+    """Fail once, clearly, if we cannot write where this run's files must go.
+
+    Without this the run got as far as the loop and then failed three separate
+    times - the lock, the log, the state file - each with its own raw
+    "Permission denied", which reads like three faults rather than one wrong
+    directory.
+
+    `implicit` says the directory came from the current working directory
+    rather than from a flag, which changes the advice: the fix is to pass -d.
+    That is the shape of the real report this was written for. On Windows,
+    cmd.exe cannot hold a UNC working directory, so launching from
+    \\\\wsl.localhost\\... silently leaves the process in C:\\Windows - and lmi
+    then aimed its state file, log and lock at C:\\Windows. Denied there, which
+    is lucky; a writable system directory would have been scribbled in instead.
+    """
+    probe = directory / (".lmi-write-test-%d" % os.getpid())
+    try:
+        probe.touch()
+        probe.unlink()
+        return
+    except OSError as exc:
+        # Bound inside the block on purpose: Python 3 deletes the name when the
+        # except clause ends, so it cannot be read afterwards.
+        reason = exc
+    if implicit:
+        raise LmiError(
+            "cannot write to the working directory %s (%s).\n"
+            "    That is where the %s would go. Pass -d with a directory you "
+            "can write to,\n"
+            "    for example: lmi schedule \"...\" -d %s"
+            % (directory, reason, what, _example_dir()),
+            EXIT_USAGE,
+        )
+    raise LmiError(
+        "cannot write to the folder for the %s: %s (%s)" % (what, directory, reason),
+        EXIT_USAGE,
+    )
+
+
+def _example_dir():
+    return "C:\\work" if os.name == "nt" else "~/work"
+
+
+def _ensure_parent(path, what, implicit=None):
+    """implicit=None means do not check writability at all.
+
+    Only the state file gets the check. An unwritable *log* must not abort the
+    run - Logger deliberately degrades to console-only and warns once, matching
+    run-claude.bat, and a guard here would undo that.
+    """
     # The .bat attempts the mkdir and only fails if the directory is still
     # missing afterwards; a missing parent is not itself an error.
     try:
@@ -91,10 +142,15 @@ def _ensure_parent(path, what):
             % (what, path),
             EXIT_USAGE,
         )
+    if implicit is not None:
+        _ensure_writable(path.parent, what, implicit)
     return path
 
 
 def resolve_state(cfg):
+    # "implicit" below means the directory came from the working directory
+    # rather than from a flag, which is what changes the advice on failure.
+    implicit = cfg.state_arg is None
     raw = cfg.state_arg or str(cfg.work_dir / STATE_NAME)
     path = _expand(raw, "state file")
     # A directory would be renamed to <name>.<ts>.bak by the backup step -
@@ -105,7 +161,7 @@ def resolve_state(cfg):
         raise LmiError(
             "the state file path is an existing directory: %s" % path, EXIT_USAGE
         )
-    return _ensure_parent(path, "state file")
+    return _ensure_parent(path, "state file", implicit)
 
 
 def resolve_log(cfg, run_ts):
