@@ -231,7 +231,8 @@ lmi\                  the Python reimplementation
                       prompt composition, the state file, the iteration loop
 tests\                pytest suite for lmi, 107 cases, mirrors the lmi\ tree
 docs\install\         per-platform install guides, one file each
-scripts\              install scripts (install-linux.sh so far)
+scripts\              install scripts: install-linux.sh,
+                      install-windows.cmd, install-windows.ps1
 README.md             this file
 LICENSE               MIT
 ```
@@ -343,8 +344,8 @@ your PATH — no `python -m` prefix and nothing to activate.
 | Platform | Guide | Status |
 |---|---|---|
 | Linux, including WSL | [docs/install/linux.md](docs/install/linux.md) | verified — has an install script |
-| Windows — `cmd.exe` | [docs/install/windows-cmd.md](docs/install/windows-cmd.md) | verified |
-| Windows — PowerShell | [docs/install/windows-powershell.md](docs/install/windows-powershell.md) | verified |
+| Windows — `cmd.exe` | [docs/install/windows-cmd.md](docs/install/windows-cmd.md) | verified — has an install script |
+| Windows — PowerShell | [docs/install/windows-powershell.md](docs/install/windows-powershell.md) | verified — has an install script |
 | macOS | [docs/install/macos.md](docs/install/macos.md) | **not yet run on a Mac** |
 
 Each guide gives a scripted route where one exists, the same steps by hand, and
@@ -364,8 +365,21 @@ no network** — which also makes it the right route on an air-gapped machine.
 The installed file is the whole program, so **the clone is disposable
 afterwards**. Re-running it is how you upgrade; `--uninstall` reverses it;
 `--venv` and `--editable` give the traditional pip install if you intend to edit
-the source. Scripts for the other platforms are still to come; their guides give
-the manual steps.
+the source.
+
+Windows has the same thing:
+
+```bat
+git clone https://github.com/dawnburst/run-claude.git C:\lmi
+cd /d C:\lmi && scripts\install-windows.cmd
+```
+
+It installs `lmi.pyz` plus a two-line `lmi.cmd` shim — the shim is what makes
+the bare `lmi` work, since Windows has no `.pyz` association and does not list
+`.PYZ` in `PATHEXT`. Run the `.cmd` even from PowerShell: it wraps
+`install-windows.ps1` with `-ExecutionPolicy Bypass` for that one invocation,
+because a default Windows refuses to run a local `.ps1`. macOS has no script
+yet; its guide gives the manual steps.
 
 **`lmi` needs nothing outside the standard library at runtime** — `dependencies`
 is empty. The only thing that pulls in a third-party package is `pip install .`

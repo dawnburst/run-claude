@@ -39,13 +39,187 @@ in a directory that is *not* on your PATH:
 %LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\Scripts
 ```
 
-Both routes below avoid that trap. Don't use `pip install --user` for this.
+Every route below avoids it. Don't use `pip install --user` for this.
 
 ---
 
-## Route A — virtual environment plus a shim (recommended)
+## Route A — the install script (recommended)
 
-Nothing extra to install. Six steps.
+```bat
+cd /d C:\
+git clone https://github.com/dawnburst/run-claude.git C:\lmi
+cd /d C:\lmi
+scripts\install-windows.cmd
+```
+
+Then open a **new** Command Prompt:
+
+```bat
+lmi --version
+```
+
+That is the whole installation.
+
+By default the script builds a **single self-contained executable** with the
+standard library's `zipapp` module and installs two small files into
+`%USERPROFILE%\.local\bin`:
+
+| File | Why |
+|---|---|
+| `lmi.pyz` | The whole program, about 44 KB. |
+| `lmi.cmd` | A two-line shim. **This is what makes the bare `lmi` work.** |
+
+The shim is not optional. Windows has no file association for `.pyz` and does
+not list `.PYZ` in `PATHEXT`, so a bare `lmi.pyz` does nothing at all — verified
+on a stock install. The shim calls `python "%~dp0lmi.pyz" %*`, and `%~dp0` means
+it finds its `.pyz` sibling wherever you put the pair.
+
+Three things follow from this design:
+
+- **It needs no pip, no setuptools, no wheel, no virtual environment and no
+  network.** It therefore works on an air-gapped machine, and it sidesteps the
+  trap below entirely.
+- **The clone is disposable afterwards.** Those two files are the whole program.
+- Re-running the script upgrades; `-Uninstall` reverses it.
+
+### Options
+
+Everything is passed straight through to the PowerShell installer:
+
+| Option | Meaning |
+|---|---|
+| `-LinkDir DIR` | Where to put the two files. Default `%USERPROFILE%\.local\bin`. |
+| `-Venv` | Traditional pip install into `.venv` instead. Needs pip, and network unless `setuptools` and `wheel` are already local. Keeps the clone load-bearing. |
+| `-Editable` | `pip -e`, so `lmi` tracks your checkout. Implies `-Venv`. |
+| `-Uninstall` | Remove both files, and `.venv` if there is one. Leaves the clone. |
+| `-Help` | Show usage. |
+
+```bat
+scripts\install-windows.cmd -Uninstall
+scripts\install-windows.cmd -Venv -Editable
+scripts\install-windows.cmd -LinkDir C:\tools\bin
+```
+
+### Why the `.cmd` is a wrapper
+
+`install-windows.cmd` is four useful lines around `install-windows.ps1`. The
+logic lives in PowerShell for two concrete reasons, not preference:
+
+- **PATH safety.** `setx PATH` expands the *whole* current PATH — system entries
+  included — into the **user** variable, and truncates at 1024 characters, which
+  can quietly corrupt a working PATH. PowerShell's `SetEnvironmentVariable`
+  touches only the user scope and has no such limit.
+- **One implementation.** Two installers in two languages would have to be kept
+  in step by hand.
+
+The wrapper passes `-ExecutionPolicy Bypass` for that single invocation, which
+changes no machine setting. It is also why you should run the `.cmd` rather than
+the `.ps1` directly from cmd.
+
+### If it stops
+
+It fails loudly rather than half-installing. It handles explicitly:
+
+- **`python` opens the Microsoft Store** — you have the App Execution Alias stub,
+  not Python. It says so.
+- **Python older than 3.9** — names the requirement and stops.
+- **`-Venv` with no network** — says that is expected and points at the default.
+- **Something already at the target path it did not install** — refuses to touch
+  it. It only removes a `.pyz` that really contains `lmi/cli.py`, or a shim that
+  mentions `lmi.pyz`.
+- **Run from outside a clone** — says so instead of leaving debris.
+
+To uninstall:
+
+```bat
+cd /d C:\lmi
+scripts\install-windows.cmd -Uninstall
+```
+
+---
+
+## Manual installation
+
+Route B is what the script does, step by step — use it if the script stopped, if
+you want to see each command, or if you would rather not run a script.
+
+---
+
+### Route B — a self-contained executable by hand
+
+Four steps, no pip and no network.
+
+#### 1. Get the source onto the machine
+
+```bat
+git clone https://github.com/dawnburst/run-claude.git C:\lmi
+cd /d C:\lmi
+```
+
+Air-gapped: copy the repository across instead. Nothing is fetched from here on.
+
+#### 2. Stage just the package
+
+`zipapp` packs a whole directory, so stage the `lmi` package alone — otherwise
+the archive also carries the tests, the docs and any `.venv`.
+
+```bat
+mkdir build\stage
+xcopy /e /i /q lmi build\stage\lmi
+```
+
+#### 3. Build the executable
+
+```bat
+python -m zipapp build\stage -m "lmi.cli:main" -p "/usr/bin/env python3" -o build\lmi.pyz
+```
+
+`-m` names the entry point, the same `lmi.cli:main` that `pyproject.toml`
+declares. `-p` writes a shebang that Windows ignores — include it anyway and the
+same file also runs directly on Linux and macOS.
+
+**The output must not go inside `build\stage`.** The package being packed is
+itself called `lmi`, so writing the archive there collides with it and `zipapp`
+fails.
+
+Check it:
+
+```bat
+python build\lmi.pyz --version
+```
+
+#### 4. Install both files and put them on PATH
+
+```bat
+mkdir "%USERPROFILE%\.local\bin" 2>nul
+copy /y build\lmi.pyz "%USERPROFILE%\.local\bin\lmi.pyz"
+> "%USERPROFILE%\.local\bin\lmi.cmd" echo @echo off
+>> "%USERPROFILE%\.local\bin\lmi.cmd" echo python "%%~dp0lmi.pyz" %%*
+```
+
+The `%%` doubling is required inside a `.bat`; typed straight at the prompt it
+would be `%~dp0` and `%*`.
+
+Add the directory to your PATH **once**, preferring PowerShell over `setx` for
+the reason given above:
+
+```bat
+powershell -NoProfile -Command "$b='%USERPROFILE%\.local\bin'; $p=[Environment]::GetEnvironmentVariable('Path','User'); if ($p -notlike \"*$b*\") { [Environment]::SetEnvironmentVariable('Path', \"$b;$p\", 'User') }"
+```
+
+Then open a **new** Command Prompt:
+
+```bat
+where lmi
+lmi --version
+```
+
+To upgrade, repeat steps 2 to 4 after a `git pull`. To uninstall, delete
+`lmi.pyz` and `lmi.cmd` from that directory.
+
+---
+
+### Route C — a virtual environment by hand
 
 ### 1. Clone the repository
 
@@ -114,7 +288,7 @@ lmi schedule --help
 
 ---
 
-## Route B — pipx
+### Route D — pipx
 
 `pipx` isolates each tool and fixes PATH for you.
 
@@ -186,23 +360,32 @@ If you need scheduled runs today, either:
 ```bat
 cd /d C:\lmi
 git pull
-.venv\Scripts\python -m pip install .
+scripts\install-windows.cmd
 ```
 
-With pipx: `pipx upgrade lmi`.
+Re-running rebuilds the executable and replaces the installed one.
+
+By hand: repeat Route B steps 2 to 4; or for Route C,
+`.venv\Scripts\python -m pip install .`; or `pipx upgrade lmi` for Route D.
 
 ---
 
 ## Uninstalling
 
 ```bat
-del "%USERPROFILE%\.local\bin\lmi.bat"
+cd /d C:\lmi
+scripts\install-windows.cmd -Uninstall
 rmdir /s /q C:\lmi
 ```
 
-With pipx: `pipx uninstall lmi`. Remove the PATH entry through
-**Settings → System → About → Advanced system settings → Environment
-Variables** if you no longer want it.
+The script removes only what it recognises as its own — a `.pyz` containing
+`lmi/cli.py`, or a shim mentioning `lmi.pyz` — and refuses to touch anything
+else at that path.
+
+By hand: delete `lmi.pyz` and `lmi.cmd` from `%USERPROFILE%\.local\bin`.
+With pipx: `pipx uninstall lmi`. The PATH entry can stay harmlessly, or be
+removed through **Settings → System → About → Advanced system settings →
+Environment Variables**.
 
 ---
 
