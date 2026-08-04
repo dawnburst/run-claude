@@ -230,6 +230,7 @@ lmi\                  the Python reimplementation
     schedule\         the lmi schedule command: config/validation, paths,
                       prompt composition, the state file, the iteration loop
 tests\                pytest suite for lmi, 107 cases, mirrors the lmi\ tree
+docs\install\         per-platform install guides, one file each
 README.md             this file
 LICENSE               MIT
 ```
@@ -335,28 +336,38 @@ library.
 
 ### Installing
 
-For development, in a repo-local virtual environment:
+Step-by-step guides, one per platform. Each ends with a bare `lmi` command on
+your PATH — no `python -m` prefix and nothing to activate.
+
+| Platform | Guide | Status |
+|---|---|---|
+| Linux, including WSL | [docs/install/linux.md](docs/install/linux.md) | verified |
+| Windows — `cmd.exe` | [docs/install/windows-cmd.md](docs/install/windows-cmd.md) | verified |
+| Windows — PowerShell | [docs/install/windows-powershell.md](docs/install/windows-powershell.md) | verified |
+| macOS | [docs/install/macos.md](docs/install/macos.md) | **not yet run on a Mac** |
+
+Each guide gives two routes — a virtual environment plus a small launcher on
+your PATH, which needs no extra tooling, or `pipx` if you prefer it to manage
+isolation for you — plus a first run, updating, uninstalling, and the
+troubleshooting specific to that platform.
+
+Two pitfalls the guides exist to steer around:
+
+- **On Windows, `pip install --user` appears to work and then `lmi` is still
+  "not recognized"**, because a Microsoft Store Python puts its scripts in a
+  directory that is not on PATH.
+- **On Debian and Ubuntu, `python3 -m venv` fails** with `ensurepip is not
+  available` (it ships as a separate `python3-venv` package), and
+  `pip install --break-system-packages` "fixes" that by leaving an install
+  wired to whatever directory you ran it from — which silently breaks `lmi`
+  when that directory moves.
+
+For development in a repo-local environment:
 
 ```bash
-python3 -m venv .venv
+python3 -m venv .venv          # or: virtualenv .venv
 .venv/bin/python -m pip install -e ".[dev]"
 ```
-
-**On Debian and Ubuntu, including WSL,** `python3 -m venv` can fail with
-`ensurepip is not available`: those distributions ship `ensurepip` in a
-separate `python3.<minor>-venv` package. Either install that package, or use
-`virtualenv .venv` instead of `python3 -m venv .venv`.
-
-For real use, once the package is ready to be relied on:
-
-```bash
-pipx install .
-```
-
-**Never install with `pip install --break-system-packages` outside a venv.**
-This machine's Python is externally managed (PEP 668) precisely to stop that;
-doing it anyway leaves an editable install pointing at a directory — such as
-a worktree — that may later be deleted, silently breaking `lmi`.
 
 You do not need to install anything to run the test suite — see
 [Testing lmi](#testing-lmi).
@@ -451,7 +462,8 @@ not.
 ### The two verification gates before run-claude.bat can be retired
 
 Both of these must pass before `run-claude.bat` is removed from this
-repository or described as deprecated. Neither has happened yet.
+repository or described as deprecated. Gate 1 is **half done**; gate 2 has not
+been attempted.
 
 1. **A real end-to-end run on Linux against the actual `claude` CLI**: one
    single iteration, then a loop that reaches `TASK_STATUS: COMPLETE`. This
@@ -460,6 +472,18 @@ repository or described as deprecated. Neither has happened yet.
    completion match — were both silent successes that a fake CLI reported as
    healthy. Only a real run caught either one. The pytest suite above cannot
    substitute for this.
+
+   **The single-iteration half now passes.** A real run against
+   `~/.local/bin/claude` (v2.1.221) completed in 25 seconds: exit 0, the
+   requested file created, the state file rewritten by Claude to
+   `TASK_STATUS: COMPLETE` on line 1, and the loop stopping early on it. That
+   specifically clears landmine 13 — the state file was genuinely written, not
+   left as the untouched template — and landmine 14, since the completion was
+   detected from line 1 rather than from prose.
+
+   **Still outstanding: a real multi-iteration loop**, which is what proves
+   state carries forward across iterations. Use `runner-test-task.md`, the
+   deliberately five-step task file in this repository, with `-i 1 -c 5`.
 2. **A Windows Task Scheduler run with "run whether user is logged on or
    not."** The development machine's Python is a Microsoft Store install
    reached through an App Execution Alias, with no `py.exe` launcher, and it
