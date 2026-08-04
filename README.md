@@ -231,6 +231,7 @@ lmi\                  the Python reimplementation
                       prompt composition, the state file, the iteration loop
 tests\                pytest suite for lmi, 107 cases, mirrors the lmi\ tree
 docs\install\         per-platform install guides, one file each
+scripts\              install scripts (install-linux.sh so far)
 README.md             this file
 LICENSE               MIT
 ```
@@ -341,15 +342,25 @@ your PATH — no `python -m` prefix and nothing to activate.
 
 | Platform | Guide | Status |
 |---|---|---|
-| Linux, including WSL | [docs/install/linux.md](docs/install/linux.md) | verified |
+| Linux, including WSL | [docs/install/linux.md](docs/install/linux.md) | verified — has an install script |
 | Windows — `cmd.exe` | [docs/install/windows-cmd.md](docs/install/windows-cmd.md) | verified |
 | Windows — PowerShell | [docs/install/windows-powershell.md](docs/install/windows-powershell.md) | verified |
 | macOS | [docs/install/macos.md](docs/install/macos.md) | **not yet run on a Mac** |
 
-Each guide gives two routes — a virtual environment plus a small launcher on
-your PATH, which needs no extra tooling, or `pipx` if you prefer it to manage
-isolation for you — plus a first run, updating, uninstalling, and the
-troubleshooting specific to that platform.
+Each guide gives a scripted route where one exists, the same steps by hand, and
+`pipx` if you prefer it to manage isolation for you — plus a first run,
+updating, uninstalling, and the troubleshooting specific to that platform.
+
+Linux and WSL have a one-command installer:
+
+```bash
+git clone https://github.com/dawnburst/run-claude.git ~/lmi
+cd ~/lmi && ./scripts/install-linux.sh
+```
+
+It needs no `sudo`, writes nothing outside the clone and `~/.local/bin`, is safe
+to re-run (that is also how you upgrade), and supports `--uninstall`. Scripts
+for the other platforms are still to come; their guides give the manual steps.
 
 Two pitfalls the guides exist to steer around:
 

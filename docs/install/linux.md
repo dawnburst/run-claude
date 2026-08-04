@@ -19,9 +19,75 @@ Anything from 3.9 up works. `lmi` has no third-party dependencies at runtime.
 
 ---
 
-## Route A — virtual environment plus a symlink (recommended)
+## Route A — the install script (fastest)
 
-Nothing to install beyond what you have. Five steps.
+The repository ships a script that does everything in Route B for you, and
+tells you exactly what to fix if anything is wrong.
+
+```bash
+git clone https://github.com/dawnburst/run-claude.git ~/lmi
+cd ~/lmi
+./scripts/install-linux.sh
+```
+
+Then open a new terminal and check:
+
+```bash
+lmi --version       # -> lmi 0.1.0
+```
+
+That is the whole installation. What the script does:
+
+1. checks for Python 3.9 or newer
+2. creates `.venv` in the clone, falling back to `virtualenv` if
+   `python3 -m venv` is unavailable, and naming the exact `apt` command if
+   neither works
+3. installs the package into that environment
+4. symlinks the launcher into `~/.local/bin`
+5. verifies it runs, and prints the precise lines to add to your shell profile
+   if that directory is not on your PATH
+
+It never uses `sudo`, writes nothing outside the clone and the link directory,
+and is **safe to run again** — a second run reuses a good environment and
+rebuilds a broken one rather than duplicating anything.
+
+### Options
+
+| Option | Meaning |
+|---|---|
+| `--link-dir DIR` | Where to put the launcher. Default `~/.local/bin`. |
+| `--editable` | Install with `pip -e`, so `lmi` tracks your checkout as you edit it. |
+| `--uninstall` | Remove the launcher and `.venv`. Leaves the clone alone. |
+| `-h`, `--help` | Show usage. |
+
+### If it stops
+
+The script fails loudly rather than half-installing, and every message says
+what to do next. The cases it handles explicitly:
+
+- **Python missing or older than 3.9** — it names the requirement and stops.
+- **No way to create a virtual environment** — it prints both fixes, the
+  `apt install python3-venv` one and the `pip install --user virtualenv` one.
+- **Something already at the link path that is not a symlink** — it refuses to
+  overwrite your file and suggests `--link-dir`.
+- **Run from outside a clone** — it says so instead of creating a stray `.venv`.
+- **A different `lmi` earlier on your PATH** — it warns and shows which one
+  wins, so you are not left wondering why your change had no effect.
+
+To uninstall:
+
+```bash
+cd ~/lmi
+./scripts/install-linux.sh --uninstall
+```
+
+---
+
+## Route B — the same thing by hand
+
+Use this if you would rather see each step, or if the script stopped somewhere
+and you want to continue manually. Nothing to install beyond what you have.
+Five steps.
 
 ### 1. Clone the repository
 
@@ -108,7 +174,7 @@ shells started afterwards.
 
 ---
 
-## Route B — pipx
+## Route C — pipx
 
 `pipx` gives each tool its own isolated environment and puts the command on
 your PATH for you. Cleaner if you install several tools this way.
@@ -152,8 +218,13 @@ the interactive sign-in for you.
 ```bash
 cd ~/lmi
 git pull
-.venv/bin/python -m pip install .     # skip if you installed with -e
+./scripts/install-linux.sh          # re-running is how you upgrade
 ```
+
+Re-running the script reuses the existing environment and reinstalls into it.
+By hand, that is `.venv/bin/python -m pip install .` — which you can skip
+entirely if you installed with `--editable`, since the command already tracks
+your checkout.
 
 With pipx: `pipx upgrade lmi`, or `pipx reinstall lmi` after pulling.
 
@@ -162,9 +233,18 @@ With pipx: `pipx upgrade lmi`, or `pipx reinstall lmi` after pulling.
 ## Uninstalling
 
 ```bash
-rm ~/.local/bin/lmi
+cd ~/lmi
+./scripts/install-linux.sh --uninstall
+```
+
+That removes the launcher and `.venv` and leaves the clone in place. Delete the
+clone too if you want it gone:
+
+```bash
 rm -rf ~/lmi
 ```
+
+By hand, the two steps are `rm ~/.local/bin/lmi` and `rm -rf ~/lmi/.venv`.
 
 With pipx: `pipx uninstall lmi`.
 
@@ -173,11 +253,11 @@ With pipx: `pipx uninstall lmi`.
 ## Troubleshooting
 
 **`lmi: command not found`** — the symlink is missing, or `~/.local/bin` is not
-on PATH, or you have not opened a new terminal. Run the two checks in step 4.
+on PATH, or you have not opened a new terminal. Run the two checks in Route B step 4.
 
 **`bad interpreter: No such file or directory`** — the venv moved or was
 deleted. The launcher's shebang holds an absolute path. Recreate the venv
-(steps 2-3) and relink.
+(Route B steps 2-3) and relink, or just re-run the install script.
 
 **`error: externally-managed-environment`** — you are installing outside the
 venv. Use `.venv/bin/python -m pip`, not bare `pip`.
