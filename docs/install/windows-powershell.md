@@ -333,6 +333,48 @@ pipx install "git+https://github.com/dawnburst/run-claude.git"
 
 ---
 
+---
+
+## Do not run from a `\\wsl.localhost\...` path
+
+If your files live in WSL, it is natural to `cd` to them in Windows and run
+`lmi` there. **That does not work**, and the reason is not obvious.
+
+`lmi.cmd` goes through `cmd.exe`, and **cmd.exe cannot hold a UNC working
+directory**. It says so and silently substitutes `C:\Windows`:
+
+```
+'\\wsl.localhost\Ubuntu-24.04\home\you\project'
+CMD.EXE was started with the above path as the current directory.
+UNC paths are not supported.  Defaulting to Windows directory.
+```
+
+Measured: launched through the shim from a UNC directory, Python sees
+`C:\Windows` as its working directory. `lmi` then aims its state file, log and
+lock at `C:\Windows` and is refused:
+
+```
+[ERROR] cannot write to the working directory C:\Windows (Permission denied).
+    That is where the state file would go. Pass -d with a directory you can
+    write to, for example: lmi schedule "..." -d C:\work
+```
+
+`lmi` detects this and stops with that one message rather than failing three
+times over. Two ways forward:
+
+- **Pass `-d` with a real drive path**, which is where `claude` will then run:
+
+  ```bat
+  lmi schedule "your prompt" -d C:\work
+  ```
+
+- **Better, if the files are in WSL: run `lmi` inside WSL.** That is where those
+  files live, there is no UNC problem at all, and see
+  [linux.md](linux.md) for the install.
+
+The same applies to any mapped network path. A local drive letter is always
+safe.
+
 ## First run
 
 ```powershell
