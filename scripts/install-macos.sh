@@ -1,35 +1,40 @@
 #!/usr/bin/env bash
 # Install the `lmi` CLI on macOS so that typing `lmi` works.
 #
-# Run it from inside a clone of this repository:
+#     ./scripts/install-macos.sh                 # from a clone
+#     ./install-macos.sh --wheel lmi-0.1.0-py3-none-any.whl
 #
-#     ./scripts/install-macos.sh
-#
-# NOT YET RUN ON A MAC. Development happens on Linux. Every step here is
-# standard macOS practice and the shared parts are exercised daily by the Linux
-# installer, but nothing in this file has executed on macOS. Treat it as
+# NOT YET RUN ON A MAC. Development happens on Linux. Every step here is standard
+# macOS practice and this file is a close mirror of install-linux.sh, which is
+# exercised end to end - but nothing here has executed on macOS. Treat it as
 # intended rather than proven, and please report what breaks.
 #
-# By default it builds a single self-contained executable with the standard
-# library's zipapp module and copies it onto your PATH. That needs no pip, no
-# setuptools, no wheel, no virtual environment and no network - so it works on
-# an air-gapped machine, and it avoids `sudo pip`, which on macOS fights System
-# Integrity Protection and leaves a mess where it partially succeeds.
+# It installs the wheel - one file, `lmi-<version>-py3-none-any.whl`, the same
+# file on every operating system - into a small virtual environment of its own,
+# then symlinks the `lmi` command pip generates onto your PATH.
 #
-# The installed file is the whole program, about 44 KB. Once it is in place the
-# clone is disposable, unlike a virtual-environment install whose launcher
-# points back at the clone forever.
+# Why a virtual environment rather than `pip install --user`: writing into the
+# system Python is blocked by System Integrity Protection, and where a `sudo pip`
+# partially succeeds it leaves a mix that is unpleasant to unpick. A Homebrew
+# Python refuses too, being marked "externally managed" (PEP 668). A venv of our
+# own avoids the whole question.
 #
-# Pass --venv for the traditional pip install; that is the right choice if you
-# intend to edit the source, since --editable needs it.
+# The venv is at ~/.local/share/lmi/venv and holds nothing but lmi, so the clone
+# is disposable once this has run.
 #
-# `set -e` is right here, unlike in the runner itself: a half-finished install
-# is worse than a stopped one.
+# The macOS-specific parts are the Python search, the zsh startup file, and
+# avoiding `readlink -f`, which stock macOS lacked before Monterey. Everything
+# else is deliberately identical to install-linux.sh so that a change to one is
+# easy to mirror in the other.
+#
+# `set -e` is right here, unlike in the runner itself: a half-finished install is
+# worse than a stopped one. Note macOS still ships bash 3.2, so nothing here may
+# use bash 4 syntax.
 set -euo pipefail
 
+VENV_DIR="$HOME/.local/share/lmi/venv"
 LINK_DIR="$HOME/.local/bin"
-MODE="zipapp"
-EDITABLE=0
+WHEEL=""
 UNINSTALL=0
 MIN_PY="3.9"
 
@@ -51,88 +56,58 @@ Install the lmi CLI on macOS.
     ./scripts/install-macos.sh [options]
 
 Options:
-  --zipapp         build a single self-contained executable (default).
-                   Needs only the standard library - no pip, no network.
-  --venv           install into a virtual environment with pip instead.
-                   Needs pip, and network unless setuptools and wheel are
-                   already present locally.
-  --editable       install in editable mode so `lmi` tracks this checkout.
-                   Implies --venv.
+  --wheel PATH     the wheel to install. Default: the newest lmi-*.whl beside
+                   this script or in dist/, else built from the checkout.
   --link-dir DIR   where to put the `lmi` command (default: ~/.local/bin)
-  --uninstall      remove the installed command, and .venv if there is one
+  --venv-dir DIR   where to keep lmi's virtual environment
+                   (default: ~/.local/share/lmi/venv)
+  --uninstall      remove the command and the virtual environment
   -h, --help       show this help
 
-Run it from inside a clone of the repository. It needs no sudo.
+Needs no sudo. Re-run it to upgrade.
 EOF
 }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --zipapp) MODE="zipapp"; shift ;;
-        --venv) MODE="venv"; shift ;;
-        --editable) EDITABLE=1; MODE="venv"; shift ;;
-        --link-dir) [ $# -ge 2 ] || die "--link-dir needs a directory"
-                    LINK_DIR="$2"; shift 2 ;;
+        --wheel)     [ $# -ge 2 ] || die "--wheel needs a path"
+                     WHEEL="$2"; shift 2 ;;
+        --link-dir)  [ $# -ge 2 ] || die "--link-dir needs a directory"
+                     LINK_DIR="$2"; shift 2 ;;
+        --venv-dir)  [ $# -ge 2 ] || die "--venv-dir needs a directory"
+                     VENV_DIR="$2"; shift 2 ;;
         --uninstall) UNINSTALL=1; shift ;;
-        -h|--help) usage; exit 0 ;;
+        -h|--help)   usage; exit 0 ;;
         *) die "unknown option: $1 (try --help)" ;;
     esac
 done
 
-# --- locate the clone we live in -------------------------------------------
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd -- "$SCRIPT_DIR/.." && pwd)"
-VENV="$REPO/.venv"
 TARGET="$LINK_DIR/lmi"
 
-[ -f "$REPO/pyproject.toml" ] || die \
-    "$REPO does not look like the repository (no pyproject.toml).
-    Run this script from inside a clone, as ./scripts/install-macos.sh"
-[ -d "$REPO/lmi" ] || die "$REPO has no lmi/ package directory."
-
-# Is the thing at $TARGET something we installed? Only ever remove our own.
+# Is the thing at $TARGET ours? Only ever remove or replace our own. Anything
+# else is someone else's lmi and we refuse to touch it.
 ours() {
-    [ -e "$1" ] || return 1
+    # The current shape: a symlink into our venv. Plain readlink, not
+    # readlink -f: the -f flag did not exist on stock macOS before Monterey.
     if [ -L "$1" ]; then
-        # No readlink -f on stock macOS before Monterey, so resolve by hand.
-        target="$(cd -- "$(dirname -- "$1")" && cd -- "$(dirname -- "$(readlink "$1")")" 2>/dev/null && pwd)" || return 1
-        case "$target" in "$REPO"/*|"$REPO") return 0 ;; esac
+        case "$(readlink "$1")" in "$VENV_DIR"/*) return 0 ;; esac
         return 1
     fi
-    "$PY" - "$1" <<'EOF' 2>/dev/null
-import sys, zipfile
-try:
-    with zipfile.ZipFile(sys.argv[1]) as z:
-        sys.exit(0 if "lmi/cli.py" in z.namelist() else 1)
-except Exception:
-    sys.exit(1)
-EOF
+    [ -f "$1" ] || return 1
+    # Or the zipapp that the previous version of this installer left here, so
+    # that upgrading from it replaces the file rather than stopping with "not
+    # installed by this script". A zip stores its entry names uncompressed in
+    # the central directory, so grep finds them without needing Python - which
+    # matters because --uninstall must work even if Python has since gone.
+    LC_ALL=C grep -aq 'lmi/cli\.py' "$1"
 }
-
-# --- 1. Python -------------------------------------------------------------
-# Resolved before `ours` can need it, since uninstall uses it too.
-step "Checking Python"
-PY=""
-for candidate in python3 python3.13 python3.12 python3.11 python3.10 python3.9; do
-    command -v "$candidate" >/dev/null 2>&1 || continue
-    if "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3,9) else 1)' 2>/dev/null; then
-        PY="$candidate"; break
-    fi
-done
-[ -n "$PY" ] || die \
-    "no Python $MIN_PY or newer on PATH.
-    macOS ships python3 with the Command Line Tools; install them with
-
-        xcode-select --install
-
-    or install a newer Python with Homebrew: brew install python@3.12"
-PY_VER="$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
-ok "$PY is $PY_VER (need $MIN_PY or newer)"
 
 # --- uninstall -------------------------------------------------------------
 if [ "$UNINSTALL" -eq 1 ]; then
     step "Removing the lmi command"
-    if [ ! -e "$TARGET" ]; then
+    if [ ! -e "$TARGET" ] && [ ! -L "$TARGET" ]; then
         ok "nothing at $TARGET"
     elif ours "$TARGET"; then
         rm -f "$TARGET"; ok "removed $TARGET"
@@ -140,95 +115,143 @@ if [ "$UNINSTALL" -eq 1 ]; then
         die "$TARGET was not installed by this script - leaving it alone.
     Remove it yourself if you are sure, or use --link-dir."
     fi
-    step "Removing the virtual environment, if there is one"
-    if [ -d "$VENV" ]; then rm -rf "$VENV"; ok "removed $VENV"; else ok "none"; fi
-    printf '\n%sUninstalled.%s The clone itself is untouched; delete %s to remove it too.\n' \
-        "$B" "$Z" "$REPO"
+    step "Removing the virtual environment"
+    if [ -d "$VENV_DIR" ]; then rm -rf "$VENV_DIR"; ok "removed $VENV_DIR"; else ok "none"; fi
+    printf '\n%sUninstalled.%s\n' "$B" "$Z"
     exit 0
 fi
 
-# --- 2. build or install ---------------------------------------------------
-if [ "$MODE" = "zipapp" ]; then
-    step "Building a self-contained executable"
-    WORK="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$WORK'" EXIT
-    # The staged source and the built file must not share a directory: the
-    # package is itself named lmi/, so writing the output as $WORK/lmi would
-    # collide with the directory being packed.
-    STAGE="$WORK/stage"
-    BUILT="$WORK/lmi"
-    mkdir -p "$STAGE"
-    cp -R "$REPO/lmi" "$STAGE/"
-    find "$STAGE" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-    # Our own __main__.py, not zipapp's -m. The generated one calls main() and
-    # discards the result, so the process always exited 0 and every exit code
-    # lmi defines was lost - fatal for a tool that runs unattended.
-    cat > "$STAGE/__main__.py" <<'PYMAIN'
+# --- 1. Python -------------------------------------------------------------
+# python3 first, then each explicit minor version, newest to oldest. The
+# explicit names matter on macOS: a bare `python3` may be the Xcode Command Line
+# Tools stub that only offers to install itself, while a Homebrew python3.12 is
+# already present and works.
+step "Checking Python"
+PY=""
+for cand in python3 python3.13 python3.12 python3.11 python3.10 python3.9; do
+    command -v "$cand" >/dev/null 2>&1 || continue
+    if "$cand" - "$MIN_PY" <<'EOF' 2>/dev/null
 import sys
+need = tuple(int(p) for p in sys.argv[1].split("."))
+sys.exit(0 if sys.version_info[:2] >= need else 1)
+EOF
+    then PY="$cand"; break; fi
+done
+[ -n "$PY" ] || die \
+    "no Python $MIN_PY or newer was found on your PATH.
 
-from lmi.cli import main
+    Install the Command Line Tools, which include one:
 
-sys.exit(main())
-PYMAIN
-    # /usr/bin/env python3 rather than a fixed path: Homebrew lives at
-    # /opt/homebrew on Apple silicon and /usr/local on Intel, and the Command
-    # Line Tools python3 is somewhere else again. env finds whichever is first.
-    "$PY" -m zipapp "$STAGE" -p "/usr/bin/env python3" -o "$BUILT" \
-        || die "zipapp failed to build the executable."
-    chmod +x "$BUILT"
-    BUILT_VER="$("$BUILT" --version 2>&1)" \
-        || die "the built executable does not run: $BUILT_VER"
-    ok "built $(du -h "$BUILT" | cut -f1 | tr -d ' ') - $BUILT_VER"
+        xcode-select --install
 
-    step "Installing it onto your PATH"
-    mkdir -p "$LINK_DIR"
-    if [ -e "$TARGET" ] && ! ours "$TARGET"; then
-        die "$TARGET already exists and was not installed by this script.
-    Move it aside and re-run, or choose another directory with --link-dir."
-    fi
-    # Write beside the target then move, so an interrupted copy cannot leave a
-    # half-written executable in place of a working one.
-    cp "$BUILT" "$TARGET.new" && chmod +x "$TARGET.new" && mv -f "$TARGET.new" "$TARGET"
-    ok "installed $TARGET"
-    ok "the clone is no longer needed - this file is the whole program"
+    or get a newer Python from Homebrew:
+
+        brew install python@3.12"
+PY_VER="$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+ok "$PY is $PY_VER (need $MIN_PY or newer)"
+
+# --- 2. the wheel ----------------------------------------------------------
+# Newest first by modification time. Version-sorting the names would need real
+# parsing, or GNU sort -V, which macOS does not have; mtime is enough because
+# the only way two wheels are here is that one was just built.
+newest_wheel() {
+    [ -d "$1" ] || return 1
+    ls -t "$1"/lmi-*.whl 2>/dev/null | head -1
+}
+
+step "Finding the wheel"
+if [ -n "$WHEEL" ]; then
+    [ -f "$WHEEL" ] || die "no such wheel: $WHEEL"
 else
-    step "Preparing the virtual environment"
-    if [ -x "$VENV/bin/python" ] && "$VENV/bin/python" -c "" 2>/dev/null; then
-        ok "reusing $VENV"
-    else
-        [ -e "$VENV" ] && { warn "existing $VENV is not usable, rebuilding it"; rm -rf "$VENV"; }
-        # Unlike Debian, macOS bundles ensurepip, so this normally just works.
-        "$PY" -m venv "$VENV" >/dev/null 2>&1 || die \
-            "$PY -m venv failed. Drop --venv and use the default zipapp mode,
-    which needs no virtual environment at all."
-        ok "created $VENV"
-    fi
-
-    step "Installing lmi into it"
-    PIP_ARGS=(install --quiet --upgrade)
-    [ "$EDITABLE" -eq 1 ] && PIP_ARGS+=(--editable)
-    "$VENV/bin/python" -m pip "${PIP_ARGS[@]}" "$REPO" || die \
-        "pip failed. If this machine has no network, that is expected: pip
-    fetches setuptools to build the package. Use the default zipapp mode
-    instead, which needs nothing:
-
-        ./scripts/install-macos.sh"
-    [ -x "$VENV/bin/lmi" ] || die "pip reported success but $VENV/bin/lmi is missing."
-    ok "installed$([ "$EDITABLE" -eq 1 ] && printf ' (editable)')"
-
-    step "Linking it onto your PATH"
-    mkdir -p "$LINK_DIR"
-    if [ -e "$TARGET" ] && ! ours "$TARGET"; then
-        die "$TARGET already exists and was not installed by this script.
-    Move it aside and re-run, or choose another directory with --link-dir."
-    fi
-    ln -sfn "$VENV/bin/lmi" "$TARGET"
-    ok "linked $TARGET -> $VENV/bin/lmi"
-    warn "this mode needs the clone to stay where it is"
+    # Beside the script first: that is the shape of a machine with no git,
+    # where the script and the wheel were downloaded into the same folder.
+    WHEEL="$(newest_wheel "$SCRIPT_DIR" || true)"
+    [ -n "$WHEEL" ] || WHEEL="$(newest_wheel "$REPO/dist" || true)"
 fi
 
-# --- 3. verify -------------------------------------------------------------
+if [ -z "$WHEEL" ]; then
+    [ -f "$REPO/pyproject.toml" ] || die \
+        "no wheel found, and no checkout to build one from.
+
+    Either download lmi-<version>-py3-none-any.whl next to this script, or
+    pass it explicitly:
+
+        ./install-macos.sh --wheel /path/to/lmi-0.1.0-py3-none-any.whl"
+    step "Building the wheel from $REPO"
+    # Needs setuptools, which pip fetches unless it is already local - so this
+    # is the one step that wants a network. An air-gapped machine should carry
+    # the built wheel in instead; installing it needs nothing.
+    "$PY" -m pip wheel --no-deps --quiet --wheel-dir "$REPO/dist" "$REPO" || die \
+        "could not build the wheel. On a machine with no network that is
+    expected: pip fetches setuptools to build. Carry the built wheel in and
+    pass it with --wheel."
+    WHEEL="$(newest_wheel "$REPO/dist" || true)"
+    [ -n "$WHEEL" ] || die "pip reported success but no wheel appeared in $REPO/dist."
+fi
+ok "$(basename "$WHEEL")"
+
+# --- 3. the virtual environment -------------------------------------------
+step "Preparing the virtual environment"
+mkdir -p "$(dirname "$VENV_DIR")"
+VENV_PY="$VENV_DIR/bin/python"
+if [ -x "$VENV_PY" ] && "$VENV_PY" -c "" 2>/dev/null; then
+    ok "reusing $VENV_DIR"
+else
+    [ -e "$VENV_DIR" ] && { warn "existing $VENV_DIR is not usable, rebuilding it"; rm -rf "$VENV_DIR"; }
+    # Both streams are discarded, not just stderr: when ensurepip is missing,
+    # venv prints its advice on STDOUT, which leaks into a successful install
+    # and reads like a failure. macOS bundles ensurepip, so unlike on Debian the
+    # fallback below is for unusual Pythons rather than the common case.
+    if "$PY" -m venv "$VENV_DIR" >/dev/null 2>&1; then
+        ok "created $VENV_DIR"
+    elif rm -rf "$VENV_DIR" && "$PY" -m venv --without-pip "$VENV_DIR" >/dev/null 2>&1; then
+        # --without-pip needs no ensurepip, and the outer pip can still populate
+        # the venv from the outside (see below).
+        ok "created $VENV_DIR (it has no pip of its own; using $PY's pip)"
+    else
+        rm -rf "$VENV_DIR"
+        die "could not create a virtual environment, even without pip.
+
+    A Homebrew Python always ships a working venv:
+
+        brew install python@3.12
+
+    Then re-run this script."
+    fi
+fi
+
+step "Installing the wheel into it"
+# The venv's own pip when it has one, otherwise the outer pip aimed at the venv,
+# which is what makes a --without-pip venv usable. `--python` must come before
+# the subcommand, and needs pip 22.3 or newer.
+if "$VENV_PY" -m pip --version >/dev/null 2>&1; then
+    PIP=("$VENV_PY" -m pip install)
+else
+    PIP=("$PY" -m pip --python "$VENV_PY" install)
+fi
+# --no-index: never reach for the network. Safe because lmi declares no
+# dependencies, which tests/test_packaging.py exists to keep true.
+# --force-reinstall: the version does not change on every source change, and
+# without it pip treats reinstalling 0.1.0 over 0.1.0 as nothing to do - so an
+# upgrade would silently keep the old code.
+"${PIP[@]}" --quiet --no-index --force-reinstall "$WHEEL" || die \
+    "pip failed to install $WHEEL"
+[ -x "$VENV_DIR/bin/lmi" ] || die \
+    "pip reported success but $VENV_DIR/bin/lmi is missing.
+    That means the wheel has no console script - check [project.scripts]."
+ok "installed"
+
+# --- 4. onto the PATH ------------------------------------------------------
+step "Linking it onto your PATH"
+mkdir -p "$LINK_DIR"
+if { [ -e "$TARGET" ] || [ -L "$TARGET" ]; } && ! ours "$TARGET"; then
+    die "$TARGET already exists and was not installed by this script.
+    Move it aside and re-run, or choose another directory with --link-dir."
+fi
+ln -sfn "$VENV_DIR/bin/lmi" "$TARGET"
+ok "linked $TARGET -> $VENV_DIR/bin/lmi"
+
+# --- 5. verify -------------------------------------------------------------
 step "Verifying"
 VERSION="$("$TARGET" --version 2>&1)" || die "$TARGET did not run: $VERSION"
 ok "$VERSION"
@@ -236,13 +259,9 @@ ok "$VERSION"
 ON_PATH=0
 case ":${PATH}:" in *":$LINK_DIR:"*) ON_PATH=1 ;; esac
 
-# zsh has been the macOS default since Catalina; bash is still there for
-# anyone who switched back.
-case "${SHELL##*/}" in
-    zsh)  PROFILE="~/.zshrc" ;;
-    bash) PROFILE="~/.bash_profile" ;;
-    *)    PROFILE="your shell's startup file" ;;
-esac
+# zsh has been the macOS default shell since Catalina.
+RC="$HOME/.zshrc"
+case "${SHELL:-}" in */bash) RC="$HOME/.bash_profile" ;; esac
 
 printf '\n%sInstalled.%s\n' "$B" "$Z"
 if [ "$ON_PATH" -eq 1 ]; then
@@ -258,12 +277,12 @@ if [ "$ON_PATH" -eq 1 ]; then
 else
     warn "$LINK_DIR is not on your PATH, so the bare \`lmi\` will not resolve yet."
     printf '    Add it, then open a new Terminal tab:\n\n'
-    printf '        echo '\''export PATH="%s:$PATH"'\'' >> %s\n' "$LINK_DIR" "$PROFILE"
-    printf '        source %s\n\n' "$PROFILE"
+    printf '        echo '\''export PATH="%s:$PATH"'\'' >> %s\n' "$LINK_DIR" "$RC"
+    printf '        source %s\n\n' "$RC"
+    printf '    That is the zsh file, the macOS default since Catalina; run\n'
+    printf '    echo $SHELL if you are not sure which shell you have.\n'
 fi
 printf '\n  lmi needs the Claude Code CLI on PATH: %sclaude --version%s\n' "$B" "$Z"
 printf '  If it is missing, install it and run %sclaude auth login%s once -\n' "$B" "$Z"
 printf '  the sign-in is interactive and lmi cannot do it for you.\n'
 printf '\n  Re-run this script to upgrade. Uninstall with %s--uninstall%s.\n' "$B" "$Z"
-printf '\n  %sThis script has not been run on a Mac.%s If something here is wrong,\n' "$Y" "$Z"
-printf '  the manual steps in docs/install/macos.md are the fallback.\n'

@@ -1,31 +1,30 @@
 #!/usr/bin/env bash
 # Install the `lmi` CLI on Linux (including WSL) so that typing `lmi` works.
 #
-# Run it from inside a clone of this repository:
+#     ./scripts/install-linux.sh                 # from a clone
+#     ./install-linux.sh --wheel lmi-0.1.0-py3-none-any.whl
 #
-#     ./scripts/install-linux.sh
+# It installs the wheel - one file, `lmi-<version>-py3-none-any.whl`, the same
+# file on every operating system - into a small virtual environment of its own,
+# then symlinks the `lmi` command pip generates onto your PATH.
 #
-# By default it builds a single self-contained executable with the standard
-# library's zipapp module and copies it onto your PATH. That needs **no pip, no
-# setuptools, no wheel, no virtual environment and no network**, which is why it
-# is the default: `pip install .` fetches setuptools>=61 for build isolation, so
-# it fails outright on an air-gapped machine, and `python3 -m venv` fails on
-# Debian and Ubuntu because they ship ensurepip separately.
+# Why a virtual environment rather than `pip install --user`: Debian, Ubuntu and
+# most current distributions mark the system Python "externally managed" (PEP
+# 668), so pip refuses to install into it and tells you to use a virtual
+# environment or pipx. Verified on Ubuntu 24.04. A venv of our own sidesteps that
+# without --break-system-packages, which is the flag whose whole purpose is to
+# risk your distribution's Python.
 #
-# The installed file is the whole program, about 43 KB. Once it is in place the
-# clone is disposable - unlike a virtual-environment install, whose launcher
-# points back at the clone forever.
+# The venv is at ~/.local/share/lmi/venv and holds nothing but lmi, so the clone
+# is disposable once this has run.
 #
-# Pass --venv if you want the traditional pip install instead; that is the right
-# choice when you intend to edit the source, since --editable needs it.
-#
-# `set -e` is right here, unlike in the runner itself: a half-finished install
-# is worse than a stopped one.
+# `set -e` is right here, unlike in the runner itself: a half-finished install is
+# worse than a stopped one.
 set -euo pipefail
 
+VENV_DIR="$HOME/.local/share/lmi/venv"
 LINK_DIR="$HOME/.local/bin"
-MODE="zipapp"
-EDITABLE=0
+WHEEL=""
 UNINSTALL=0
 MIN_PY="3.9"
 
@@ -47,67 +46,57 @@ Install the lmi CLI on Linux or WSL.
     ./scripts/install-linux.sh [options]
 
 Options:
-  --zipapp         build a single self-contained executable (default).
-                   Needs only the standard library - no pip, no network.
-  --venv           install into a virtual environment with pip instead.
-                   Needs pip, and network unless setuptools and wheel are
-                   already present locally.
-  --editable       install in editable mode so `lmi` tracks this checkout.
-                   Implies --venv.
+  --wheel PATH     the wheel to install. Default: the newest lmi-*.whl beside
+                   this script or in dist/, else built from the checkout.
   --link-dir DIR   where to put the `lmi` command (default: ~/.local/bin)
-  --uninstall      remove the installed command, and .venv if there is one
+  --venv-dir DIR   where to keep lmi's virtual environment
+                   (default: ~/.local/share/lmi/venv)
+  --uninstall      remove the command and the virtual environment
   -h, --help       show this help
 
-Run it from inside a clone of the repository. It needs no sudo.
+Needs no sudo. Re-run it to upgrade.
 EOF
 }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --zipapp) MODE="zipapp"; shift ;;
-        --venv) MODE="venv"; shift ;;
-        --editable) EDITABLE=1; MODE="venv"; shift ;;
-        --link-dir) [ $# -ge 2 ] || die "--link-dir needs a directory"
-                    LINK_DIR="$2"; shift 2 ;;
+        --wheel)     [ $# -ge 2 ] || die "--wheel needs a path"
+                     WHEEL="$2"; shift 2 ;;
+        --link-dir)  [ $# -ge 2 ] || die "--link-dir needs a directory"
+                     LINK_DIR="$2"; shift 2 ;;
+        --venv-dir)  [ $# -ge 2 ] || die "--venv-dir needs a directory"
+                     VENV_DIR="$2"; shift 2 ;;
         --uninstall) UNINSTALL=1; shift ;;
-        -h|--help) usage; exit 0 ;;
+        -h|--help)   usage; exit 0 ;;
         *) die "unknown option: $1 (try --help)" ;;
     esac
 done
 
-# --- locate the clone we live in -------------------------------------------
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd -- "$SCRIPT_DIR/.." && pwd)"
-VENV="$REPO/.venv"
 TARGET="$LINK_DIR/lmi"
 
-[ -f "$REPO/pyproject.toml" ] || die \
-    "$REPO does not look like the repository (no pyproject.toml).
-    Run this script from inside a clone, as ./scripts/install-linux.sh"
-[ -d "$REPO/lmi" ] || die "$REPO has no lmi/ package directory."
-
-# Is the thing at $TARGET something we installed? Only ever remove our own.
-# Either a symlink into this clone's venv, or a zipapp holding lmi/cli.py.
+# Is the thing at $TARGET ours? Only ever remove or replace our own. Anything
+# else is someone else's lmi and we refuse to touch it.
 ours() {
-    [ -e "$1" ] || return 1
+    # The current shape: a symlink into our venv.
     if [ -L "$1" ]; then
-        case "$(readlink -f "$1" 2>/dev/null || true)" in "$REPO"/*) return 0 ;; esac
+        case "$(readlink "$1")" in "$VENV_DIR"/*) return 0 ;; esac
         return 1
     fi
-    python3 - "$1" <<'EOF' 2>/dev/null
-import sys, zipfile
-try:
-    with zipfile.ZipFile(sys.argv[1]) as z:
-        sys.exit(0 if "lmi/cli.py" in z.namelist() else 1)
-except Exception:
-    sys.exit(1)
-EOF
+    [ -f "$1" ] || return 1
+    # Or the zipapp that the previous version of this installer left here, so
+    # that upgrading from it replaces the file rather than stopping with "not
+    # installed by this script". A zip stores its entry names uncompressed in
+    # the central directory, so grep finds them without needing Python - which
+    # matters because --uninstall must work even if Python has since gone.
+    LC_ALL=C grep -aq 'lmi/cli\.py' "$1"
 }
 
 # --- uninstall -------------------------------------------------------------
 if [ "$UNINSTALL" -eq 1 ]; then
     step "Removing the lmi command"
-    if [ ! -e "$TARGET" ]; then
+    if [ ! -e "$TARGET" ] && [ ! -L "$TARGET" ]; then
         ok "nothing at $TARGET"
     elif ours "$TARGET"; then
         rm -f "$TARGET"; ok "removed $TARGET"
@@ -115,10 +104,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
         die "$TARGET was not installed by this script - leaving it alone.
     Remove it yourself if you are sure, or use --link-dir."
     fi
-    step "Removing the virtual environment, if there is one"
-    if [ -d "$VENV" ]; then rm -rf "$VENV"; ok "removed $VENV"; else ok "none"; fi
-    printf '\n%sUninstalled.%s The clone itself is untouched; delete %s to remove it too.\n' \
-        "$B" "$Z" "$REPO"
+    step "Removing the virtual environment"
+    if [ -d "$VENV_DIR" ]; then rm -rf "$VENV_DIR"; ok "removed $VENV_DIR"; else ok "none"; fi
+    printf '\n%sUninstalled.%s\n' "$B" "$Z"
     exit 0
 fi
 
@@ -134,115 +122,116 @@ sys.exit(0 if sys.version_info[:2] >= need else 1)
 EOF
 ok "python3 is $PY_VER (need $MIN_PY or newer)"
 
-# --- 2. build or install ---------------------------------------------------
-if [ "$MODE" = "zipapp" ]; then
-    step "Building a self-contained executable"
-    WORK="$(mktemp -d)"
-    # shellcheck disable=SC2064
-    trap "rm -rf '$WORK'" EXIT
-    # The staged source and the built file must not share a directory: the
-    # package is itself named lmi/, so writing the output as $WORK/lmi would
-    # collide with the directory being packed.
-    STAGE="$WORK/stage"
-    BUILT="$WORK/lmi"
-    mkdir -p "$STAGE"
-    cp -r "$REPO/lmi" "$STAGE/"
-    find "$STAGE" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-    # Our own __main__.py, not zipapp's -m. The generated one calls main()
-    # and throws the result away, so the process always exited 0 and every
-    # exit code lmi defines was lost - fatal for an unattended tool.
-    cat > "$STAGE/__main__.py" <<'PYMAIN'
-# Entry point for the zipapp build.
-#
-# Hand-written rather than generated by `python -m zipapp -m lmi.cli:main`,
-# whose generated __main__.py is:
-#
-#     import lmi.cli
-#     lmi.cli.main()
-#
-# That discards the return value, so the process always exited 0 - every one of
-# lmi's exit codes (1 a failed claude call, 2 usage, 3 another run holds the
-# lock, 4 an internal crash) was silently lost. For a tool built to run
-# unattended that is the worst possible failure: a scheduled task would report
-# success forever.
-import sys
+# --- 2. the wheel ----------------------------------------------------------
+# Newest first by modification time. Version-sorting the names would need
+# either sort -V, which is not everywhere, or real parsing; mtime is enough
+# because the only way two wheels are here is that one was just built.
+newest_wheel() {
+    [ -d "$1" ] || return 1
+    ls -t "$1"/lmi-*.whl 2>/dev/null | head -1
+}
 
-from lmi.cli import main
-
-sys.exit(main())
-PYMAIN
-    # /usr/bin/env python3 rather than a fixed path, so the file keeps working
-    # if python3 moves. On Windows this line is ignored, which is why the
-    # Windows installers add a .cmd shim instead.
-    python3 -m zipapp "$STAGE" -p "/usr/bin/env python3" \
-        -o "$BUILT" || die "zipapp failed to build the executable."
-    chmod +x "$BUILT"
-    BUILT_VER="$("$BUILT" --version 2>&1)" \
-        || die "the built executable does not run: $BUILT_VER"
-    ok "built $(du -h "$BUILT" | cut -f1) - $BUILT_VER"
-
-    step "Installing it onto your PATH"
-    mkdir -p "$LINK_DIR"
-    if [ -e "$TARGET" ] && ! ours "$TARGET"; then
-        die "$TARGET already exists and was not installed by this script.
-    Move it aside and re-run, or choose another directory with --link-dir."
-    fi
-    # Write beside the target then move, so an interrupted copy cannot leave a
-    # half-written executable in place of a working one.
-    cp "$BUILT" "$TARGET.new" && chmod +x "$TARGET.new" && mv -f "$TARGET.new" "$TARGET"
-    ok "installed $TARGET"
-    ok "the clone is no longer needed - this file is the whole program"
+step "Finding the wheel"
+if [ -n "$WHEEL" ]; then
+    [ -f "$WHEEL" ] || die "no such wheel: $WHEEL"
 else
-    step "Preparing the virtual environment"
-    if [ -x "$VENV/bin/python" ] && "$VENV/bin/python" -c "" 2>/dev/null; then
-        ok "reusing $VENV"
-    else
-        [ -e "$VENV" ] && { warn "existing $VENV is not usable, rebuilding it"; rm -rf "$VENV"; }
-        if python3 -m venv "$VENV" >/dev/null 2>&1; then
-            ok "created $VENV with python3 -m venv"
-        elif command -v virtualenv >/dev/null 2>&1 && virtualenv -q "$VENV" >/dev/null 2>&1; then
-            ok "created $VENV with virtualenv"
-        else
-            rm -rf "$VENV"
-            die "could not create a virtual environment.
+    # Beside the script first: that is the shape of a machine with no git,
+    # where the script and the wheel were downloaded into the same folder.
+    WHEEL="$(newest_wheel "$SCRIPT_DIR" || true)"
+    [ -n "$WHEEL" ] || WHEEL="$(newest_wheel "$REPO/dist" || true)"
+fi
 
-    Debian and Ubuntu ship the venv module's bootstrap separately. Install it:
+if [ -z "$WHEEL" ]; then
+    [ -f "$REPO/pyproject.toml" ] || die \
+        "no wheel found, and no checkout to build one from.
+
+    Either download lmi-<version>-py3-none-any.whl next to this script, or
+    pass it explicitly:
+
+        ./install-linux.sh --wheel /path/to/lmi-0.1.0-py3-none-any.whl"
+    step "Building the wheel from $REPO"
+    # Needs setuptools, which pip fetches unless it is already local - so this
+    # is the one step that wants a network. An air-gapped machine should carry
+    # the built wheel in instead; installing it needs nothing.
+    python3 -m pip wheel --no-deps --quiet --wheel-dir "$REPO/dist" "$REPO" || die \
+        "could not build the wheel. On a machine with no network that is
+    expected: pip fetches setuptools to build. Carry the built wheel in and
+    pass it with --wheel."
+    WHEEL="$(newest_wheel "$REPO/dist" || true)"
+    [ -n "$WHEEL" ] || die "pip reported success but no wheel appeared in $REPO/dist."
+fi
+ok "$(basename "$WHEEL")"
+
+# --- 3. the virtual environment -------------------------------------------
+step "Preparing the virtual environment"
+mkdir -p "$(dirname "$VENV_DIR")"
+VENV_PY="$VENV_DIR/bin/python"
+if [ -x "$VENV_PY" ] && "$VENV_PY" -c "" 2>/dev/null; then
+    ok "reusing $VENV_DIR"
+else
+    [ -e "$VENV_DIR" ] && { warn "existing $VENV_DIR is not usable, rebuilding it"; rm -rf "$VENV_DIR"; }
+    # Both streams are discarded, not just stderr: when ensurepip is missing,
+    # venv prints its "install python3-venv" advice on STDOUT, which leaked
+    # into a successful install and read like a failure.
+    if python3 -m venv "$VENV_DIR" >/dev/null 2>&1; then
+        ok "created $VENV_DIR"
+    elif rm -rf "$VENV_DIR" && python3 -m venv --without-pip "$VENV_DIR" >/dev/null 2>&1; then
+        # Debian and Ubuntu ship the venv module's bootstrap separately, so
+        # plain `venv` fails there with "ensurepip is not available" - on a
+        # machine that is otherwise perfectly able to install this wheel.
+        # --without-pip needs no ensurepip, and the system pip can still
+        # populate the venv from outside (see below). Verified on Ubuntu 24.04
+        # with python3-venv absent.
+        ok "created $VENV_DIR (it has no pip of its own; using the system pip)"
+    else
+        rm -rf "$VENV_DIR"
+        die "could not create a virtual environment, even without pip.
+
+    On Debian and Ubuntu this is one missing package:
 
         sudo apt install python3-venv        # or python${PY_VER}-venv
 
-    or install virtualenv, which needs no root:
-
-        python3 -m pip install --user virtualenv
-
-    Or drop --venv and use the default zipapp mode, which needs none of this."
-        fi
+    Then re-run this script."
     fi
-
-    step "Installing lmi into it"
-    PIP_ARGS=(install --quiet --upgrade)
-    [ "$EDITABLE" -eq 1 ] && PIP_ARGS+=(--editable)
-    "$VENV/bin/python" -m pip "${PIP_ARGS[@]}" "$REPO" || die \
-        "pip failed. If this machine has no network, that is expected: pip
-    fetches setuptools to build the package. Use the default zipapp mode
-    instead, which needs nothing:
-
-        ./scripts/install-linux.sh"
-    [ -x "$VENV/bin/lmi" ] || die \
-        "pip reported success but $VENV/bin/lmi is missing."
-    ok "installed$([ "$EDITABLE" -eq 1 ] && printf ' (editable)')"
-
-    step "Linking it onto your PATH"
-    mkdir -p "$LINK_DIR"
-    if [ -e "$TARGET" ] && ! ours "$TARGET"; then
-        die "$TARGET already exists and was not installed by this script.
-    Move it aside and re-run, or choose another directory with --link-dir."
-    fi
-    ln -sfn "$VENV/bin/lmi" "$TARGET"
-    ok "linked $TARGET -> $VENV/bin/lmi"
-    warn "this mode needs the clone to stay where it is"
 fi
 
-# --- 3. verify -------------------------------------------------------------
+step "Installing the wheel into it"
+# The venv's own pip when it has one, otherwise the system pip aimed at the
+# venv - which is what makes a --without-pip venv usable. `--python` must come
+# before the subcommand, and needs pip 22.3 or newer.
+if "$VENV_PY" -m pip --version >/dev/null 2>&1; then
+    PIP=("$VENV_PY" -m pip install)
+else
+    PIP=(python3 -m pip --python "$VENV_PY" install)
+fi
+# --no-index: never reach for the network. Safe because lmi declares no
+# dependencies, which tests/test_packaging.py exists to keep true.
+# --force-reinstall: the version does not change on every source change, and
+# without it pip treats reinstalling 0.1.0 over 0.1.0 as nothing to do - so an
+# upgrade would silently keep the old code.
+"${PIP[@]}" --quiet --no-index --force-reinstall "$WHEEL" || die \
+    "pip failed to install $WHEEL
+
+    If it reported an unknown option --python, the system pip is older than
+    22.3. Install the venv package so the virtual environment gets its own pip:
+
+        sudo apt install python3-venv        # or python${PY_VER}-venv"
+[ -x "$VENV_DIR/bin/lmi" ] || die \
+    "pip reported success but $VENV_DIR/bin/lmi is missing.
+    That means the wheel has no console script - check [project.scripts]."
+ok "installed"
+
+# --- 4. onto the PATH ------------------------------------------------------
+step "Linking it onto your PATH"
+mkdir -p "$LINK_DIR"
+if { [ -e "$TARGET" ] || [ -L "$TARGET" ]; } && ! ours "$TARGET"; then
+    die "$TARGET already exists and was not installed by this script.
+    Move it aside and re-run, or choose another directory with --link-dir."
+fi
+ln -sfn "$VENV_DIR/bin/lmi" "$TARGET"
+ok "linked $TARGET -> $VENV_DIR/bin/lmi"
+
+# --- 5. verify -------------------------------------------------------------
 step "Verifying"
 VERSION="$("$TARGET" --version 2>&1)" || die "$TARGET did not run: $VERSION"
 ok "$VERSION"
