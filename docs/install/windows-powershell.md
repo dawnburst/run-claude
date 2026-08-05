@@ -1,54 +1,77 @@
 # Installing `lmi` on Windows (PowerShell)
 
-Goal: type `lmi` in a PowerShell prompt and have it run. No `python -m`, no
+Goal: type `lmi` at a PowerShell prompt and have it run. No `python -m`, no
 activating anything.
 
-Verified on Windows with Python 3.13.14 (Microsoft Store install): a full
-`lmi schedule` run completed, wrote its log and state file, and the
-single-instance lock correctly refused a second concurrent run.
+Verified on Windows with Python 3.13 (Microsoft Store install): install,
+uninstall, re-install, cleanup of the previous installer's files, exit codes
+coming back correctly through the `.exe`, a full `lmi schedule` run, and a bare
+`lmi` resolving in a new window.
 
-For `cmd.exe` instead, see [windows-cmd.md](windows-cmd.md).
+> Using `cmd.exe` instead? See [windows-cmd.md](windows-cmd.md). The installer is
+> the same file; only how you launch it differs.
 
 ---
+
+## What you install
+
+**One file: `lmi-0.1.0-py3-none-any.whl`**, about 22 KB. The `py3-none-any` in
+that name means any Python 3, no compiled ABI, **any operating system** — `lmi`
+is pure Python with no third-party dependencies, so the same wheel installs on
+Windows, Linux and macOS.
+
+`pip` turns it into a **real `lmi.exe`**. That executable is the point:
+
+- It is a genuine PE binary with the interpreter path built in, so nothing has to
+  find `python` on PATH at run time — which is what makes a Scheduled Task
+  resolve `lmi` at all.
+- There is no `cmd.exe` in the chain. The previous installer shipped a two-line
+  `lmi.cmd` shim, and cmd.exe cannot hold a UNC working directory: launched from
+  `\\wsl.localhost\...` it silently substitutes `C:\Windows`, so `lmi` aimed its
+  state file, log and lock at `C:\Windows` and failed with Permission denied.
+  Measured from the same UNC path:
+
+  ```
+  direct .exe  ->  \\wsl.localhost\Ubuntu-24.04\home\...     (correct)
+  via cmd      ->  C:\Windows                                (the old bug)
+  ```
 
 ## Before you start
 
-Open **PowerShell** and check:
-
 ```powershell
 python --version
-git --version
 ```
 
-You need **Python 3.9 or newer**.
+You need **Python 3.9 or newer**. Install it from
+[python.org](https://www.python.org/downloads/windows/) and tick **"Add python.exe
+to PATH"**.
 
-**If `python` opens the Microsoft Store**, you have the App Execution Alias stub
-and no real Python. Install it from the Store, or from
-[python.org](https://www.python.org/downloads/windows/) — ticking
-**"Add python.exe to PATH"** if you use the installer.
+If typing `python` opens the Microsoft Store, what you have is the App Execution
+Alias — a 0-byte placeholder, not an interpreter. Install Python properly. (A real
+Store install works fine; that is what this was verified against.)
 
----
+No administrator rights are needed, and the install itself needs no network.
 
-## The one thing that trips people up
+## Getting the files
 
-`pip install --user .` will appear to succeed and then `lmi` will still be
-unrecognised, because a Store Python puts its scripts somewhere that is *not*
-on your PATH:
+You need the wheel and the installer. **git is not installed on a stock Windows**,
+so the likely route is a download: put `lmi-0.1.0-py3-none-any.whl` and
+`install-windows.ps1` in the same folder. The installer looks for the wheel beside
+itself first, precisely so that this works.
 
+With git available:
+
+```powershell
+git clone -b lmi-schedule https://github.com/dawnburst/run-claude.git C:\lmi
+Set-Location C:\lmi
 ```
-$env:LOCALAPPDATA\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\Scripts
-```
-
-Every route below avoids it. Don't use `pip install --user` for this.
 
 ---
 
 ## Route A — the install script (recommended)
 
 ```powershell
-git clone https://github.com/dawnburst/run-claude.git C:\lmi
-Set-Location C:\lmi
-.\scripts\install-windows.cmd
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
 ```
 
 Then open a **new** PowerShell window:
@@ -57,433 +80,217 @@ Then open a **new** PowerShell window:
 lmi --version
 ```
 
-That is the whole installation.
+That is the whole installation. No administrator rights, and re-running it is how
+you upgrade.
 
-### Run the .cmd, not the .ps1 — and why
+### Why not just `.\scripts\install-windows.ps1`
 
-`install-windows.ps1` is the real installer, but calling it directly fails on a
-default Windows:
+You can, if your execution policy allows it. On a default Windows it does not, and
+you get:
 
 ```
-install-windows.ps1 cannot be loaded because running scripts is disabled
-on this system.
+.\install-windows.ps1 cannot be loaded because running scripts is disabled on
+this system.
 ```
 
-That is the execution policy, and it is the out-of-the-box state — I hit it
-here. `install-windows.cmd` is a four-line wrapper that invokes the `.ps1` with
-`-ExecutionPolicy Bypass` for that **single invocation**, changing no machine
-setting. So run the `.cmd` even from PowerShell.
+The command above is the fix, and it is the *right* fix: `-ExecutionPolicy Bypass`
+applies to that one invocation only. It changes no machine setting and needs no
+administrator rights, unlike `Set-ExecutionPolicy RemoteSigned`, which changes
+the policy for everything you ever run.
 
-If you would rather not, either of these works instead:
+If the file came from a browser, Windows may also have marked it blocked. Clear
+that with:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-windows.ps1
+Unblock-File .\scripts\install-windows.ps1
 ```
-
-or relax the policy for your account once, which is a real machine change and
-your call:
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-.\scripts\install-windows.ps1
-```
-
-### What it installs
-
-By default it builds a **single self-contained executable** with the standard
-library's `zipapp` module and installs two small files into
-`$env:USERPROFILE\.local\bin`:
-
-| File | Why |
-|---|---|
-| `lmi.pyz` | The whole program, about 44 KB. |
-| `lmi.cmd` | A two-line shim. **This is what makes the bare `lmi` work.** |
-
-The shim is not optional. Windows has no association for `.pyz` and does not
-list `.PYZ` in `PATHEXT`, so a bare `.\lmi.pyz` does nothing — verified on a
-stock install. A `.cmd` is used rather than a `.ps1` shim precisely so that
-PowerShell runs it with no execution-policy prompt, and so the same file works
-from `cmd` too.
-
-Three consequences:
-
-- **No pip, no setuptools, no wheel, no virtual environment, no network.** It
-  works air-gapped, and sidesteps the Store-Python PATH trap entirely.
-- **The clone is disposable afterwards** — those two files are the whole program.
-- Re-running upgrades; `-Uninstall` reverses it.
 
 ### Options
 
 | Option | Meaning |
 |---|---|
-| `-LinkDir DIR` | Where to put the two files. Default `$env:USERPROFILE\.local\bin`. |
-| `-Venv` | Traditional pip install into `.venv` instead. Needs pip, and network unless `setuptools` and `wheel` are already local. Keeps the clone load-bearing. |
-| `-Editable` | `pip -e`, so `lmi` tracks your checkout. Implies `-Venv`. |
-| `-Uninstall` | Remove both files, and `.venv` if there is one. Leaves the clone. |
-| `-Help` | Show usage. |
+| `-Wheel PATH` | the wheel to install. Default: the newest `lmi-*.whl` beside the script or in `dist\`, else built from the checkout. |
+| `-Uninstall` | remove `lmi` with pip. |
+| `-Help` | show usage. |
 
 ```powershell
-.\scripts\install-windows.cmd -Uninstall
-.\scripts\install-windows.cmd -Venv -Editable
-.\scripts\install-windows.cmd -LinkDir C:\tools\bin
+.\scripts\install-windows.ps1 -Wheel C:\downloads\lmi-0.1.0-py3-none-any.whl
+.\scripts\install-windows.ps1 -Uninstall
 ```
 
-### How it edits PATH, and why not setx
+### What it does
 
-It adds the link directory to your **user** PATH with
-`[Environment]::SetEnvironmentVariable(..., 'User')`, and skips the edit if the
-entry is already there.
+1. Finds a Python 3.9+ — trying `python`, then `python3`, then the `py` launcher,
+   and skipping any that fails to report a version (which is how a Store alias
+   stub is stepped over rather than tripped on).
+2. Refuses to continue inside an active virtual environment, where a `--user`
+   install is not allowed, instead of letting pip produce a traceback.
+3. Installs the wheel with `pip install --user`.
+4. Asks that same Python where its user Scripts directory is, and checks
+   `lmi.exe` really arrived there.
+5. Deletes `lmi.pyz` and `lmi.cmd` from `$env:USERPROFILE\.local\bin` if the
+   previous installer left them — otherwise the old shim could shadow the new
+   `.exe` and an upgrade would appear to do nothing.
+6. Adds that Scripts directory to your **user** PATH if it is missing, with
+   `[Environment]::SetEnvironmentVariable`. Deliberately not `setx`, which folds
+   the whole system PATH into your user variable and truncates it at 1024
+   characters.
+7. Runs the installed `lmi.exe` to prove it works.
 
-It deliberately does not use `setx`. `setx PATH` expands the *whole* current
-PATH — system entries included — into the **user** variable and truncates at
-1024 characters, which can quietly corrupt a working PATH.
+### Why `--user`
 
-The change does not affect the window you ran it in. Open a new one.
+It needs no administrator rights and puts the command in a directory the script
+can compute exactly, rather than depending on whether Python was installed for one
+user or for all of them. The trade-off is that the user Scripts directory is not
+on PATH by default — the trap where `pip install --user` appears to succeed and
+`lmi` is still unrecognised — so the script adds it.
 
-### If it stops
+### Air-gapped machines
 
-It fails loudly rather than half-installing. It handles explicitly:
-
-- **`python` opens the Microsoft Store** — the App Execution Alias stub, not
-  Python. It says so.
-- **Python older than 3.9** — names the requirement and stops.
-- **`-Venv` with no network** — says that is expected and points at the default.
-- **Something already at the target path it did not install** — refuses to touch
-  it. It only removes a `.pyz` that really contains `lmi/cli.py`, or a shim that
-  mentions `lmi.pyz`.
-- **Run from outside a clone** — says so instead of leaving debris.
-
-To uninstall:
-
-```powershell
-Set-Location C:\lmi
-.\scripts\install-windows.cmd -Uninstall
-```
+Carry in the wheel. Installing it needs no network: the install command passes
+`--no-index`, and a wheel needs no build backend. You also need an
+already-authenticated Claude Code CLI — `claude auth login` is browser-based and
+cannot be automated.
 
 ---
 
-## Manual installation
-
-Route B is what the script does, step by step — use it if the script stopped, if
-you want to see each command, or if you would rather not run a script.
-
----
-
-### Route B — a self-contained executable by hand
-
-Four steps, no pip and no network.
-
-#### 1. Get the source onto the machine
+## Route B — by hand
 
 ```powershell
-git clone https://github.com/dawnburst/run-claude.git C:\lmi
-Set-Location C:\lmi
+python -m pip install --user .\lmi-0.1.0-py3-none-any.whl
+$scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts','nt_user'))"
+$scripts
 ```
 
-Air-gapped: copy the repository across instead. Nothing is fetched from here on.
-
-#### 2. Stage just the package
-
-`zipapp` packs a whole directory, so stage the `lmi` package alone — otherwise
-the archive also carries the tests, the docs and any `.venv`.
+`$scripts` now holds the folder containing your new `lmi.exe`. Add it to your user
+PATH and open a new window:
 
 ```powershell
-New-Item -ItemType Directory -Force -Path build\stage | Out-Null
-Copy-Item -Recurse -Force lmi build\stage\lmi
-Get-ChildItem -Recurse -Force -Directory build\stage |
-    Where-Object Name -eq '__pycache__' | Remove-Item -Recurse -Force
+$user = [Environment]::GetEnvironmentVariable('Path','User')
+[Environment]::SetEnvironmentVariable('Path', "$scripts;$user", 'User')
 ```
 
-#### 3. Build the executable
+Use `sysconfig`, not `$env:APPDATA\Python\PythonXX\Scripts` — the answer differs
+between installs. A Microsoft Store Python puts it under
+`$env:LOCALAPPDATA\Packages\PythonSoftwareFoundation...\LocalCache\local-packages\Python313\Scripts`.
+
+Verify in a new window:
 
 ```powershell
-python -m zipapp build\stage -m "lmi.cli:main" -p "/usr/bin/env python3" -o build\lmi.pyz
-python build\lmi.pyz --version
-```
-
-`-m` names the entry point, the same `lmi.cli:main` that `pyproject.toml`
-declares. `-p` writes a shebang Windows ignores — include it anyway and the same
-file also runs directly on Linux and macOS.
-
-**The output must not go inside `build\stage`.** The package being packed is
-itself called `lmi`, so writing the archive there collides with it and `zipapp`
-fails.
-
-#### 4. Install both files and put them on PATH
-
-```powershell
-$bin = "$env:USERPROFILE\.local\bin"
-New-Item -ItemType Directory -Force -Path $bin | Out-Null
-Copy-Item -Force build\lmi.pyz "$bin\lmi.pyz"
-
-# ASCII with CRLF: cmd.exe is the interpreter and a BOM would be echoed.
-[System.IO.File]::WriteAllText("$bin\lmi.cmd",
-    "@echo off`r`npython `"%~dp0lmi.pyz`" %*`r`n",
-    [System.Text.Encoding]::ASCII)
-
-$p = [Environment]::GetEnvironmentVariable('Path','User')
-if ($p -notlike "*$bin*") {
-    [Environment]::SetEnvironmentVariable('Path', "$bin;$p", 'User')
-}
-```
-
-Then open a **new** PowerShell window:
-
-```powershell
-Get-Command lmi | Select-Object -ExpandProperty Source
+(Get-Command lmi).Source
 lmi --version
 ```
 
-To upgrade, repeat steps 2 to 4 after a `git pull`. To uninstall, delete
-`lmi.pyz` and `lmi.cmd` from that directory.
-
 ---
 
-### Route C — a virtual environment by hand
+## Route C — pipx
 
-#### 1. Clone the repository
-
-```powershell
-git clone https://github.com/dawnburst/run-claude.git C:\lmi
-Set-Location C:\lmi
-```
-
-Pick a **permanent** location — the launcher points back at this path.
-
-### 2. Create a virtual environment
+If you already have pipx:
 
 ```powershell
-python -m venv .venv
+pipx install .\lmi-0.1.0-py3-none-any.whl
 ```
 
-### 3. Install `lmi` into it
-
-```powershell
-.\.venv\Scripts\python -m pip install .
-```
-
-Use `pip install -e .` if you want the command to track your checkout.
-
-### 4. Confirm it works by full path
-
-```powershell
-.\.venv\Scripts\lmi --version
-```
-
-Expect `lmi 0.1.0`. If this fails, stop here — the remaining steps only make
-this same launcher reachable by name.
-
-### 5. Add a shim directory to your PATH
-
-Create a directory for your own commands, add it to your user PATH, and drop a
-one-line shim in it:
-
-```powershell
-$bin = "$env:USERPROFILE\.local\bin"
-New-Item -ItemType Directory -Force -Path $bin | Out-Null
-
-$user = [Environment]::GetEnvironmentVariable('Path', 'User')
-if ($user -notlike "*$bin*") {
-    [Environment]::SetEnvironmentVariable('Path', "$bin;$user", 'User')
-}
-
-Set-Content -Path "$bin\lmi.cmd" -Encoding ASCII -Value @(
-    '@echo off',
-    '"C:\lmi\.venv\Scripts\lmi.exe" %*'
-)
-```
-
-A `.cmd` shim is used rather than a PowerShell script because PowerShell will
-run it without any execution-policy prompt, and it works in `cmd` too.
-
-`SetEnvironmentVariable` writes the change permanently but **does not affect the
-session you typed it in**.
-
-### 6. Open a NEW PowerShell window and verify
-
-```powershell
-Get-Command lmi | Select-Object -ExpandProperty Source
-lmi --version
-lmi schedule --help
-```
-
-A new window is required for the PATH change to take effect.
+Same result; one more tool to install first, which is why it is not the default.
 
 ---
-
-### Route D — pipx
-
-```powershell
-python -m pip install --user pipx
-python -m pipx ensurepath
-```
-
-**Close this window and open a new one**, then:
-
-```powershell
-pipx install C:\lmi
-lmi --version
-```
-
-Or straight from GitHub without cloning:
-
-```powershell
-pipx install "git+https://github.com/dawnburst/run-claude.git"
-```
-
----
-
----
-
-## Do not run from a `\\wsl.localhost\...` path
-
-If your files live in WSL, it is natural to `cd` to them in Windows and run
-`lmi` there. **That does not work**, and the reason is not obvious.
-
-`lmi.cmd` goes through `cmd.exe`, and **cmd.exe cannot hold a UNC working
-directory**. It says so and silently substitutes `C:\Windows`:
-
-```
-'\\wsl.localhost\Ubuntu-24.04\home\you\project'
-CMD.EXE was started with the above path as the current directory.
-UNC paths are not supported.  Defaulting to Windows directory.
-```
-
-Measured: launched through the shim from a UNC directory, Python sees
-`C:\Windows` as its working directory. `lmi` then aims its state file, log and
-lock at `C:\Windows` and is refused:
-
-```
-[ERROR] cannot write to the working directory C:\Windows (Permission denied).
-    That is where the state file would go. Pass -d with a directory you can
-    write to, for example: lmi schedule "..." -d C:\work
-```
-
-`lmi` detects this and stops with that one message rather than failing three
-times over. Two ways forward:
-
-- **Pass `-d` with a real drive path**, which is where `claude` will then run:
-
-  ```bat
-  lmi schedule "your prompt" -d C:\work
-  ```
-
-- **Better, if the files are in WSL: run `lmi` inside WSL.** That is where those
-  files live, there is no UNC problem at all, and see
-  [linux.md](linux.md) for the install.
-
-The same applies to any mapped network path. A local drive letter is always
-safe.
 
 ## First run
 
 ```powershell
-New-Item -ItemType Directory -Force -Path C:\work | Out-Null
+New-Item -ItemType Directory -Force C:\work | Out-Null
 Set-Location C:\work
 lmi schedule "Create a file named hello.txt containing the single word OK"
-"exit=$LASTEXITCODE"
+$LASTEXITCODE
 ```
 
-Expect `exit=0`, a `hello.txt`, a `run-claude-<timestamp>.log`, and a
-`run-claude-state.md` that Claude has actually rewritten. A `run-claude.lock`
-sits alongside; that is normal and may persist between runs.
+Expect `0`, a `hello.txt`, a `run-claude-<timestamp>.log`, and a
+`run-claude-state.md` that Claude has actually rewritten. A `run-claude.lock` sits
+alongside them; that is normal.
 
-`lmi` needs the Claude Code CLI on your PATH — check `claude --version`. If it
-is missing, install it and run `claude auth login` once; `lmi` cannot do the
-interactive sign-in, and WSL credentials do not carry over to a Windows install.
+`lmi` needs the Claude Code CLI on your PATH — check `claude --version`. If it is
+missing, install it and run `claude auth login` once in a Windows window. WSL
+credentials do not carry over to a Windows install.
 
-### PowerShell quoting
-
-PowerShell parses your line before `lmi` sees it, so quote anything with spaces,
-and quote `-t` as a single value:
-
-```powershell
-lmi schedule "my prompt" -t "2026-08-05 22:00" -i 30 -c 5
-```
-
-If a prompt itself contains double quotes, put it in a file and pass the path —
-that is the supported route on every platform:
-
-```powershell
-lmi schedule C:\work\task.md -i 30 -c 5
-```
-
-Use a **single-quoted** PowerShell string when your prompt contains `$`, so
-PowerShell does not expand it as a variable:
-
-```powershell
-lmi schedule 'explain what $PATH does'
-```
+**Run from a local drive.** See the UNC note under Troubleshooting.
 
 ---
 
-## Scheduled (unattended) runs — read this first
+## Scheduled (unattended) runs
 
-Running `lmi` from **Task Scheduler** is **not yet verified**. A Store-installed
-Python is reached through a per-user App Execution Alias, and whether that
-resolves under "Run whether user is logged on or not" is untested.
+Point Task Scheduler at the full path of the `.exe`, which the installer printed:
 
-If you need scheduled runs today, either point the task at the **full launcher
-path** (`C:\lmi\.venv\Scripts\lmi.exe`), which skips PATH resolution entirely,
-or use `run-claude.bat` from this repository, which needs only `cmd` and
-PowerShell and has no Python dependency.
+```
+C:\Users\<you>\AppData\Roaming\Python\Python313\Scripts\lmi.exe
+```
+
+The `.exe` carries its interpreter path internally, so it does not depend on PATH
+being set up inside the task's environment — the main reason this install route
+was chosen. Set "Start in" to your working directory.
+
+Credentials are per-user: the task must run as the user who did
+`claude auth login`.
+
+> Not yet verified. A Scheduled Task run has not been tested end to end. The
+> `.exe` removes two of the three things that could go wrong (no `python` lookup,
+> no `cmd.exe`), but that is reasoning, not a measurement.
 
 ---
 
 ## Updating
 
 ```powershell
-Set-Location C:\lmi
-git pull
-.\scripts\install-windows.cmd
+.\scripts\install-windows.ps1
 ```
 
-Re-running rebuilds the executable and replaces the installed one.
-
-By hand: repeat Route B steps 2 to 4; or for Route C,
-`.\.venv\Scripts\python -m pip install .`; or `pipx upgrade lmi` for Route D.
+Re-running is the upgrade. It uses `--force-reinstall` on purpose: the version
+number does not change on every source change, and without it pip treats
+reinstalling 0.1.0 over 0.1.0 as nothing to do, so an "upgrade" would silently
+keep the old code.
 
 ---
 
 ## Uninstalling
 
 ```powershell
-Set-Location C:\lmi
-.\scripts\install-windows.cmd -Uninstall
-Remove-Item -Recurse -Force C:\lmi
+.\scripts\install-windows.ps1 -Uninstall
 ```
 
-The script removes only what it recognises as its own — a `.pyz` containing
-`lmi/cli.py`, or a shim mentioning `lmi.pyz` — and refuses to touch anything
-else at that path.
+Or by hand: `python -m pip uninstall lmi`.
 
-By hand, delete `lmi.pyz` and `lmi.cmd` from `$env:USERPROFILE\.local\bin`.
-With pipx: `pipx uninstall lmi`. The PATH entry can stay harmlessly, or:
-
-```powershell
-$bin = "$env:USERPROFILE\.local\bin"
-$p = ([Environment]::GetEnvironmentVariable('Path','User') -split ';' |
-      Where-Object { $_ -and ($_.TrimEnd('\') -ine $bin.TrimEnd('\')) }) -join ';'
-[Environment]::SetEnvironmentVariable('Path', $p, 'User')
-```
+Your PATH is left alone on purpose — that Scripts directory is shared with every
+other tool you install with `pip --user`, so removing it could break them.
 
 ---
 
 ## Troubleshooting
 
-**`lmi : The term 'lmi' is not recognized`** — you are in the window where you
-edited PATH. Open a new one. If it persists, run
-`[Environment]::GetEnvironmentVariable('Path','User')` and confirm your shim
-directory is listed.
+**`The term 'lmi' is not recognized`** — open a **new** window. PATH changes do
+not reach windows that were already open. If a new window still fails:
 
-**`python` opens the Microsoft Store** — you have the alias stub, not Python.
+```powershell
+python -c "import sysconfig; print(sysconfig.get_path('scripts','nt_user'))"
+([Environment]::GetEnvironmentVariable('Path','User')) -split ';'
+```
 
-**`error: externally-managed-environment`** — you are installing outside the
-venv. Use `.\.venv\Scripts\python -m pip`.
+The first path should appear in the second list.
 
-**`... cannot be loaded because running scripts is disabled`** — the execution
-policy. Run `.\scripts\install-windows.cmd` rather than the `.ps1`; the wrapper
-passes `-ExecutionPolicy Bypass` for that one invocation. You never need to
-activate anything with this setup either.
+**`running scripts is disabled on this system`** — see "Why not just
+`.\scripts\install-windows.ps1`" above.
+
+**Exit 3, "another run is working on this state file", when nothing else is
+running** — you are running from a UNC path such as `\\wsl.localhost\...`.
+Windows byte-range locking is not supported on that filesystem: the lock call
+fails with `EINVAL`, and `lmi` currently reads any failure as contention. Run from
+a local drive (`C:\work`) instead. This is a known limitation, verified on a WSL
+9p share; it does not affect local NTFS.
+
+**`This environment is externally managed`** — you are pointing at a distribution
+Python, probably inside WSL rather than Windows. Use the WSL guide there
+([linux.md](linux.md)).
+
+**`ERROR: Can not perform a '--user' install`** — you are inside an activated
+virtual environment. Run `deactivate` first. The install script catches this and
+says so.
 
 **`claude is not on PATH`** — see "First run".

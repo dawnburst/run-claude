@@ -2,28 +2,53 @@
 
 Goal: type `lmi` and have it run. No `python -m`, no activating anything.
 
-Verified on Ubuntu 24.04 (including WSL2) with Python 3.13 and 3.9.23.
+Verified on Ubuntu 24.04 (including WSL2) with Python 3.12 and 3.9.23: install,
+re-install as an upgrade, upgrade from the previous zipapp install, uninstall,
+and a refusal to overwrite a foreign `lmi`.
 
 ---
 
+## What you install
+
+**One file: `lmi-0.1.0-py3-none-any.whl`**, about 22 KB. That name is the whole
+compatibility story:
+
+| Part | Means |
+|---|---|
+| `py3` | any Python 3 (the floor, 3.9, is enforced separately) |
+| `none` | no compiled ABI |
+| `any` | **any operating system** |
+
+`lmi` is pure Python with no third-party dependencies, so the same wheel installs
+on Linux, macOS and Windows. There is no per-platform artefact.
+
 ## Before you start
 
-You need **Python 3.9 or newer** and `git`:
-
 ```bash
-python3 --version
-git --version
+python3 --version        # need 3.9 or newer
 ```
 
-Anything from 3.9 up works. `lmi` has no third-party dependencies at runtime.
+Nothing else. In particular you do **not** need pip on the system Python, a
+network, or root.
+
+## Getting the files
+
+You need the wheel and the install script. Either:
+
+```bash
+git clone -b lmi-schedule https://github.com/dawnburst/run-claude.git ~/lmi
+cd ~/lmi
+```
+
+or, with no git, download `lmi-0.1.0-py3-none-any.whl` and `install-linux.sh`
+into the same folder and run the script from there. It looks for the wheel beside
+itself first, precisely so that this works.
 
 ---
 
 ## Route A — the install script (recommended)
 
 ```bash
-git clone https://github.com/dawnburst/run-claude.git ~/lmi
-cd ~/lmi
 ./scripts/install-linux.sh
 ```
 
@@ -33,146 +58,82 @@ Then open a new terminal:
 lmi --version       # -> lmi 0.1.0
 ```
 
-That is the whole installation.
+That is the whole installation. It needs no sudo, and re-running it is how you
+upgrade.
 
-By default the script builds a **single self-contained executable** with the
-standard library's `zipapp` module and copies it to `~/.local/bin/lmi`. That
-matters for three reasons:
-
-- **It needs no pip, no setuptools, no wheel, no virtual environment and no
-  network.** It therefore works on an air-gapped machine, and on Debian and
-  Ubuntu where `python3 -m venv` fails because `ensurepip` ships separately.
-- **The installed file is the whole program**, about 44 KB. Once it is in place
-  **the clone is disposable** — delete `~/lmi` and `lmi` keeps working. A
-  virtual-environment install cannot do that; its launcher points back at the
-  clone forever.
-- Re-running the script is how you upgrade, and `--uninstall` reverses it.
+The script installs the wheel into a virtual environment of its own at
+`~/.local/share/lmi/venv`, then symlinks the `lmi` command pip generates into
+`~/.local/bin`. The venv holds nothing but `lmi`, so **the clone is disposable**
+afterwards.
 
 ### Options
 
 | Option | Meaning |
 |---|---|
-| `--zipapp` | Single self-contained executable. **The default.** |
-| `--venv` | Traditional pip install into `.venv` instead. Needs pip, and network unless `setuptools` and `wheel` are already local. Keeps the clone load-bearing. |
-| `--editable` | `pip -e`, so `lmi` tracks your checkout. Implies `--venv`. Use this if you intend to edit the source. |
-| `--link-dir DIR` | Where to put the command. Default `~/.local/bin`. |
-| `--uninstall` | Remove the command, and `.venv` if there is one. Leaves the clone. |
-| `-h`, `--help` | Show usage. |
+| `--wheel PATH` | the wheel to install. Default: the newest `lmi-*.whl` beside the script or in `dist/`, else built from the checkout. |
+| `--link-dir DIR` | where to put the command. Default `~/.local/bin`. |
+| `--venv-dir DIR` | where to keep the virtual environment. Default `~/.local/share/lmi/venv`. |
+| `--uninstall` | remove the command and the virtual environment. |
+| `-h`, `--help` | show usage. |
 
-### Air-gapped machines
+### Why a virtual environment and not `pip install --user`
 
-Use the default. Nothing is fetched. You only need to get two things onto the
-machine yourself, neither of them a Python package:
+Because pip refuses. Debian, Ubuntu and most current distributions mark the
+system Python **externally managed** (PEP 668), and a `--user` install stops with
+"This environment is externally managed", suggesting a venv or pipx. Confirmed on
+Ubuntu 24.04. The alternative flag, `--break-system-packages`, does what its name
+says. A venv of our own avoids the question entirely.
 
-1. **The source**, since `git clone` cannot reach GitHub. Copy the repository
-   in, then run the script. Alternatively build the executable on a connected
-   machine and carry just that one file — it is portable, and the same file even
-   runs on Windows and macOS.
-2. **The Claude Code CLI, already authenticated.** `lmi` shells out to `claude`,
-   and `claude auth login` is browser-based, so it cannot be automated. This is
-   usually the harder constraint.
+### What it does about Debian's missing `venv`
 
-`pip install .` is what fails air-gapped, and it is worth knowing why: the
-`[build-system]` table asks for `setuptools>=61`, which pip fetches from PyPI
-into an isolated build environment. `--no-build-isolation` only moves the
-requirement — then `setuptools` **and** `wheel` must already be installed
-locally. The zipapp route sidesteps all of it.
+Debian and Ubuntu ship the venv module's bootstrap (`ensurepip`) in a separate
+package, so `python3 -m venv` fails on a machine that is otherwise perfectly able
+to install this wheel. Rather than stopping and telling you to `apt install
+python3-venv`, the script falls back to `python3 -m venv --without-pip`, which
+needs no `ensurepip`, and populates it using the system pip's `--python` flag.
+Verified on Ubuntu 24.04 with `python3-venv` absent — the install completes with
+no root and no apt.
+
+If even that is impossible it stops and names the one package to install.
 
 ### If it stops
 
-The script fails loudly rather than half-installing, and every message says what
-to do next. It handles explicitly:
+It fails loudly rather than half-installing:
 
-- **Python missing or older than 3.9** — names the requirement and stops.
-- **`--venv` with no way to create one** — prints both fixes and points at the
-  default mode, which needs neither.
-- **`--venv` with no network** — says that is expected and names the default
-  mode instead.
-- **Something already at the target path that it did not install** — refuses to
-  touch it. It only ever removes a symlink into this clone, or a zipapp that
-  actually contains `lmi/cli.py`.
-- **Run from outside a clone** — says so instead of leaving debris.
-- **A different `lmi` earlier on your PATH** — warns and names the winner, so
-  you are not left wondering why nothing changed.
+- **No Python 3.9+** — says so and stops.
+- **No wheel, and no checkout to build one from** — tells you where to put the
+  wheel, or to pass `--wheel`.
+- **Something already at the target path it did not install** — refuses to touch
+  it. It replaces only its own symlink, or the zipapp the previous version of
+  this installer left there.
+- **`~/.local/bin` is not on your PATH** — installs anyway, then prints the exact
+  line to add.
+- **A different `lmi` earlier on your PATH** — warns and names the winner.
 
-To uninstall:
+### Air-gapped machines
 
-```bash
-cd ~/lmi
-./scripts/install-linux.sh --uninstall
-```
+Carry in the wheel. Installing it needs no network: the install command passes
+`--no-index`, and a wheel needs no build backend — that is the difference between
+installing a wheel and installing from source, where pip fetches
+`setuptools>=61`.
 
----
-
-## Manual installation
-
-Everything below installs `lmi` without the script. Route B is what the script
-actually does, step by step — reach for it if the script stopped somewhere, if
-you want to see each command, or if you would rather not run a script at all.
+The only other thing you need is an already-authenticated Claude Code CLI;
+`claude auth login` is browser-based and cannot be automated.
 
 ---
 
-### Route B — a self-contained executable by hand
+## Route B — by hand
 
-The same result as Route A: one file, no pip, no virtual environment, no
-network. Four steps.
-
-#### 1. Get the source onto the machine
+What the script does, in four commands:
 
 ```bash
-git clone https://github.com/dawnburst/run-claude.git ~/lmi
-cd ~/lmi
-```
-
-On an air-gapped machine, copy the repository across instead — any transport
-will do, since nothing is fetched from here on.
-
-#### 2. Stage just the package
-
-`zipapp` packs a whole directory, so stage the `lmi` package on its own. Without
-this you would also pack the tests, the docs and any `.venv`, and the archive
-would be far larger than it needs to be.
-
-```bash
-mkdir -p build/stage
-cp -r lmi build/stage/
-find build/stage -name '__pycache__' -type d -exec rm -rf {} +
-```
-
-#### 3. Build the executable
-
-```bash
-python3 -m zipapp build/stage -m "lmi.cli:main" -p "/usr/bin/env python3" -o build/lmi
-chmod +x build/lmi
-```
-
-`-m` names the entry point, the same `lmi.cli:main` that `pyproject.toml`
-declares. `-p` writes the shebang, so the file runs directly. `/usr/bin/env
-python3` rather than a fixed interpreter path keeps it working if `python3`
-moves.
-
-**The output must not be `build/stage/lmi`.** The package being packed is itself
-called `lmi`, so writing the archive inside the staging directory collides with
-it and `zipapp` fails with `IsADirectoryError`.
-
-Check it before going further:
-
-```bash
-./build/lmi --version       # -> lmi 0.1.0
-```
-
-#### 4. Put it on your PATH
-
-Copy rather than symlink — the file is the entire program, so copying it makes
-the clone disposable:
-
-```bash
+python3 -m venv ~/.local/share/lmi/venv
+~/.local/share/lmi/venv/bin/python -m pip install --no-index lmi-0.1.0-py3-none-any.whl
 mkdir -p ~/.local/bin
-cp build/lmi ~/.local/bin/lmi
-chmod +x ~/.local/bin/lmi
+ln -sfn ~/.local/share/lmi/venv/bin/lmi ~/.local/bin/lmi
 ```
 
-Confirm `~/.local/bin` is on your PATH:
+Then check `~/.local/bin` is on your PATH:
 
 ```bash
 echo "$PATH" | tr ':' '\n' | grep -q "$HOME/.local/bin" && echo on-path || echo MISSING
@@ -185,131 +146,44 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-Use `~/.zshrc` instead if your shell is zsh (`echo $SHELL` tells you).
+Use `~/.zshrc` if `echo $SHELL` says zsh.
 
-Then:
+If step 1 fails with "ensurepip is not available", use the fallback the script
+uses:
 
 ```bash
-which lmi          # -> /home/you/.local/bin/lmi
-lmi --version       # -> lmi 0.1.0
+python3 -m venv --without-pip ~/.local/share/lmi/venv
+python3 -m pip --python ~/.local/share/lmi/venv/bin/python install --no-index lmi-0.1.0-py3-none-any.whl
 ```
 
-To upgrade, repeat steps 2-4 after a `git pull`. To uninstall,
-`rm ~/.local/bin/lmi`.
+`--python` must come before `install`, and needs pip 22.3 or newer.
 
 ---
 
-### Route C — a virtual environment by hand
+## Route C — pipx
 
-Use this if you want an editable install, or if you would rather see each step.
-It needs pip, so it also needs the network on a machine without `setuptools`
-and `wheel` already installed. Five steps.
-
-#### 1. Clone the repository
+If you already have pipx, it manages the venv and PATH for you:
 
 ```bash
-git clone https://github.com/dawnburst/run-claude.git ~/lmi
-cd ~/lmi
+pipx install ./lmi-0.1.0-py3-none-any.whl
 ```
 
-Pick a **permanent** location. Do not install from a temporary directory or a
-git worktree you intend to delete — the launcher in step 4 points back at this
-path, and removing it later leaves a dangling command that fails confusingly.
-
-#### 2. Create a virtual environment
-
-```bash
-python3 -m venv .venv
-```
-
-**If that fails with `ensurepip is not available`**, you are on Debian or
-Ubuntu, which ship `ensurepip` separately. Either install it:
-
-```bash
-sudo apt install python3-venv     # or python3.12-venv for a specific version
-python3 -m venv .venv
-```
-
-or use `virtualenv`, which needs no root:
-
-```bash
-pip install --user virtualenv 2>/dev/null || python3 -m pip install --user virtualenv
-virtualenv .venv
-```
-
-#### 3. Install `lmi` into it
-
-```bash
-.venv/bin/python -m pip install .
-```
-
-Use `pip install -e .` instead if you want the command to track your checkout
-as you edit it.
-
-Do **not** run `pip install --user` or `pip install` outside the venv. On
-Ubuntu 24.04 the system Python is externally managed (PEP 668) and will refuse.
-`--break-system-packages` appears to work and then leaves an install wired to
-whatever directory you ran it from, which breaks `import lmi` system-wide when
-that directory moves.
-
-#### 4. Put the launcher on your PATH
-
-The venv already contains a working launcher at `.venv/bin/lmi`, whose shebang
-pins the venv's interpreter. Link it into a directory on your PATH:
-
-```bash
-mkdir -p ~/.local/bin
-ln -sfn ~/lmi/.venv/bin/lmi ~/.local/bin/lmi
-```
-
-Check that `~/.local/bin` is actually on your PATH:
-
-```bash
-echo "$PATH" | tr ':' '\n' | grep -q "$HOME/.local/bin" && echo on-path || echo MISSING
-```
-
-If it prints `MISSING`, add it and reload:
-
-```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
-
-Use `~/.zshrc` instead if your shell is zsh (`echo $SHELL` tells you).
-
-#### 5. Verify
-
-```bash
-which lmi          # -> /home/you/.local/bin/lmi
-lmi --version       # -> lmi 0.1.0
-lmi schedule --help
-```
-
-If `which lmi` finds nothing, open a new terminal — PATH changes only apply to
-shells started afterwards.
+Equivalent result; one more tool to have installed first, which is why it is not
+the default.
 
 ---
 
-### Route D — pipx
+## Building the wheel yourself
 
-`pipx` gives each tool its own isolated environment and puts the command on
-your PATH for you. Cleaner if you install several tools this way.
-
-```bash
-sudo apt install pipx        # Ubuntu/Debian
-pipx ensurepath              # adds ~/.local/bin to PATH
-# open a new terminal, then:
-pipx install ~/lmi
-lmi --version
-```
-
-`pipx ensurepath` edits your shell profile, so a new terminal is required.
-
-To install straight from GitHub without cloning:
+Only needed if you are changing `lmi`. From a checkout:
 
 ```bash
-pipx install "git+https://github.com/dawnburst/run-claude.git"
+python3 -m pip wheel --no-deps -w dist .
 ```
+
+That writes `dist/lmi-0.1.0-py3-none-any.whl`. This step wants a network, because
+pip fetches `setuptools` to build with — which is why the built wheel, not the
+source, is what you carry to an air-gapped machine.
 
 ---
 
@@ -321,78 +195,75 @@ lmi schedule "Create a file named hello.txt containing the single word OK"
 ```
 
 Expect exit 0, a `hello.txt`, a `run-claude-<timestamp>.log`, and a
-`run-claude-state.md` that Claude has actually rewritten.
+`run-claude-state.md` that Claude has actually rewritten. A `run-claude.lock`
+sits alongside them; that is normal.
 
-`lmi` needs the Claude Code CLI on your PATH. Check with `claude --version`; if
-it is missing, install it and run `claude auth login` once — `lmi` cannot do
-the interactive sign-in for you.
+`lmi` needs the Claude Code CLI on your PATH — check `claude --version`. If it is
+missing, install it and run `claude auth login` once; `lmi` cannot perform the
+interactive sign-in for you.
+
+---
+
+## Scheduled (unattended) runs
+
+A `cron` or `systemd` job does not inherit your interactive PATH, so give the
+full path:
+
+```
+~/.local/share/lmi/venv/bin/lmi
+```
+
+That launcher's shebang pins the venv's interpreter, so it needs nothing on PATH
+to start.
 
 ---
 
 ## Updating
 
 ```bash
-cd ~/lmi
-git pull
-./scripts/install-linux.sh          # re-running is how you upgrade
+cd ~/lmi && git pull
+./scripts/install-linux.sh
 ```
 
-Re-running the script rebuilds the executable and replaces the installed one.
-It writes to a temporary name and moves it into place, so an interrupted upgrade
-cannot leave a half-written file where a working one was.
+Re-running is the upgrade. The install uses `--force-reinstall` on purpose: the
+version number does not change on every source change, and without it pip treats
+reinstalling 0.1.0 over 0.1.0 as nothing to do, so an "upgrade" would silently
+keep the old code.
 
-By hand:
-
-- **Route B** — repeat its steps 2 to 4.
-- **Route C** — `.venv/bin/python -m pip install .`, which you can skip entirely
-  if you installed with `--editable`, since the command already tracks your
-  checkout.
-- **Route D** — `pipx upgrade lmi`, or `pipx reinstall lmi` after pulling.
+Upgrading from the previous zipapp-based installer needs no special step — the
+script recognises the zipapp it used to leave at `~/.local/bin/lmi` and replaces
+it.
 
 ---
 
 ## Uninstalling
 
 ```bash
-cd ~/lmi
 ./scripts/install-linux.sh --uninstall
 ```
 
-That removes the installed command, and `.venv` if a Route C install left one.
-The clone stays; delete it too if you want it gone:
+Removes the command and the virtual environment. By hand:
 
 ```bash
-rm -rf ~/lmi
+rm ~/.local/bin/lmi
+rm -rf ~/.local/share/lmi
 ```
-
-The script only removes something it recognises as its own — a symlink into this
-clone, or an executable that really contains `lmi/cli.py`. Anything else at that
-path it refuses to touch.
-
-By hand: `rm ~/.local/bin/lmi`, plus `rm -rf ~/lmi/.venv` if you used Route C.
-
-With pipx: `pipx uninstall lmi`.
 
 ---
 
 ## Troubleshooting
 
-**`lmi: command not found`** — the command is missing from `~/.local/bin`, or
-that directory is not on PATH, or you have not opened a new terminal. Run the
-two PATH checks in Route B step 4.
+**`lmi: command not found`** — `~/.local/bin` is not on PATH, or you have not
+opened a new terminal. Re-run the PATH check in Route B.
 
-**`bad interpreter: No such file or directory`** — only affects Route C: the
-virtual environment moved or was deleted, and its launcher's shebang holds an
-absolute path into it. Re-run the install script, which by default produces a
-self-contained executable with no such dependency.
+**`This environment is externally managed`** — you ran `pip install` against the
+system Python instead of the venv. That is PEP 668, and it is what Route A exists
+to avoid.
 
-**`/usr/bin/env: 'python3': No such file or directory`** — the executable from
-Route A or B cannot find a `python3`. Its shebang is deliberately
-`/usr/bin/env python3` rather than a fixed path, so this means `python3` is not
-on PATH at all in that context — which is worth knowing if you are running from
-cron or a systemd unit, where PATH is minimal.
+**`ensurepip is not available`** — Debian's split packaging. Route A handles it
+automatically; by hand, use the `--without-pip` form above.
 
-**`error: externally-managed-environment`** — you are installing outside the
-venv. Use `.venv/bin/python -m pip`, not bare `pip`.
+**`bad interpreter: No such file or directory`** — the venv moved or was deleted.
+Re-run the install script.
 
-**`claude is not on PATH`** — `lmi` found no Claude Code CLI. See "First run".
+**`claude is not on PATH`** — see "First run".
