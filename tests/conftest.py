@@ -1,7 +1,8 @@
-"""A fake `claude` on a temporary PATH.
+"""Fixtures shared by the whole suite.
 
-No test may reach a real claude: one exists on this machine and would spend
-real quota. The fixture replaces PATH entirely rather than prepending.
+`fake_claude` is the important one: no test may reach a real claude, since one
+exists on this machine and would spend real quota, so the fixture replaces PATH
+entirely rather than prepending.
 """
 
 import os
@@ -9,6 +10,29 @@ import stat
 import sys
 
 import pytest
+
+# One definition for every permission test. os.geteuid is Unix-only and a
+# skipif argument is evaluated at import time, so a bare os.geteuid() call makes
+# the whole module raise AttributeError during collection on Windows, silently
+# losing every test in it.
+skip_as_root = pytest.mark.skipif(
+    getattr(os, "geteuid", lambda: 1)() == 0,
+    reason="root ignores file permissions",
+)
+
+
+@pytest.fixture
+def readonly_dir(tmp_path):
+    """A directory that cannot be written to.
+
+    Restored to 0o700 on teardown, without which pytest cannot clean tmp_path
+    up - which is why this is a fixture rather than seven try/finally blocks.
+    """
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o500)
+    yield ro
+    ro.chmod(0o700)
 
 FAKE = """\
 #!{python}

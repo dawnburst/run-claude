@@ -4,6 +4,9 @@ import re
 import pytest
 
 from lmi.cli import main
+from lmi.commands.schedule import paths
+
+from ...conftest import skip_as_root
 
 
 def _count(fake):
@@ -11,7 +14,14 @@ def _count(fake):
 
 
 def _log_body(tmp_path):
-    return next(tmp_path.glob("run-claude-*.log")).read_text(encoding="utf-8")
+    return next(tmp_path.glob(paths.LOG_PREFIX + "*.log")).read_text(
+        encoding="utf-8"
+    )
+
+
+def _default_state(tmp_path):
+    """Where the runner puts the state file when -s is not given."""
+    return str(tmp_path / paths.STATE_NAME)
 
 
 def test_single_run_invokes_claude_once(tmp_path, fake_claude, capsys):
@@ -51,15 +61,16 @@ def test_back_to_back_loop_runs_count_times(tmp_path, fake_claude):
 
 
 def test_early_stop_when_line_one_becomes_complete(tmp_path, fake_claude, monkeypatch):
-    monkeypatch.setenv("FAKE_STATE_FILE", str(tmp_path / "run-claude-state.md"))
+    monkeypatch.setenv("FAKE_STATE_FILE", _default_state(tmp_path))
     monkeypatch.setenv("FAKE_COMPLETE_AT", "2")
     assert main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "5"]) == 0
     assert _count(fake_claude) == 2
 
 
 def test_prose_complete_does_not_stop_the_loop(tmp_path, fake_claude, monkeypatch):
-    """MANDATORY, landmine 14. Widening the check must turn this red."""
-    monkeypatch.setenv("FAKE_STATE_FILE", str(tmp_path / "run-claude-state.md"))
+    """MANDATORY. The prose false positive: widening check_complete to search
+    the whole file must turn this red."""
+    monkeypatch.setenv("FAKE_STATE_FILE", _default_state(tmp_path))
     monkeypatch.setenv("FAKE_PROSE", "1")
     assert main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "3"]) == 0
     assert _count(fake_claude) == 3
@@ -80,17 +91,16 @@ def test_quota_wording_is_flagged(tmp_path, fake_claude, monkeypatch, capsys):
 
 def test_claude_output_reaches_the_log(tmp_path, fake_claude):
     main(["schedule", "x", "-d", str(tmp_path)])
-    log = next(tmp_path.glob("run-claude-*.log"))
-    assert "fake claude call 1" in log.read_text(encoding="utf-8")
+    assert "fake claude call 1" in _log_body(tmp_path)
 
 
 def test_per_iteration_completion_is_logged_with_a_duration(tmp_path, fake_claude):
-    """Fix round 1: run-claude.bat logs a finish line - iteration, exit code,
-    duration - after every iteration, success or failure. The runner must
-    keep carrying that information into the log, not just onto the terminal,
-    since the log is the only record of an unattended run afterwards."""
+    """Every iteration gets a finish line - iteration, exit code, duration -
+    whether it succeeded or failed. That information must reach the log and not
+    just the terminal, since the log is the only record of an unattended run
+    afterwards, and the duration is what reveals a slowing or hung iteration."""
     assert main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2"]) == 0
-    log = next(tmp_path.glob("run-claude-*.log")).read_text(encoding="utf-8")
+    log = _log_body(tmp_path)
     # Two iterations, each with its own completion line naming the iteration
     # and carrying a numeric duration in seconds - a line with no digits
     # before the trailing "s" (i.e. the duration silently dropped) must fail.
@@ -107,7 +117,7 @@ def test_at_in_the_past_starts_immediately(tmp_path, fake_claude):
 
 def test_second_run_is_refused_while_the_lock_is_held(tmp_path, fake_claude):
     from lmi.core.lock import single_instance_lock
-    lock = tmp_path / "run-claude.lock"
+    lock = tmp_path / paths.LOCK_NAME
     with single_instance_lock(lock):
         rc = main(["schedule", "x", "-d", str(tmp_path)])
     assert rc == 3
@@ -174,15 +184,15 @@ def test_an_over_long_state_path_exits_2_not_1(tmp_path, fake_claude):
     assert _count(fake_claude) == 0
 
 
-# --- Important 3: landmine 14, the shape the old fixtures missed ----------
+# --- the prose false positive, in the shape the old fixtures missed -------
 
 def test_complete_on_line_two_does_not_stop_the_loop(tmp_path, fake_claude,
                                                      monkeypatch):
-    """MANDATORY, landmine 14, end to end. The state file's line 1 is blank
+    """MANDATORY, end to end. The state file's line 1 is blank
     and line 2 says COMPLETE: a whole-file search matches (^\\s* spans the
     newline) and would stop the loop after iteration 1, while the line-1-only
     read correctly keeps going. Widening check_complete must turn this red."""
-    monkeypatch.setenv("FAKE_STATE_FILE", str(tmp_path / "run-claude-state.md"))
+    monkeypatch.setenv("FAKE_STATE_FILE", _default_state(tmp_path))
     monkeypatch.setenv("FAKE_BLANK_FIRST_LINE", "1")
     assert main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "3"]) == 0
     assert _count(fake_claude) == 3
@@ -197,8 +207,7 @@ def test_a_wrecked_temp_workspace_skips_the_iteration_and_keeps_looping(
     whole temp workspace after each call, so every iteration after the first
     cannot even write its prompt file. That used to end the run at iteration 2
     with exit 4; the loop must instead log [ERROR], count the iteration as
-    failed and carry on to the last one, exactly as the .bat's :run_once does
-    with CLAUDE_RC=90."""
+    failed and carry on to the last one."""
     private_tmp = tmp_path / "tmp"
     private_tmp.mkdir()
     # The environment variables are for the stub (a fresh process); the
@@ -279,85 +288,61 @@ def test_a_state_write_failure_reaches_the_log_file(tmp_path, fake_claude,
     assert "[ERROR] cannot write the state file: synthetic" in body
 
 
-@pytest.mark.skipif(
-    os.name == "nt" or getattr(os, "geteuid", lambda: 1)() == 0,
-    reason="needs POSIX symlinks and a non-root user",
-)
-def test_a_really_unwritable_state_path_reaches_the_log_file(tmp_path,
-                                                             fake_claude):
+@skip_as_root
+@pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
+def test_a_really_unwritable_state_path_reaches_the_log_file(
+    tmp_path, fake_claude, readonly_dir
+):
     """The same thing without a monkeypatch: the state file is a symlink into
     a read-only directory, so its directory (and therefore the lock and the
     log) are writable while the state file itself cannot be created. A
     dangling link on purpose - os.replace would otherwise just move the link
     aside and write a perfectly good regular file in its place."""
-    ro = tmp_path / "ro"
-    ro.mkdir()
-    ro.chmod(0o500)
     link = tmp_path / "state.md"
-    link.symlink_to(ro / "never-created.md")
-    try:
-        rc = main(["schedule", "x", "-d", str(tmp_path), "-s", str(link)])
-        assert rc == 2
-        body = _log_body(tmp_path)
-        assert "[ERROR]" in body
-        assert "state file" in body and "Permission denied" in body
-    finally:
-        ro.chmod(0o700)
+    link.symlink_to(readonly_dir / "never-created.md")
+    assert main(["schedule", "x", "-d", str(tmp_path), "-s", str(link)]) == 2
+    body = _log_body(tmp_path)
+    assert "[ERROR]" in body
+    assert "state file" in body and "Permission denied" in body
 
 
-@pytest.mark.skipif(
-    getattr(os, "geteuid", lambda: 1)() == 0,
-    reason="root ignores directory permissions",
-)
-def test_an_unwritable_state_directory_is_a_usage_error_not_a_bug(tmp_path,
-                                                                  fake_claude):
+@skip_as_root
+def test_an_unwritable_state_directory_is_a_usage_error_not_a_bug(
+    tmp_path, fake_claude, readonly_dir
+):
     """The lock file lives beside the state file, so an unwritable state
     directory fails at the lock - which reported exit 4, "a bug in lmi", for
     what is plainly the user's path being wrong."""
-    ro = tmp_path / "ro"
-    ro.mkdir()
-    ro.chmod(0o500)
-    try:
-        rc = main(["schedule", "x", "-d", str(tmp_path),
-                   "-s", str(ro / "state.md")])
-        assert rc == 2
-    finally:
-        ro.chmod(0o700)
+    rc = main(["schedule", "x", "-d", str(tmp_path),
+               "-s", str(readonly_dir / "state.md")])
+    assert rc == 2
 
 
 # --- Important 6: an unwritable log must not decide the exit code ---------
 
-@pytest.mark.skipif(
-    getattr(os, "geteuid", lambda: 1)() == 0,
-    reason="root ignores directory permissions",
-)
-def test_an_unwritable_log_still_lets_the_run_succeed(tmp_path, fake_claude,
-                                                      capsys):
+@skip_as_root
+def test_an_unwritable_log_still_lets_the_run_succeed(
+    tmp_path, fake_claude, readonly_dir, capsys
+):
     """MANDATORY. -l pointing at a read-only directory used to double-fault:
     Logger.line raised, the handler called log.error, which raised the same
     PermissionError again - two tracebacks and exit 1, indistinguishable from
     a failed claude call."""
-    ro = tmp_path / "ro"
-    ro.mkdir()
-    ro.chmod(0o500)
-    try:
-        rc = main(["schedule", "x", "-d", str(tmp_path), "-l", str(ro)])
-        assert rc == 0
-        captured = capsys.readouterr()
-        assert "fake claude call 1" in captured.out    # console intact
-        assert "cannot be written" in captured.err     # warned once
-        assert captured.err.count("cannot be written") == 1
-        assert "Traceback" not in captured.err
-    finally:
-        ro.chmod(0o700)
+    assert main(["schedule", "x", "-d", str(tmp_path), "-l",
+                 str(readonly_dir)]) == 0
+    captured = capsys.readouterr()
+    assert "fake claude call 1" in captured.out    # console intact
+    assert "cannot be written" in captured.err     # warned once
+    assert captured.err.count("cannot be written") == 1
+    assert "Traceback" not in captured.err
 
 
 # --- the resolved configuration in the header ----------------------------
 
 def test_the_header_records_the_resolved_configuration(tmp_path, fake_claude):
-    """README's Logging section promises the resolved configuration, and the
-    .bat's header prints the prompt source, the claude executable and the full
-    flag list. Without them a log cannot be matched to what actually ran."""
+    """README's Logging section promises the resolved configuration: the prompt
+    source, the claude executable and the full flag list. Without them a log
+    cannot be matched to what actually ran."""
     task = tmp_path / "task.md"
     task.write_text("do the thing\n", encoding="utf-8")
     assert main(["schedule", str(task), "-d", str(tmp_path),

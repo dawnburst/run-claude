@@ -65,7 +65,7 @@ looks for the wheel beside itself first, precisely so that this works.
 With git available:
 
 ```bat
-git clone -b lmi-schedule https://github.com/dawnburst/run-claude.git C:\lmi
+git clone https://github.com/dawnburst/run-claude.git C:\lmi
 cd /d C:\lmi
 ```
 

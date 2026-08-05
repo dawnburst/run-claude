@@ -5,8 +5,8 @@ it is inlined into the next prompt, and the state file's first line in the
 completion check. They must agree - a state file that check_complete reads as
 UTF-16 must not be inlined into the prompt as mojibake.
 
-ANSI text carries no mark and stays undetectable by construction; that limit
-is inherited from run-claude.bat and is not fixable here.
+ANSI text carries no mark and stays undetectable by construction; there is
+nothing this module can do about that.
 """
 
 BOM_UTF8 = b"\xef\xbb\xbf"

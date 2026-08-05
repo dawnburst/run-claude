@@ -1,8 +1,6 @@
-import os
-
-import pytest
-
 from lmi.core.log import Logger
+
+from .conftest import skip_as_root
 
 
 def test_writes_to_console_and_file(tmp_path, capsys):
@@ -43,11 +41,12 @@ def test_appends_rather_than_truncating(tmp_path):
 
 
 def test_an_unwritable_log_never_raises_and_keeps_the_console(tmp_path, capsys):
-    """MANDATORY. The .bat's :log ignores an append failure and finishes the
-    run with console output intact. Raising here double-faulted: the runner's
-    handler called log.error, which raised the same PermissionError again, for
-    a two-level traceback and exit 1 - indistinguishable from a failed claude
-    call, with exit 4 unreachable exactly when logging is what broke."""
+    """MANDATORY. An append failure must leave the run intact.
+
+    Raising here double-faulted: the runner's handler called log.error, which
+    raised the same PermissionError again, for a two-level traceback and exit 1
+    - indistinguishable from a failed claude call, with exit 4 unreachable
+    exactly when logging is what broke."""
     unwritable = tmp_path            # a directory: open(..., "a") cannot
     log = Logger(unwritable)
     log.line("first")                # must not raise
@@ -63,11 +62,10 @@ def test_an_unwritable_log_never_raises_and_keeps_the_console(tmp_path, capsys):
     assert log.file_broken is True
 
 
-@pytest.mark.skipif(
-    getattr(os, "geteuid", lambda: 1)() == 0,
-    reason="root ignores file permissions",
-)
+@skip_as_root
 def test_a_read_only_log_file_degrades_to_console_only(tmp_path, capsys):
+    """The same degradation, reached through a read-only file rather than a
+    directory - a different errno out of the same open()."""
     target = tmp_path / "run.log"
     target.write_text("", encoding="utf-8")
     target.chmod(0o400)

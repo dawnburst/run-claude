@@ -36,7 +36,7 @@ network, or root.
 You need the wheel and the install script. Either:
 
 ```bash
-git clone -b lmi-schedule https://github.com/dawnburst/run-claude.git ~/lmi
+git clone https://github.com/dawnburst/run-claude.git ~/lmi
 cd ~/lmi
 ```
 

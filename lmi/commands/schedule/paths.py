@@ -1,9 +1,8 @@
 """Where the log and the state file go.
 
-The folder-versus-file rules are copied from run-claude.bat's :resolve_log
-and are load-bearing: an extension-less path that does not exist yet is a
-FOLDER, not a log file. Getting rule 4 wrong makes `-l some/new/logdir`
-create a file called logdir instead of a directory.
+The folder-versus-file rules for -l are load-bearing: an extension-less path
+that does not exist yet is a FOLDER, not a log file. Getting rule 4 wrong makes
+`-l some/new/logdir` create a file called logdir instead of a directory.
 """
 
 import os
@@ -13,14 +12,16 @@ from pathlib import Path
 from ...core import fs
 from ...core.errors import EXIT_USAGE, LmiError
 
+# One definition of each stamp: the same format has to appear in a log line and
+# in the state file the run writes, and the two must never drift apart.
 TS_FORMAT = "%Y%m%d-%H%M%S"
-# The stamp that appears in log lines and in the state template. One
-# definition because it is a shared protocol detail: run-claude.bat's logs and
-# lmi's are meant to be comparable, so it must not drift between the runner
-# and the state file.
 NOW_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+# Every file name this command generates. The lock is here rather than in the
+# runner that opens it because it is created beside the state file.
 STATE_NAME = "run-claude-state.md"
 LOG_PREFIX = "run-claude-"
+LOCK_NAME = "run-claude.lock"
 
 
 def timestamp():
@@ -89,11 +90,7 @@ def _ensure_writable(directory, what, implicit):
 
     `implicit` says the directory came from the current working directory
     rather than from a flag, which changes the advice: the fix is to pass -d.
-    That is the shape of the real report this was written for. On Windows,
-    cmd.exe cannot hold a UNC working directory, so launching from
-    \\\\wsl.localhost\\... silently leaves the process in C:\\Windows - and lmi
-    then aimed its state file, log and lock at C:\\Windows. Denied there, which
-    is lucky; a writable system directory would have been scribbled in instead.
+    The commonest way to arrive here is the one _cmd_unc_hint below explains.
     """
     probe = directory / (".lmi-write-test-%d" % os.getpid())
     try:
@@ -210,11 +207,11 @@ def _ensure_parent(path, what, implicit=None):
     """implicit=None means do not check writability at all.
 
     Only the state file gets the check. An unwritable *log* must not abort the
-    run - Logger deliberately degrades to console-only and warns once, matching
-    run-claude.bat, and a guard here would undo that.
+    run - Logger deliberately degrades to console-only and warns once, and a
+    guard here would undo that.
     """
-    # The .bat attempts the mkdir and only fails if the directory is still
-    # missing afterwards; a missing parent is not itself an error.
+    # Attempt the mkdir and only fail if the directory is still missing
+    # afterwards; a missing parent is not itself an error.
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -231,8 +228,6 @@ def _ensure_parent(path, what, implicit=None):
 
 
 def resolve_state(cfg):
-    # "implicit" below means the directory came from the working directory
-    # rather than from a flag, which is what changes the advice on failure.
     implicit = cfg.state_arg is None
     raw = cfg.state_arg or str(cfg.work_dir / STATE_NAME)
     path = _expand(raw, "state file")
@@ -260,11 +255,13 @@ def resolve_log(cfg, run_ts):
     trailing = raw.endswith("/") or raw.endswith("\\")
     path = _expand(raw, "log file")
 
-    # Order matches run-claude.bat's :resolve_log exactly.
-    if _classify(path, "log file") == fs.DIR:   # 1 existing directory
-        return _ensure_parent(path / name, "log file")
-    if trailing:                            # 2 folder, not yet created
-        return _ensure_parent(path / name, "log file")
-    if has_extension(path.name):            # 3 the log file itself
-        return _ensure_parent(path, "log file")
-    return _ensure_parent(path / name, "log file")   # 4 otherwise: folder
+    # Four rules deciding one thing: is -l the log file itself, or the folder to
+    # put it in? Only rule 3 says "the file". The order is load-bearing and
+    # _classify must run first, so an unusable path is still exit 2 even when a
+    # later rule would have matched.
+    is_log_file = (
+        _classify(path, "log file") != fs.DIR   # 1 existing directory: folder
+        and not trailing                        # 2 trailing separator: folder
+        and has_extension(path.name)            # 3 has an extension: the file
+    )                                           # 4 otherwise: folder
+    return _ensure_parent(path if is_log_file else path / name, "log file")

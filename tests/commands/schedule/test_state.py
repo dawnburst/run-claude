@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 
 from lmi.commands.schedule.state import (
@@ -8,14 +6,14 @@ from lmi.commands.schedule.state import (
 from lmi.core.errors import LmiError
 from lmi.core.log import Logger
 
-TS = "20260803-101500"
+from .conftest import TS
 
 
 def _log(tmp_path):
     return Logger(tmp_path / "run.log")
 
 
-# --- check_complete: landmine 14 -----------------------------------------
+# --- check_complete: the prose false positive ----------------------------
 
 def test_complete_on_line_one_is_complete(tmp_path):
     p = tmp_path / "s.md"
@@ -77,7 +75,7 @@ def test_leading_whitespace_and_tight_colon(tmp_path):
 
 
 def test_trailing_punctuation_counts_word_boundary(tmp_path):
-    """The .bat's PowerShell regex uses \\b, so a trailing period counts."""
+    """\\b, not "whitespace or end of line", so a trailing period counts."""
     p = tmp_path / "s.md"
     p.write_text("TASK_STATUS: COMPLETE.\n", encoding="utf-8")
     assert check_complete(p) is True
@@ -90,7 +88,7 @@ def test_completed_does_not_count(tmp_path):
 
 
 def test_lowercase_status_line_is_complete_case_insensitively(tmp_path):
-    """MANDATORY. run-claude.bat's PowerShell '-match' is case-insensitive
+    """MANDATORY. The check is case-insensitive on purpose
     by default ('-cmatch' is the case-sensitive form, and it is not used),
     so a first line of 'task_status: complete' is COMPLETE to the .bat. A
     state file must be interchangeable between the two tools."""
@@ -150,16 +148,16 @@ def test_template_starts_in_progress_and_names_lmi(tmp_path):
     body = p.read_text(encoding="utf-8")
     assert body.splitlines()[0] == "TASK_STATUS: IN_PROGRESS"
     assert "lmi schedule" in body
-    assert "run-claude.bat" not in body
     for heading in ("## Goal", "## Completed", "## In progress",
                     "## Next steps", "## Notes and blockers"):
         assert heading in body
 
 
 def test_unwritable_state_path_is_a_clear_error(tmp_path):
-    """MANDATORY. The .bat logs "created new" even when the write failed,
+    """MANDATORY. Logging "created new" when the write failed
     so the loop then repeats iteration 1 forever while reporting success.
-    That silent shape is landmine 13; lmi must fail loudly instead."""
+    That silent shape is regression 1 in CLAUDE.md; lmi must fail loudly.
+    """
     with pytest.raises(LmiError) as exc:
         write_template(tmp_path, "2026-08-03 10:15:00")  # a directory
     assert exc.value.code == 2
@@ -190,7 +188,7 @@ def test_resume_keeps_the_existing_file(tmp_path):
 
 
 def test_failed_backup_reuses_the_file_rather_than_clobbering(tmp_path, monkeypatch):
-    """The .bat logs [WARN] and reuses the file as is when the move fails."""
+    """A failed backup logs [WARN] and reuses the file as is."""
     p = tmp_path / "s.md"
     p.write_text("TASK_STATUS: IN_PROGRESS\nprecious\n", encoding="utf-8")
 

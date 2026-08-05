@@ -1,8 +1,8 @@
 """Composing the per-iteration prompt.
 
-The text is run-claude.bat's :write_prompt_head / :write_prompt_tail with
-one substitution: the tool names itself `lmi schedule`, because telling
-claude it was started by run-claude.bat would be false.
+Two constants and one function: HEAD is everything down to the inlined state
+file, TAIL is the TASK heading after it. The head names the tool that started
+the run, so it must say `lmi schedule`.
 """
 
 import re
@@ -89,10 +89,9 @@ def read_prompt_source(cfg):
     if cfg.prompt_file is None:
         return cfg.prompt_text
     raw = cfg.prompt_file.read_bytes()
-    # Sniff the BOM, through the same helper the state file uses. The .bat
-    # could only detect UTF-16 and warn; decoding it properly is free here.
-    # ANSI text carries no BOM and stays undetectable by construction - that
-    # limit is unchanged.
+    # Sniff the BOM, through the same helper the state file uses, so a UTF-16
+    # prompt file is decoded rather than mangled. ANSI text carries no BOM and
+    # stays undetectable by construction.
     try:
         return textlib.decode_with_bom(raw)
     except UnicodeDecodeError as exc:

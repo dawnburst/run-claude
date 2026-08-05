@@ -70,86 +70,15 @@ class Config:
 
 
 def build_config(args):
-    # -i and -c are mutually required. argparse gives None when a flag is
-    # absent, so `-i 0` is distinguishable from "-i not given" with no
-    # sentinel variable - unlike the .bat, which needed INTERVAL_GIVEN.
-    if args.interval is not None and args.count is None:
-        raise LmiError(
-            "-i requires -c: an unattended loop must have a stop condition",
-            EXIT_USAGE,
-        )
-    if args.count is not None and args.interval is None:
-        raise LmiError(
-            "-c requires -i: give the interval between iterations too", EXIT_USAGE
-        )
+    """Validate the parsed arguments and freeze them into a Config.
 
-    if args.interval is None:
-        interval_min, max_runs = 0, 1
-    else:
-        interval_min, max_runs = args.interval, args.count
-        if max_runs <= 0:
-            raise LmiError("-c must be greater than 0", EXIT_USAGE)
-        if interval_min < 0:
-            raise LmiError("-i must not be negative", EXIT_USAGE)
-
-    at = None
-    if args.at is not None:
-        try:
-            at = datetime.strptime(args.at, AT_FORMAT)
-        except ValueError:
-            raise LmiError(
-                '-t must look like YYYY-MM-DD HH:MM (quoted), got: ' + args.at,
-                EXIT_USAGE,
-            )
-
-    if args.workdir is None:
-        work_dir = Path.cwd()
-    else:
-        kind, reason = fs.classify(args.workdir)
-        if kind == fs.DIR:
-            work_dir = Path(args.workdir).resolve()
-        elif kind == fs.MISSING:
-            raise LmiError(
-                "working directory does not exist: " + str(args.workdir), EXIT_USAGE
-            )
-        elif kind == fs.UNKNOWN:
-            raise LmiError(
-                "working directory cannot be used: %s (%s)"
-                % (args.workdir, reason),
-                EXIT_USAGE,
-            )
-        else:
-            # It exists and is a file, or a fifo. "does not exist" sent people
-            # looking for a typo in a path that was right all along.
-            raise LmiError(
-                "working directory is not a directory: " + str(args.workdir),
-                EXIT_USAGE,
-            )
-
-    # argparse accepts an empty positional, and Path("") is PosixPath('.'),
-    # which classifies as a directory - so `lmi schedule ""` used to complain
-    # that the prompt is a directory. It is simply missing.
-    if not args.prompt.strip():
-        raise LmiError(
-            "the prompt is empty: give the prompt text, or the path of a "
-            "UTF-8 file containing it",
-            EXIT_USAGE,
-        )
-
-    prompt_text, prompt_file = None, None
-    # fs.classify, not Path.is_dir(): an inline prompt reaching 256 bytes
-    # without a slash makes the raw pathlib call raise ENAMETOOLONG. Anything
-    # the OS will not classify is simply not a path, so it is prompt text.
-    kind, _ = fs.classify(args.prompt)
-    if kind == fs.DIR:
-        raise LmiError(
-            "the prompt argument is a directory: " + args.prompt, EXIT_USAGE
-        )
-    if kind == fs.FILE:
-        prompt_file = Path(args.prompt).resolve()
-    else:
-        prompt_text = args.prompt
-
+    The call order below is the order the four groups are validated in, and it
+    is what decides which message a doubly-wrong command line reports.
+    """
+    interval_min, max_runs = _loop_shape(args)
+    at = _parse_at(args)
+    work_dir = _resolve_workdir(args)
+    prompt_text, prompt_file = _classify_prompt(args)
     return Config(
         prompt_text=prompt_text,
         prompt_file=prompt_file,
@@ -162,3 +91,88 @@ def build_config(args):
         state_arg=args.state,
         resume=args.resume,
     )
+
+
+def _loop_shape(args):
+    """(minutes between iterations, how many iterations).
+
+    -i and -c are mutually required. argparse gives None when a flag is absent,
+    so `-i 0` is distinguishable from "-i not given" without a sentinel.
+    """
+    if args.interval is not None and args.count is None:
+        raise LmiError(
+            "-i requires -c: an unattended loop must have a stop condition",
+            EXIT_USAGE,
+        )
+    if args.count is not None and args.interval is None:
+        raise LmiError(
+            "-c requires -i: give the interval between iterations too", EXIT_USAGE
+        )
+
+    if args.interval is None:
+        return 0, 1
+    if args.count <= 0:
+        raise LmiError("-c must be greater than 0", EXIT_USAGE)
+    if args.interval < 0:
+        raise LmiError("-i must not be negative", EXIT_USAGE)
+    return args.interval, args.count
+
+
+def _parse_at(args):
+    """The -t start time, or None for "start now"."""
+    if args.at is None:
+        return None
+    try:
+        return datetime.strptime(args.at, AT_FORMAT)
+    except ValueError:
+        raise LmiError(
+            "-t must look like YYYY-MM-DD HH:MM (quoted), got: " + args.at,
+            EXIT_USAGE,
+        )
+
+
+def _resolve_workdir(args):
+    """The -d working directory, defaulting to the current one."""
+    if args.workdir is None:
+        return Path.cwd()
+    kind, reason = fs.classify(args.workdir)
+    if kind == fs.DIR:
+        return Path(args.workdir).resolve()
+    if kind == fs.MISSING:
+        raise LmiError(
+            "working directory does not exist: " + str(args.workdir), EXIT_USAGE
+        )
+    if kind == fs.UNKNOWN:
+        raise LmiError(
+            "working directory cannot be used: %s (%s)" % (args.workdir, reason),
+            EXIT_USAGE,
+        )
+    # It exists and is a file, or a fifo. "does not exist" sent people looking
+    # for a typo in a path that was right all along.
+    raise LmiError(
+        "working directory is not a directory: " + str(args.workdir), EXIT_USAGE
+    )
+
+
+def _classify_prompt(args):
+    """(prompt text, prompt file) - exactly one of the two is set."""
+    # argparse accepts an empty positional, and Path("") is PosixPath('.'),
+    # which classifies as a directory - so `lmi schedule ""` used to complain
+    # that the prompt is a directory. It is simply missing.
+    if not args.prompt.strip():
+        raise LmiError(
+            "the prompt is empty: give the prompt text, or the path of a "
+            "UTF-8 file containing it",
+            EXIT_USAGE,
+        )
+    # fs.kind, not Path.is_dir(): an inline prompt reaching 256 bytes without a
+    # slash makes the raw pathlib call raise ENAMETOOLONG. Anything the OS will
+    # not classify is simply not a path, so it is prompt text.
+    kind = fs.kind(args.prompt)
+    if kind == fs.DIR:
+        raise LmiError(
+            "the prompt argument is a directory: " + args.prompt, EXIT_USAGE
+        )
+    if kind == fs.FILE:
+        return None, Path(args.prompt).resolve()
+    return args.prompt, None

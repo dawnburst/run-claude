@@ -2,8 +2,7 @@
 
 fcntl.flock on Unix, msvcrt.locking on Windows. Both are released by the
 kernel on process exit, which is why there is no PID file and no staleness
-check here: a hard kill cannot leave a lock behind. run-claude.bat gets the
-same property from holding handle 9 open.
+check here: a hard kill cannot leave a lock behind.
 """
 
 import contextlib

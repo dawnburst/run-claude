@@ -1,14 +1,14 @@
 """One line to the console and to the log file.
 
-Format matches run-claude.bat: plain lines, no per-line timestamps, and the
-same [WARN] / [ERROR] / [QUOTA] tags, so existing logs stay comparable.
+Plain lines, no per-line timestamps, and the [WARN] / [ERROR] / [QUOTA] tags
+that an unattended run's log is searched for afterwards.
 
-Nothing here may raise. The .bat's :log ignores an append failure and the run
-finishes with console output intact; the first Python version instead let the
-PermissionError out of Logger.line, which then reached the runner's error
-handler, which called log.error, which raised the same error again - a
-two-level traceback and exit 1, indistinguishable from a failed claude call.
-A broken log must degrade, not decide the exit code.
+Nothing here may raise. An append failure must degrade to console output and
+leave the run intact: the first version let the PermissionError out of
+Logger.line, which reached the runner's error handler, which called log.error,
+which raised the same error again - a two-level traceback and exit 1,
+indistinguishable from a failed claude call. A broken log must degrade, not
+decide the exit code.
 """
 
 import sys
