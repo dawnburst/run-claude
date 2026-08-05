@@ -6,7 +6,31 @@ of them meant two copies that had already drifted apart.
 
 import pytest
 
+from lmi.commands.schedule import paths
 from lmi.commands.schedule.config import Config
+
+# A fixed run timestamp, so a resolved log file name is predictable.
+TS = "20260803-101500"
+
+
+@pytest.fixture
+def on_windows(monkeypatch):
+    """Take the Windows branch of paths.py.
+
+    paths._on_windows is patched rather than os.name, which cannot be patched:
+    pathlib picks its concrete class from os.name at instantiation, so forcing
+    it to "nt" here makes every Path() raise NotImplementedError.
+    """
+    monkeypatch.setattr(paths, "_on_windows", lambda: True)
+
+
+@pytest.fixture
+def deny_touch(monkeypatch):
+    """Make the writability probe fail the way C:\\Windows does."""
+    def _throw(self, *a, **k):
+        raise PermissionError(13, "denied")
+
+    monkeypatch.setattr(paths.Path, "touch", _throw)
 
 
 @pytest.fixture

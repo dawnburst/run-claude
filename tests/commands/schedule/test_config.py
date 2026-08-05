@@ -1,5 +1,4 @@
 from datetime import datetime
-from pathlib import Path
 
 import pytest
 
@@ -157,7 +156,7 @@ def test_two_positional_prompts_exits_2_via_argparse():
 
 
 def test_unquoted_two_token_at_is_rejected():
-    """A deliberate deviation from the .bat, which tolerates this. Supporting
+    """A deliberate restriction. Supporting
     it needs nargs="+" on -t, which is greedy and would swallow the prompt in
     `-t "2026-08-05 22:00" "my prompt"`. A silent mis-parse is worse than
     requiring a quote, so the two-token form must fail loudly."""

@@ -1,7 +1,11 @@
 # lmi — design (scoped to `lmi schedule`)
 
 **Date:** 2026-08-03
-**Status:** approved, not yet implemented
+**Status:** implemented and merged. Kept as the design record - the rationale
+behind the structure. Where this document and the code disagree, the code and
+`CLAUDE.md` win. It refers throughout to `run-claude.bat`, the Windows batch
+runner `lmi schedule` replaced; that script was removed from the repository once
+`lmi` took over, and is in the git history.
 
 `lmi` is a Python CLI tool with subcommands. This spec covers the tool's skeleton
 and its first command, `lmi schedule`, which runs the Claude Code CLI unattended

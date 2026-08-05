@@ -6,8 +6,6 @@ from lmi.commands.schedule.prompt import compose, read_prompt_source
 from lmi.core.errors import LmiError
 
 
-
-
 def test_inline_text_is_returned_verbatim(tmp_path, make_cfg):
     assert read_prompt_source(make_cfg(tmp_path)) == "write a haiku"
 
@@ -32,7 +30,7 @@ def test_utf8_bom_file_is_read_without_the_bom(tmp_path, make_cfg):
 
 
 def test_utf16_file_is_decoded_not_mangled(tmp_path, make_cfg):
-    """The .bat could only warn about UTF-16; Python decodes it properly."""
+    """A UTF-16 prompt file is decoded from its BOM, not mangled."""
     p = tmp_path / "t.md"
     p.write_bytes("שלום\n".encode("utf-16"))
     got = read_prompt_source(make_cfg(tmp_path, prompt_text=None, prompt_file=p))
@@ -57,7 +55,6 @@ def test_composed_prompt_has_every_section(tmp_path, make_cfg):
     )
     assert out.startswith("# Unattended automated run")
     assert "lmi schedule" in out
-    assert "run-claude.bat" not in out
     assert "Iteration: 2 of 5" in out
     assert "Started: 2026-08-03 10:15:00" in out
     assert "State file: " + str(state) in out

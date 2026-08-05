@@ -7,22 +7,19 @@ from ...core import text as textlib
 from ...core.errors import EXIT_USAGE, LmiError
 from . import paths
 
-# Only the FIRST line is ever tested against this. A whole-file search is
-# wrong and fails silently: real claude restates the protocol sentence
-# "write TASK_STATUS: COMPLETE on the first line only when ..." inside the
-# state file, so a file-wide match stops the loop after one iteration while
-# line 1 still says IN_PROGRESS. This is landmine 14 in CLAUDE.md.
-# \b (not "whitespace or end of line") matches the .bat's PowerShell regex,
-# so "COMPLETE." counts and "COMPLETED" does not.
-# re.IGNORECASE is required, not a stylistic choice: the .bat's PowerShell
-# "-match" operator is case-insensitive by default (the case-sensitive form
-# is the distinct "-cmatch", which is not used). A state file is meant to be
-# interchangeable between run-claude.bat and lmi schedule, so
-# "task_status: complete" on line 1 must be COMPLETE to both or neither.
-# Do NOT tighten this to case-sensitive later - that would silently diverge
-# from the .bat again. Being case-insensitive cannot reopen landmine 14: the
-# read below is still line-1-only, so lenient casing cannot make prose
-# deeper in the file match.
+# Only the FIRST line is ever tested against this, and that is the whole point.
+# A whole-file search is wrong and fails silently: claude reliably restates the
+# protocol sentence "write TASK_STATUS: COMPLETE on the first line only when
+# ..." inside the state file, so a file-wide match stops the loop after one
+# iteration while line 1 still says IN_PROGRESS - a run that reports "1 run, 1
+# succeeded" and exit 0 with four fifths of the task abandoned. Do not
+# "optimise" the read below into a search over the file.
+# \b rather than "whitespace or end of line", so "COMPLETE." counts as complete
+# and "COMPLETED" does not.
+# re.IGNORECASE is deliberate: a hand-edited state file whose line 1 reads
+# "task_status: complete" means the task is complete. It cannot reopen the
+# false-positive above, because the read below is still line-1-only, so lenient
+# casing can never reach prose deeper in the file.
 COMPLETE_RE = re.compile(r"^\s*TASK_STATUS:\s*COMPLETE\b", re.IGNORECASE)
 
 STATE_TEMPLATE = """\
@@ -57,9 +54,9 @@ def write_template(path, now_str):
         with open(path, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(body)
     except OSError as exc:
-        # The .bat swallows this and still logs success, after which the
-        # loop can never see COMPLETE and repeats iteration 1 forever.
-        # Fail loudly instead.
+        # Swallowing this would log success and then loop on an untouched
+        # template forever, since the loop can never see COMPLETE in a file
+        # nobody can write. Fail loudly instead.
         raise LmiError(
             "cannot write the state file %s: %s" % (path, exc), EXIT_USAGE
         )
@@ -114,10 +111,9 @@ def check_complete(path):
             head = fh.read(4096)
     except OSError:
         return False
-    if not head:
-        return False
-    # PowerShell's Get-Content auto-detects UTF-16 from its BOM, so a state
-    # file hand-edited in a Windows editor may arrive that way.
+    # A state file hand-edited in a Windows editor can arrive as UTF-16, so the
+    # BOM decides the encoding here too. An empty file decodes to no lines at
+    # all, which the fallback below turns into "not complete".
     lines = textlib.decode_with_bom(head, "replace").splitlines()
     first_line = lines[0] if lines else ""
     return COMPLETE_RE.search(first_line) is not None

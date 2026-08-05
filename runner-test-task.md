@@ -1,4 +1,4 @@
-This is a test of the run-claude.bat runner. Work strictly inside the current
+This is a test of the `lmi schedule` runner. Work strictly inside the current
 working directory.
 
 The task has five numbered steps. Do exactly ONE step per run: the lowest

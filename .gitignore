@@ -1,4 +1,4 @@
-# Artefacts produced by running run-claude.bat
+# Artefacts produced by a `lmi schedule` run
 run-claude-*.log
 run-claude-state.md
 run-claude.lock

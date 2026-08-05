@@ -14,14 +14,17 @@ from ...core.errors import EXIT_OK, EXIT_USAGE, LmiError
 from ...core.lock import LockBusy, LockUnusable, single_instance_lock
 from ...core.log import Logger
 from . import paths, prompt, state
-from .config import build_config
+from .config import AT_FORMAT, build_config
 from .exit_codes import EXIT_CALL_FAILED, EXIT_INTERNAL, EXIT_LOCKED
 
 DEFAULT_FLAGS = ["--allowed-tools=Edit,Write"]
 
-# What an iteration that never reached claude is recorded as. Same number
-# run-claude.bat's :run_once uses when it cannot build the prompt, so the two
-# tools' logs stay comparable.
+# The rule that opens and closes the header and the summary block.
+RULE = "=" * 75
+
+# What an iteration that never reached claude is recorded as - deliberately
+# outside the range claude itself returns, so a skipped iteration cannot be
+# confused with a real exit code in the log.
 ITERATION_ERROR_RC = 90
 
 QUOTA_RE = re.compile(
@@ -42,7 +45,7 @@ def run(args):
     if claude is None:
         raise LmiError("claude is not on PATH", EXIT_USAGE)
 
-    lock_path = state_path.parent / "run-claude.lock"
+    lock_path = state_path.parent / paths.LOCK_NAME
     try:
         with single_instance_lock(lock_path):
             return _run_locked(cfg, log, state_path, run_ts, claude)
@@ -68,13 +71,16 @@ def run(args):
         raise
     except Exception:
         # Everything the runner itself reports must reach the log, not just the
-        # terminal. run-claude.bat gets this by capturing its own stderr to a
-        # file and appending it under [WARN]; here the traceback goes straight
-        # into the log so a crashed unattended run is diagnosable afterwards.
+        # terminal, so a crashed unattended run is diagnosable afterwards.
         log.error("the runner itself failed - this is a bug in lmi:")
-        for line in traceback.format_exc().rstrip().splitlines():
-            log.error("  " + line)
+        _log_traceback(log)
         return EXIT_INTERNAL
+
+
+def _log_traceback(log):
+    """Indent the current traceback into the log, one [ERROR] line each."""
+    for line in traceback.format_exc().rstrip().splitlines():
+        log.error("  " + line)
 
 
 def _claude_argv(cfg, state_path, claude):
@@ -82,35 +88,37 @@ def _claude_argv(cfg, state_path, claude):
         ["--add-dir", str(state_path.parent)] + cfg.user_flags
 
 
-def _log_header(cfg, log, state_path, argv, claude):
-    log.line("=" * 75)
+def _log_header(cfg, log, state_path, argv):
+    log.line(RULE)
     log.line("lmi schedule starting at " + paths.now_str())
     log.line("Working directory: " + str(cfg.work_dir))
-    # The resolved configuration, which README's Logging section promises and
-    # the .bat's header prints: where the prompt came from, which claude is
-    # being run, and the complete flag list including the defaults and -f.
+    # The resolved configuration, which README's Logging section promises:
+    # where the prompt came from, which claude is being run, and the complete
+    # flag list including the defaults and -f.
     if cfg.prompt_file is not None:
         log.line("Prompt    : file " + str(cfg.prompt_file))
     else:
         log.line("Prompt    : inline text: " + (cfg.prompt_text or ""))
-    log.line("claude    : " + str(claude))
+    # argv[0] rather than a separate claude argument: they are the same value
+    # by construction (see _claude_argv), and two parameters could disagree.
+    log.line("claude    : " + argv[0])
     log.line("Flags     : " + " ".join(argv[1:]))
     log.line("State file: " + str(state_path))
     log.line("Log file  : " + str(log.path))
     log.line("Iterations: %d" % cfg.max_runs)
     log.line("Interval  : %d minute/s" % cfg.interval_min)
     if cfg.at is not None:
-        log.line("Start time: " + cfg.at.strftime("%Y-%m-%d %H:%M"))
-    log.line("=" * 75)
+        log.line("Start time: " + cfg.at.strftime(AT_FORMAT))
+    log.line(RULE)
 
 
 def _log_iteration_result(log, label, rc, duration):
     """Record how one iteration ended. Returns True if it succeeded.
 
-    Both shapes carry the four facts run-claude.bat's :iter_ok and :iter_failed
-    do - which iteration, when it ended, claude's exit code, how long it took -
-    because the log is an unattended run's only record and the duration is what
-    reveals a hung or slowing iteration.
+    Both shapes carry the same four facts - which iteration, when it ended,
+    claude's exit code, how long it took - because the log is an unattended
+    run's only record and the duration is what reveals a hung or slowing
+    iteration.
     """
     finished = paths.now_str()
     if rc == 0:
@@ -134,12 +142,12 @@ def _log_iteration_result(log, label, rc, duration):
 
 def _log_summary(log, state_path, runs, fails):
     log.line("")
-    log.line("=" * 75)
+    log.line(RULE)
     log.line("lmi schedule finished at " + paths.now_str())
     log.line("%d run/s, %d succeeded, %d failed." % (runs, runs - fails, fails))
     log.line("State file: " + str(state_path))
     log.line("Log file  : " + str(log.path))
-    log.line("=" * 75)
+    log.line(RULE)
     if fails:
         log.error(
             "%d iteration/s failed - search the log for [ERROR] and [QUOTA]." % fails
@@ -149,7 +157,7 @@ def _log_summary(log, state_path, runs, fails):
 def _run_locked(cfg, log, state_path, run_ts, claude):
     # Fixed for the whole run, so built once rather than per iteration.
     argv = _claude_argv(cfg, state_path, claude)
-    _log_header(cfg, log, state_path, argv, claude)
+    _log_header(cfg, log, state_path, argv)
 
     state.prepare(state_path, cfg.resume, run_ts, log)
     # The task text never changes, so it is read and decoded once instead of on
@@ -159,7 +167,6 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
     _wait_until(cfg.at, log)
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="lmi-schedule-"))
-    exit_code = EXIT_OK
     runs = fails = 0
     try:
         for iteration in range(1, cfg.max_runs + 1):
@@ -169,36 +176,15 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
             log.line("")
             log.line("--- iteration %s started %s ---" % (label, started))
 
-            try:
-                rc = _one_iteration(
-                    cfg, log, state_path, argv, task, tmp_dir, iteration,
-                    label, started
-                )
-            except LmiError:
-                # A usage error is deterministic - a prompt file that is not
-                # UTF-8 would fail identically on every remaining iteration -
-                # so it ends the run (logged, exit 2) rather than burning the
-                # whole loop. Everything else below is treated as transient.
-                raise
-            except Exception:
-                # Invariant 2, the exception half of it: a failure to even
-                # build the prompt, a transient OSError out of subprocess.run,
-                # a full disk. run-claude.bat's :run_once logs "[ERROR] Could
-                # not build the prompt for this iteration - it was skipped.",
-                # sets CLAUDE_RC=90 and keeps looping; so does this. Without
-                # it, one bad iteration abandoned every iteration after it.
-                rc = ITERATION_ERROR_RC
-                log.error(
-                    "could not run iteration %s - it was skipped:" % label
-                )
-                for line in traceback.format_exc().rstrip().splitlines():
-                    log.error("  " + line)
+            rc = _iteration_rc(
+                cfg, log, state_path, argv, task, tmp_dir, iteration,
+                label, started
+            )
             runs += 1
             if not _log_iteration_result(
                 log, label, rc, int(time.time() - start_clock)
             ):
                 fails += 1
-                exit_code = EXIT_CALL_FAILED
 
             if state.check_complete(state_path):
                 log.line(
@@ -207,16 +193,47 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
                 break
             if iteration >= cfg.max_runs:
                 break
-            if cfg.interval_min > 0:
-                secs = cfg.interval_min * 60
-                nxt = datetime.fromtimestamp(time.time() + secs)
-                log.line("Next iteration at " + paths.now_str(nxt))
-                time.sleep(secs)
+            _sleep_between(cfg, log)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
     _log_summary(log, state_path, runs, fails)
-    return exit_code
+    # Derived, not tracked alongside `fails`: a failed iteration is the only
+    # thing that makes a run exit 1, so the two cannot drift apart.
+    return EXIT_CALL_FAILED if fails else EXIT_OK
+
+
+def _iteration_rc(cfg, log, state_path, argv, task, tmp_dir, n, label, started):
+    """One iteration's exit code, with invariant 2 enforced around it."""
+    try:
+        return _one_iteration(
+            cfg, log, state_path, argv, task, tmp_dir, n, label, started
+        )
+    except LmiError:
+        # A usage error is deterministic - a prompt file that is not UTF-8
+        # would fail identically on every remaining iteration - so it ends the
+        # run (logged, exit 2) rather than burning the whole loop. Everything
+        # in the clause below is treated as transient instead. This clause must
+        # stay first: LmiError is an Exception too.
+        raise
+    except Exception:
+        # Invariant 2, the exception half of it: a failure to even build the
+        # prompt, a transient OSError out of subprocess.run, a full disk. The
+        # iteration is recorded as skipped and the loop carries on - without
+        # this, one bad iteration abandoned every iteration after it.
+        log.error("could not run iteration %s - it was skipped:" % label)
+        _log_traceback(log)
+        return ITERATION_ERROR_RC
+
+
+def _sleep_between(cfg, log):
+    """Wait out -i, measured from the end of the iteration that just finished."""
+    if cfg.interval_min <= 0:
+        return
+    secs = cfg.interval_min * 60
+    nxt = datetime.fromtimestamp(time.time() + secs)
+    log.line("Next iteration at " + paths.now_str(nxt))
+    time.sleep(secs)
 
 
 def _one_iteration(cfg, log, state_path, argv, task, tmp_dir, n, label, started):
@@ -266,11 +283,10 @@ def _wait_until(target, log):
     if secs <= 0:
         log.line(
             "Start time %s has already passed - starting now."
-            % target.strftime("%Y-%m-%d %H:%M")
+            % target.strftime(AT_FORMAT)
         )
         return
     log.line(
-        "Waiting until %s (%d seconds)."
-        % (target.strftime("%Y-%m-%d %H:%M"), int(secs))
+        "Waiting until %s (%d seconds)." % (target.strftime(AT_FORMAT), int(secs))
     )
     time.sleep(secs)

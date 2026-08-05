@@ -62,7 +62,7 @@ itself first, precisely so that this works.
 With git available:
 
 ```powershell
-git clone -b lmi-schedule https://github.com/dawnburst/run-claude.git C:\lmi
+git clone https://github.com/dawnburst/run-claude.git C:\lmi
 Set-Location C:\lmi
 ```
 

@@ -30,10 +30,10 @@ def classify(path):
         st = os.stat(str(path))
     except (FileNotFoundError, NotADirectoryError):
         return MISSING, ""
-    except OSError as exc:
-        return UNKNOWN, str(exc)
-    except ValueError as exc:
-        # An embedded NUL byte is a ValueError, not an OSError.
+    except (OSError, ValueError) as exc:
+        # ValueError, not OSError, is what an embedded NUL byte raises - and
+        # the two clauses answer identically, so they share one body. The
+        # clause above still wins for the two subclasses it names.
         return UNKNOWN, str(exc)
     if _stat.S_ISDIR(st.st_mode):
         return DIR, ""

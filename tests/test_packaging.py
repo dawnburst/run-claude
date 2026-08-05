@@ -5,14 +5,6 @@ works because of four declarations in pyproject.toml and one property of the
 source tree, none of which are obvious from reading the code - so each gets a
 test that fails loudly rather than at a user's first install.
 
-This file replaces tests/test_zipapp.py. The bug that file guarded was real -
-`python -m zipapp -m lmi.cli:main` generates a __main__.py that calls main() and
-throws the result away, so every exit code became 0 - but zipapp is no longer how
-lmi is installed. pip generates the console script now, and it does the
-sys.exit(main()) correctly by construction. What still has to hold is that main()
-*returns* its codes rather than printing and exiting on its own, so that property
-is tested directly below.
-
 Deliberately no test that builds a real wheel: that needs setuptools, and with
 build isolation a network, which would make the suite flaky for no gain. The
 install scripts each verify the generated launcher exists before declaring
@@ -21,8 +13,6 @@ success, and a real wheel install was exercised by hand on Linux and Windows.
 
 import re
 from pathlib import Path
-
-import pytest
 
 from lmi.cli import main
 
@@ -71,22 +61,18 @@ def test_the_package_is_pure_python():
     assert compiled == [], "compiled sources would end the py3-none-any wheel: %s" % compiled
 
 
-@pytest.mark.parametrize("argv, expected", [
-    ([], 2),                                # no command
-    (["schedule", "x", "-i", "5"], 2),      # -i without -c
-    (["schedule", "x", "-c", "3"], 2),      # -c without -i
-])
-def test_main_returns_its_exit_code(argv, expected, tmp_path, monkeypatch):
+def test_main_returns_its_exit_code(tmp_path, monkeypatch):
     """pip's console script is `sys.exit(main())`, so main() must RETURN codes.
 
     If main() ever grows a bare sys.exit() or returns None on a failure path, the
     installed command starts reporting success for failures - which for a tool
     built to run unattended is the worst possible bug: a scheduled task looks
-    healthy forever. Codes 1, 3 and 4 need a real run to reach, so they are
-    covered in test_cli.py and the schedule tests rather than here.
+    healthy forever. One usage error proves the mechanism; which command lines
+    are usage errors is test_config.py's job, and codes 1, 3 and 4 need a real
+    run, so they live in the schedule tests.
     """
-    # chdir even though these all fail in argument validation, before any path
-    # is resolved: if that order ever changes, the test must not start dropping
-    # a log and a state file into the repository.
+    # chdir even though this fails in argument validation, before any path is
+    # resolved: if that order ever changes, the test must not start dropping a
+    # log and a state file into the repository.
     monkeypatch.chdir(tmp_path)
-    assert main(argv) == expected
+    assert main([]) == 2
