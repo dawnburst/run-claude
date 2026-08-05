@@ -8,8 +8,8 @@ rem  This is a thin wrapper. The installer itself is install-windows.ps1, in
 rem  this same directory, and every option is passed straight through:
 rem
 rem      scripts\install-windows.cmd -Uninstall
-rem      scripts\install-windows.cmd -Venv -Editable
-rem      scripts\install-windows.cmd -LinkDir C:\tools\bin
+rem      scripts\install-windows.cmd -Wheel C:\path\to\lmi-0.1.0-py3-none-any.whl
+rem      scripts\install-windows.cmd -Help
 rem
 rem  Two reasons the logic lives in PowerShell rather than here:
 rem
