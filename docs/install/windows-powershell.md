@@ -278,12 +278,25 @@ The first path should appear in the second list.
 **`running scripts is disabled on this system`** — see "Why not just
 `.\scripts\install-windows.ps1`" above.
 
-**Exit 3, "another run is working on this state file", when nothing else is
-running** — you are running from a UNC path such as `\\wsl.localhost\...`.
-Windows byte-range locking is not supported on that filesystem: the lock call
-fails with `EINVAL`, and `lmi` currently reads any failure as contention. Run from
-a local drive (`C:\work`) instead. This is a known limitation, verified on a WSL
-9p share; it does not affect local NTFS.
+**`the working directory is on a network share (UNC path)`** — by design.
+The lock file goes beside the state file, and Windows cannot lock a file on a
+share: the call fails with "Invalid argument", which is indistinguishable from
+another run holding the lock. Before this was refused outright it surfaced as a
+phantom exit 3, "another run is working on this state file", with nothing else
+running.
+
+The restriction is only on the state file, so you can keep working on the share:
+
+```
+lmi schedule "..." -s C:\lmi\run-claude-state.md
+```
+
+That puts the state file and its lock on a local drive; the log still goes to the
+working directory. Verified: exit 0, with the working directory still the UNC
+path.
+
+**`the state file is on a network share (UNC path)`** — the same rule reached
+through an explicit `-s`. Point it at a local drive.
 
 **`This environment is externally managed`** — you are pointing at a distribution
 Python, probably inside WSL rather than Windows. Use the WSL guide there

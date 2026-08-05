@@ -313,15 +313,23 @@ a crash, so read it when a run dies quietly.
   failure is flagged `[QUOTA]` and the loop moves on to the next iteration.
 - **No log rotation.** Each run writes a new timestamped log file.
 - An inline prompt cannot contain a double quote (see above).
-- **`lmi schedule` cannot run from a UNC path on Windows.** It reports exit 3,
-  "another run is working on this state file", when nothing else is running.
-  Windows byte-range locking is unsupported on a WSL 9p share:
-  `msvcrt.locking` fails with `EINVAL`, and `lmi/core/lock.py` treats any
-  `OSError` from the lock call as contention. Verified against
-  `\\wsl.localhost\...`; local NTFS is unaffected. Work from a local drive.
-  Distinguishing "unsupported here" from "held by someone else" would fix it,
-  but that is a change to a safety invariant — iterations must never overlap —
-  so it is not being made silently.
+- **The state file cannot live on a Windows network share**, so `lmi schedule`
+  refuses a UNC working directory with exit 2 and an explanation. The lock file
+  is created beside the state file, and Windows byte-range locking is
+  unsupported on a share: on a WSL 9p mount `msvcrt.locking` fails with
+  `EINVAL`, which `lmi/core/lock.py` cannot tell apart from a lock someone else
+  holds — so the original symptom was exit 3, "another run is working on this
+  state file", with nothing else running.
+
+  The restriction is only on the **state file**, so the working directory can
+  stay on the share:
+
+  ```
+  lmi schedule "..." -s C:\lmi\run-claude-state.md
+  ```
+
+  Verified: state file and lock on the local drive, log on the share, working
+  directory still the UNC path, exit 0. Local NTFS is unaffected throughout.
 
 None of these are scheduled work. If you want one, say so before building it.
 
@@ -432,10 +440,11 @@ Three pitfalls the guides exist to steer around:
   `python3 -m venv --without-pip` and populates it with the system pip's
   `--python` flag. Verified on Ubuntu 24.04 with `python3-venv` absent.
 - **Running from a UNC path on Windows.** The `.exe` keeps the real working
-  directory where the old `.cmd` shim degraded to `C:\Windows` — but Windows
-  byte-range locking is unsupported on a WSL 9p share, so `lmi schedule` reports
-  exit 3 "another run is working on this state file" when nothing else is
-  running. Work from a local drive. See [Known limitations](#known-limitations).
+  directory where the old `.cmd` shim degraded to `C:\Windows`. But Windows
+  cannot lock a file on a share, so `lmi schedule` **refuses** a UNC working
+  directory with exit 2 and points at the fix — `-s` on a local drive, which
+  lets the working directory stay on the share. See
+  [Known limitations](#known-limitations).
 
 For development in a repo-local environment:
 
