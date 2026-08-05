@@ -74,7 +74,16 @@ function Invoke-Capture {
         # @(...) is load-bearing: without it a single output line stays a
         # [string], and $lines[-1] then indexes its last CHARACTER rather than
         # its last line - so "3.13" became "3" and the version check failed.
-        $lines = @(& $File @Arguments 2>&1 | ForEach-Object { [string] $_ })
+        #
+        # ErrorRecord is unwrapped rather than cast: 2>&1 turns a native
+        # program's stderr into ErrorRecords, and [string] on one of those
+        # yields the literal text "System.Management.Automation.RemoteException".
+        # A failing pip therefore reported that instead of its own error, which
+        # is worse than no message at all - it names a .NET type as the cause.
+        $lines = @(& $File @Arguments 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message }
+            else { [string] $_ }
+        })
         return [pscustomobject]@{
             Text = ($lines -join "`n")
             Last = if ($lines.Count) { [string] $lines[-1] } else { '' }
@@ -107,7 +116,17 @@ Needs no administrator rights. Re-run it to upgrade.
     exit 0
 }
 
-$Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+# ProviderPath, not .Path. When the current location is a UNC share, .Path comes
+# back provider-qualified - literally
+#     Microsoft.PowerShell.Core\FileSystem::\\wsl.localhost\Ubuntu\home\...
+# PowerShell's own cmdlets accept that form, so Test-Path and Join-Path kept
+# working and hid it; pip cannot open it, so building the wheel from a checkout
+# on a share failed. ProviderPath is always the plain filesystem path.
+# GetFullPath collapses the trailing "\scripts\.." that Join-Path leaves and
+# Resolve-Path -LiteralPath does not, so messages name the checkout rather than
+# a path with a ".." in the middle of it.
+$Repo = [System.IO.Path]::GetFullPath(
+    (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).ProviderPath)
 
 # --- the old installer's leftovers ------------------------------------------
 # Only ever remove what we recognise: a zipapp that really contains lmi/cli.py,
@@ -198,7 +217,8 @@ function Get-NewestWheel([string] $Dir) {
 Step "Finding the wheel"
 if ($Wheel) {
     if (-not (Test-Path -LiteralPath $Wheel)) { Die "no such wheel: $Wheel" }
-    $Wheel = (Resolve-Path -LiteralPath $Wheel).Path
+    # ProviderPath for the same reason as $Repo above: this path is handed to pip.
+    $Wheel = (Resolve-Path -LiteralPath $Wheel).ProviderPath
 } else {
     # Beside the script first: that is the shape of a machine with no git, where
     # the script and the wheel were downloaded into the same folder.
