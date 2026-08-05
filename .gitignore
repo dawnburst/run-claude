@@ -16,3 +16,9 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .venv/
+
+# The built wheel and pip's scratch directory. The wheel is a release asset,
+# not a tracked file - it is reproducible from the source with one command
+# (see "Building the wheel" in README.md).
+build/
+dist/
