@@ -229,9 +229,10 @@ lmi\                  the Python reimplementation
   commands\
     schedule\         the lmi schedule command: config/validation, paths,
                       prompt composition, the state file, the iteration loop
-tests\                pytest suite for lmi, 107 cases, mirrors the lmi\ tree
+tests\                pytest suite for lmi, 117 cases, mirrors the lmi\ tree
 docs\install\         per-platform install guides, one file each
-scripts\              install scripts: install-linux.sh, install-macos.sh,
+scripts\              install scripts, all four installing the same wheel:
+                      install-linux.sh, install-macos.sh,
                       install-windows.cmd, install-windows.ps1
 README.md             this file
 LICENSE               MIT
@@ -312,6 +313,15 @@ a crash, so read it when a run dies quietly.
   failure is flagged `[QUOTA]` and the loop moves on to the next iteration.
 - **No log rotation.** Each run writes a new timestamped log file.
 - An inline prompt cannot contain a double quote (see above).
+- **`lmi schedule` cannot run from a UNC path on Windows.** It reports exit 3,
+  "another run is working on this state file", when nothing else is running.
+  Windows byte-range locking is unsupported on a WSL 9p share:
+  `msvcrt.locking` fails with `EINVAL`, and `lmi/core/lock.py` treats any
+  `OSError` from the lock call as contention. Verified against
+  `\\wsl.localhost\...`; local NTFS is unaffected. Work from a local drive.
+  Distinguishing "unsupported here" from "held by someone else" would fix it,
+  but that is a change to a safety invariant — iterations must never overlap —
+  so it is not being made silently.
 
 None of these are scheduled work. If you want one, say so before building it.
 
@@ -343,63 +353,89 @@ your PATH — no `python -m` prefix and nothing to activate.
 
 | Platform | Guide | Status |
 |---|---|---|
-| Linux, including WSL | [docs/install/linux.md](docs/install/linux.md) | verified — has an install script |
-| Windows — `cmd.exe` | [docs/install/windows-cmd.md](docs/install/windows-cmd.md) | verified — has an install script |
-| Windows — PowerShell | [docs/install/windows-powershell.md](docs/install/windows-powershell.md) | verified — has an install script |
-| macOS | [docs/install/macos.md](docs/install/macos.md) | has an install script — **not yet run on a Mac** |
+| Linux, including WSL | [docs/install/linux.md](docs/install/linux.md) | verified on Ubuntu 24.04, Python 3.12 and 3.9.23 |
+| Windows — `cmd.exe` | [docs/install/windows-cmd.md](docs/install/windows-cmd.md) | verified on Windows, Python 3.13 |
+| Windows — PowerShell | [docs/install/windows-powershell.md](docs/install/windows-powershell.md) | verified on Windows, Python 3.13 |
+| macOS | [docs/install/macos.md](docs/install/macos.md) | script written — **never run on a Mac** |
 
-Each guide gives a scripted route where one exists, the same steps by hand, and
-`pipx` if you prefer it to manage isolation for you — plus a first run,
-updating, uninstalling, and the troubleshooting specific to that platform.
+Each guide gives a scripted route, the same steps by hand, and `pipx` if you
+prefer it to manage isolation for you — plus a first run, updating,
+uninstalling, and the troubleshooting specific to that platform.
 
-Linux and WSL have a one-command installer:
+#### One wheel, every platform
+
+You install **one file: `lmi-0.1.0-py3-none-any.whl`**, about 22 KB. That name is
+the compatibility contract: `py3` any Python 3, `none` no compiled ABI, `any`
+**any operating system**. `lmi` is pure Python with no third-party dependencies
+(`dependencies = []`, every import from the standard library, no `.c` or `.so`
+anywhere), which is what earns the universal tag. There is no per-platform
+artefact to build, test, or keep in sync — `tests/test_packaging.py` fails if any
+of those properties is lost.
+
+pip then generates whatever launcher the local OS needs from that same wheel: a
+real `lmi.exe` on Windows, a shebang script elsewhere. The platform-specific work
+happens on the user's machine, at install time, by pip.
+
+Build it once, on any machine with a network:
 
 ```bash
-git clone https://github.com/dawnburst/run-claude.git ~/lmi
+python3 -m pip wheel --no-deps -w dist .
+```
+
+Linux and WSL:
+
+```bash
+git clone -b lmi-schedule https://github.com/dawnburst/run-claude.git ~/lmi
 cd ~/lmi && ./scripts/install-linux.sh
 ```
 
-It builds a **single self-contained executable** with the standard library's
-`zipapp` module, so it needs **no pip, no setuptools, no virtual environment and
-no network** — which also makes it the right route on an air-gapped machine.
-The installed file is the whole program, so **the clone is disposable
-afterwards**. Re-running it is how you upgrade; `--uninstall` reverses it;
-`--venv` and `--editable` give the traditional pip install if you intend to edit
-the source.
+It installs the wheel into a virtual environment of its own at
+`~/.local/share/lmi/venv` and symlinks the generated command into
+`~/.local/bin`, so **the clone is disposable afterwards**. Re-running it is how
+you upgrade; `--uninstall` reverses it.
 
-Windows has the same thing:
+Windows:
 
 ```bat
-git clone https://github.com/dawnburst/run-claude.git C:\lmi
-cd /d C:\lmi && scripts\install-windows.cmd
+scripts\install-windows.cmd
 ```
 
-It installs `lmi.pyz` plus a two-line `lmi.cmd` shim — the shim is what makes
-the bare `lmi` work, since Windows has no `.pyz` association and does not list
-`.PYZ` in `PATHEXT`. Run the `.cmd` even from PowerShell: it wraps
-`install-windows.ps1` with `-ExecutionPolicy Bypass` for that one invocation,
-because a default Windows refuses to run a local `.ps1`.
+It installs the wheel with `pip install --user`, which produces a **real
+`lmi.exe`**, and adds that Scripts directory to your user PATH. Run the `.cmd`
+even from PowerShell: it wraps `install-windows.ps1` with `-ExecutionPolicy
+Bypass` for that one invocation, because a default Windows refuses to run a local
+`.ps1`. Note **git is not on a stock Windows** — both Windows guides start from
+downloading the wheel and the script into one folder, which the installer expects.
 
-macOS has `scripts/install-macos.sh`, shaped like the Linux one. Its logic has
-been exercised on Linux and its macOS-specific parts — finding a usable
-`python3`, the `readlink -f`-free ownership check, naming `~/.zshrc` — are
-written from documentation. **It has never run on a Mac.** Treat it as intended
-rather than proven.
+macOS has `scripts/install-macos.sh`, a close mirror of the Linux one. Its shared
+logic has been exercised on Linux; its macOS-specific parts — the `python3`
+search, the `readlink -f`-free ownership check, naming `~/.zshrc`, bash 3.2
+syntax — are written from documentation. **It has never run on a Mac.** Treat it
+as intended rather than proven.
 
-**`lmi` needs nothing outside the standard library at runtime** — `dependencies`
-is empty. The only thing that pulls in a third-party package is `pip install .`
-itself, which fetches `setuptools` to build; the zipapp route avoids it.
+**Installing needs no network.** Every install command passes `--no-index`, and a
+wheel needs no build backend — unlike `pip install .`, which fetches
+`setuptools>=61` to build. So an air-gapped machine needs the 22 KB wheel and
+nothing else. Only *building* the wheel wants a network.
 
-Two pitfalls the guides exist to steer around:
+Three pitfalls the guides exist to steer around:
 
 - **On Windows, `pip install --user` appears to work and then `lmi` is still
-  "not recognized"**, because a Microsoft Store Python puts its scripts in a
-  directory that is not on PATH.
-- **On Debian and Ubuntu, `python3 -m venv` fails** with `ensurepip is not
-  available` (it ships as a separate `python3-venv` package), and
-  `pip install --break-system-packages` "fixes" that by leaving an install
-  wired to whatever directory you ran it from — which silently breaks `lmi`
-  when that directory moves.
+  "not recognized"**, because the user Scripts directory is not on PATH by
+  default. The installer adds it. Its location comes from `sysconfig`, not
+  `%APPDATA%\Python\PythonXX\Scripts`, which is wrong for a Microsoft Store
+  Python — that inserts a version level.
+- **On Debian and Ubuntu, `pip install --user` is refused outright** with "This
+  environment is externally managed" (PEP 668), and `python3 -m venv` fails with
+  `ensurepip is not available` because Debian ships that separately. The
+  installer needs neither root nor apt: it falls back to
+  `python3 -m venv --without-pip` and populates it with the system pip's
+  `--python` flag. Verified on Ubuntu 24.04 with `python3-venv` absent.
+- **Running from a UNC path on Windows.** The `.exe` keeps the real working
+  directory where the old `.cmd` shim degraded to `C:\Windows` — but Windows
+  byte-range locking is unsupported on a WSL 9p share, so `lmi schedule` reports
+  exit 3 "another run is working on this state file" when nothing else is
+  running. Work from a local drive. See [Known limitations](#known-limitations).
 
 For development in a repo-local environment:
 
@@ -470,22 +506,27 @@ python3 -m pytest tests/ -v
 No install is required first — pytest puts the repository root on `sys.path`,
 so the suite runs against a clean checkout. A virtual environment is only
 needed to exercise the installed `lmi` console script itself, not to run the
-tests. Currently **107 tests, all passing**.
+tests. Currently **117 tests, all passing**.
 
 ### Platform status — be precise about this
 
-All development and testing of `lmi` so far happened **on Linux**. Two
-platform-specific paths have **never been executed**:
+Development happens on Linux. What has actually been executed elsewhere:
 
-- The **Windows file-locking branch** (`msvcrt.locking`, in `lmi/core/lock.py`)
-  has only been exercised through its Linux counterpart (`fcntl.flock`).
-- The **console-script installation** (`pipx install .` or a `pip`-generated
-  `lmi` shim) has never been run on Windows or macOS.
+- **Windows: verified.** Install and uninstall through both
+  `install-windows.cmd` and `install-windows.ps1` against a Microsoft Store
+  Python 3.13; a real `lmi.exe` produced by pip; a bare `lmi` resolving in a new
+  window; exit codes 0 and 2 coming back through the `.exe`; and a full
+  `lmi schedule` run on local NTFS writing its log, state file and lock. The
+  **Windows file-locking branch** (`msvcrt.locking`) has therefore now run — and
+  running it is what exposed the UNC limitation in
+  [Known limitations](#known-limitations).
+- **macOS: never executed.** Neither the install script nor `lmi` itself. The
+  script's shared logic was exercised on Linux; its macOS-specific parts are
+  written from documentation.
 
-Do not describe cross-platform support as proven. It is unverified, not
-assumed working.
+Do not describe macOS support as proven. It is unverified, not assumed working.
 
-**The interpreter floor, however, is verified.** The full suite (107 tests) and
+**The interpreter floor is verified.** The full suite and
 an end-to-end CLI run both pass on **CPython 3.9.23** — single run, a loop that
 stops early on `TASK_STATUS: COMPLETE`, a failing `claude` call leaving the
 runner alive at exit 1, quota detection, argument validation, and two concurrent
@@ -495,8 +536,8 @@ before it was fixed every run died at the first iteration on 3.9. A syntax-level
 check cannot catch a parameter added in a later version — only running the older
 interpreter can.
 
-So: the **3.9 floor** is tested. **Linux** is tested. **Windows and macOS** are
-not.
+So: the **3.9 floor** is tested. **Linux** and **Windows** are tested. **macOS**
+is not.
 
 ### The two verification gates before run-claude.bat can be retired
 
@@ -524,11 +565,14 @@ been attempted.
    state carries forward across iterations. Use `runner-test-task.md`, the
    deliberately five-step task file in this repository, with `-i 1 -c 5`.
 2. **A Windows Task Scheduler run with "run whether user is logged on or
-   not."** The development machine's Python is a Microsoft Store install
-   reached through an App Execution Alias, with no `py.exe` launcher, and it
-   is not known whether a `pip`-generated `lmi` shim resolves at all in that
-   non-interactive context. If it does not, that is a finding about
-   **installation**, not about the design of `lmi schedule` — and
+   not."** Not attempted. The install route now targets a real `lmi.exe` with the
+   interpreter path built in, which removes two of the three things that could
+   fail in that context — no `python` lookup on PATH, and no `cmd.exe` shim — but
+   that is reasoning, not a measurement. The remaining unknown is whether the
+   task's own environment resolves the `.exe` and its interpreter; the
+   development machine's Python is a Microsoft Store install reached through an
+   App Execution Alias, with no `py.exe` launcher. If it fails, that is a finding
+   about **installation**, not about the design of `lmi schedule` — and
    `run-claude.bat` stays in the repository until it is resolved, regardless.
 
 ---
