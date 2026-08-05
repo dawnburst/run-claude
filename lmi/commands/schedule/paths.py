@@ -109,8 +109,8 @@ def _ensure_writable(directory, what, implicit):
             "cannot write to the working directory %s (%s).\n"
             "    That is where the %s would go. Pass -d with a directory you "
             "can write to,\n"
-            "    for example: lmi schedule \"...\" -d %s"
-            % (directory, reason, what, _example_dir()),
+            "    for example: lmi schedule \"...\" -d %s%s"
+            % (directory, reason, what, _example_dir(), _cmd_unc_hint(directory)),
             EXIT_USAGE,
         )
     raise LmiError(
@@ -121,6 +121,89 @@ def _ensure_writable(directory, what, implicit):
 
 def _example_dir():
     return "C:\\work" if os.name == "nt" else "~/work"
+
+
+def _cmd_unc_hint(directory):
+    r"""Name the real cause when the working directory is the Windows directory.
+
+    A cmd.exe started in a \\server\share folder cannot hold that directory, so
+    it prints a notice and substitutes the Windows directory - and by the time
+    lmi runs, the UNC path is gone from the environment entirely and the UNC
+    guard cannot see it. All that is left is an unwritable C:\Windows, which on
+    its own reads like a bizarre choice of working directory rather than the
+    consequence it is. Verified: a cmd launched in a \\wsl.localhost\... folder
+    reports exactly this.
+    """
+    if not _on_windows():
+        return ""
+    root = os.environ.get("SystemRoot") or os.environ.get("windir") or ""
+    if not root:
+        return ""
+    here = str(directory).rstrip("\\").lower()
+    root = root.rstrip("\\").lower()
+    if here not in (root, root + "\\system32"):
+        return ""
+    return (
+        "\n    If you started cmd in a \\\\server\\share folder, that is the "
+        "cause: cmd.exe\n"
+        "    cannot hold a UNC working directory and silently substitutes this "
+        "one.\n"
+        "    Note lmi cannot keep its state file on a share either - see "
+        "-s in --help."
+    )
+
+
+def _on_windows():
+    """os.name == "nt", in a form a test can override.
+
+    Monkeypatching os.name itself is not an option: pathlib chooses its concrete
+    class from it at instantiation, so setting it to "nt" on Linux makes every
+    Path() raise NotImplementedError - including pytest's own.
+    """
+    return os.name == "nt"
+
+
+def _reject_unc(path, implicit):
+    r"""Refuse a state file on a Windows network share, before anything runs.
+
+    The lock file is created next to the state file, and Windows byte-range
+    locking is not supported on a share: on a WSL 9p mount msvcrt.locking fails
+    with EINVAL, and core.lock cannot tell that apart from a lock somebody else
+    holds. The result was a run that reported exit 3, "another run is working on
+    this state file", with nothing else running at all - a phantom that took a
+    measurement to explain. Failing here says what is actually wrong.
+
+    Only the state file is rejected, deliberately: the log is written and never
+    locked, and claude itself is happy with a UNC working directory. So keeping
+    the working directory on the share and moving just the state file with -s is
+    a real escape hatch, and the message offers it.
+
+    Windows only. On POSIX a //-prefixed path is local and locks correctly.
+    """
+    if not _on_windows() or not fs.looks_like_unc(path):
+        return
+    if implicit:
+        raise LmiError(
+            "the working directory is on a network share (UNC path): %s\n"
+            "    That is where the state file and its lock file would go, and "
+            "Windows cannot\n"
+            "    lock a file on a share - the attempt fails with \"Invalid "
+            "argument\", which is\n"
+            "    indistinguishable from another run holding the lock.\n"
+            "    Either work from a local drive, or keep this working directory "
+            "and put the\n"
+            "    state file somewhere local:\n"
+            "        lmi schedule \"...\" -s C:\\lmi\\run-claude-state.md"
+            % path.parent, EXIT_USAGE,
+        )
+    raise LmiError(
+        "the state file is on a network share (UNC path): %s\n"
+        "    Its lock file goes in the same folder, and Windows cannot lock a "
+        "file on a\n"
+        "    share. Choose a path on a local drive, for example "
+        "C:\\lmi\\run-claude-state.md."
+        % path, EXIT_USAGE,
+    )
 
 
 def _ensure_parent(path, what, implicit=None):
@@ -153,6 +236,10 @@ def resolve_state(cfg):
     implicit = cfg.state_arg is None
     raw = cfg.state_arg or str(cfg.work_dir / STATE_NAME)
     path = _expand(raw, "state file")
+    # Before touching the filesystem: a share cannot hold the lock, and finding
+    # that out at lock time produced a phantom "another run is working on this
+    # state file" instead of a diagnosis.
+    _reject_unc(path, implicit)
     # A directory would be renamed to <name>.<ts>.bak by the backup step -
     # os.replace happily moves directories - and a state file written in its
     # place, so `-s ~/notes` silently ate a whole folder. The prompt argument

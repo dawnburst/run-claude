@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from lmi.commands.schedule import paths
 from lmi.commands.schedule.paths import (
     has_extension, resolve_log, resolve_state, timestamp,
 )
@@ -191,3 +192,120 @@ def test_an_unwritable_log_folder_is_still_allowed_through(tmp_path, make_cfg):
         assert got.parent == ro          # resolved, not rejected
     finally:
         ro.chmod(0o700)
+
+
+# --- UNC paths on Windows ---------------------------------------------------
+#
+# The lock file is created next to the state file, and Windows byte-range
+# locking is unsupported on a share: msvcrt.locking fails with EINVAL on a WSL
+# 9p mount, and core.lock reads any OSError from the lock call as contention.
+# The measured symptom was exit 3, "another run is working on this state file",
+# with nothing else running. These tests pin the refusal that replaced it.
+#
+# The guard is Windows-only by design: on POSIX a //-prefixed path is local and
+# locks correctly, and pathlib keeps the two leading slashes, which is what lets
+# these tests build a UNC-looking path on Linux at all.
+#
+# paths._on_windows is patched rather than os.name, which cannot be patched:
+# pathlib picks its concrete class from os.name at instantiation, so forcing it
+# to "nt" here makes every Path() raise NotImplementedError.
+
+UNC_STATE = "//wsl.localhost/Ubuntu-24.04/home/u/work/run-claude-state.md"
+
+
+@pytest.mark.parametrize("text", [
+    r"\\wsl.localhost\Ubuntu\home",
+    "//wsl.localhost/Ubuntu/home",
+    r"\\server\share",
+    r"\\?\UNC\server\share\dir",     # a share wearing a device prefix
+    r"\\.\UNC\server\share",
+])
+def test_looks_like_unc_accepts_every_share_spelling(text):
+    from lmi.core.fs import looks_like_unc
+    assert looks_like_unc(text) is True
+
+
+@pytest.mark.parametrize("text", [
+    r"C:\work\state.md",
+    "/home/u/work/state.md",
+    r"\\?\C:\work",                  # a LOCAL drive wearing the same prefix
+    r"\\.\C:\work",
+    r"\relative\single",
+    "relative/path",
+])
+def test_looks_like_unc_rejects_local_paths(text):
+    from lmi.core.fs import looks_like_unc
+    assert looks_like_unc(text) is False
+
+
+def test_unc_working_directory_is_refused_on_windows(monkeypatch, make_cfg):
+    monkeypatch.setattr(paths, "_on_windows", lambda: True)
+    cfg = make_cfg(Path("//wsl.localhost/Ubuntu-24.04/home/u/work"))
+    with pytest.raises(LmiError) as caught:
+        resolve_state(cfg)
+    assert caught.value.code == 2
+    message = str(caught.value)
+    assert "network share" in message and "UNC" in message
+    # It must offer the escape hatch, not just say no: the working directory can
+    # stay on the share as long as the state file does not.
+    assert "-s C:\\lmi\\run-claude-state.md" in message
+
+
+def test_unc_state_file_is_refused_on_windows(monkeypatch, tmp_path, make_cfg):
+    monkeypatch.setattr(paths, "_on_windows", lambda: True)
+    with pytest.raises(LmiError) as caught:
+        resolve_state(make_cfg(tmp_path, state_arg=UNC_STATE))
+    assert caught.value.code == 2
+    assert "network share" in str(caught.value)
+
+
+def test_a_local_state_file_under_a_unc_workdir_is_allowed(monkeypatch, tmp_path, make_cfg):
+    """The documented workaround has to actually work.
+
+    Working directory on the share, state file - and therefore the lock - on a
+    local drive. This is the case the guard must NOT reject.
+    """
+    monkeypatch.setattr(paths, "_on_windows", lambda: True)
+    target = tmp_path / "run-claude-state.md"
+    cfg = make_cfg(Path("//wsl.localhost/Ubuntu-24.04/home/u/work"),
+                   state_arg=str(target))
+    assert resolve_state(cfg) == target
+
+
+def test_unc_is_ignored_off_windows(tmp_path, make_cfg):
+    """On POSIX a // path is local, so the guard must stay out of the way."""
+    assert os.name != "nt", "this test describes the POSIX branch"
+    target = tmp_path / "st.md"
+    assert resolve_state(make_cfg(tmp_path, state_arg=str(target))) == target
+
+
+def test_windows_directory_names_the_cmd_unc_cause(monkeypatch, tmp_path, make_cfg):
+    r"""cmd.exe started on a share substitutes the Windows directory silently.
+
+    By the time lmi runs the UNC path is gone, so the UNC guard cannot see it and
+    all that is left is an unwritable C:\Windows. The hint is the only place the
+    real cause gets named.
+    """
+    monkeypatch.setattr(paths, "_on_windows", lambda: True)
+    fake_root = tmp_path / "Windows"
+    fake_root.mkdir()
+    monkeypatch.setenv("SystemRoot", str(fake_root))
+    # Make the probe fail the way C:\Windows does for an unprivileged user.
+    monkeypatch.setattr(paths.Path, "touch",
+                        lambda self, *a, **k: (_ for _ in ()).throw(PermissionError(13, "denied")))
+    with pytest.raises(LmiError) as caught:
+        resolve_state(make_cfg(fake_root))
+    message = str(caught.value)
+    assert caught.value.code == 2
+    assert "cmd.exe" in message and "UNC working directory" in message
+
+
+def test_an_ordinary_unwritable_directory_gets_no_cmd_hint(monkeypatch, tmp_path, make_cfg):
+    """The hint must not appear for a directory that simply is not writable."""
+    monkeypatch.setattr(paths, "_on_windows", lambda: True)
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+    monkeypatch.setattr(paths.Path, "touch",
+                        lambda self, *a, **k: (_ for _ in ()).throw(PermissionError(13, "denied")))
+    with pytest.raises(LmiError) as caught:
+        resolve_state(make_cfg(tmp_path))
+    assert "cmd.exe" not in str(caught.value)

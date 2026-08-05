@@ -44,3 +44,23 @@ def classify(path):
 
 def kind(path):
     return classify(path)[0]
+
+
+def looks_like_unc(path):
+    r"""Does this text name a UNC share - \\server\share or //server/share?
+
+    String logic only, and **the caller decides whether it applies**: this must
+    never be consulted off Windows. On POSIX a leading // is just the root, and
+    pathlib preserves exactly two leading slashes, so //srv/share is an ordinary
+    local path there and locking it works fine.
+
+    Windows accepts either slash, hence the normalisation. The two device-
+    namespace prefixes need care: \\?\UNC\server\share is a share wearing a
+    prefix, while \\?\C:\dir is a local drive doing the same - both start with
+    two backslashes, so a plain startswith would call the second one a share.
+    """
+    text = str(path).replace("/", "\\")
+    for prefix in ("\\\\?\\", "\\\\.\\"):
+        if text.startswith(prefix):
+            return text[len(prefix):].upper().startswith("UNC\\")
+    return text.startswith("\\\\")
