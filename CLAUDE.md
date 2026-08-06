@@ -231,13 +231,22 @@ reports success:
 19. **An unparseable `settings.json` or `.claude.json` is refused, not
     overwritten.** Treating it as `{}` would discard everything the user had.
     `jsonfile.read` raises exit 3 and names the file; nothing is written.
+20. **`jsonfile.write`'s temp file is born 0600, not chmod-ed to it later.**
+    `os.open(..., 0o600)` plus `os.fdopen`, never plain `open()`. `~/.claude/`
+    is 0755, so writing the auth token first and fixing the mode afterwards
+    leaves it in a world-readable file for the length of the write.
+    **Silent:** the finished `settings.json` is 0600 either way, so the end
+    state is identical and nothing afterwards shows the window existed. The
+    `os.chmod` before `os.replace` is still needed and is not the same guard —
+    it exists to *widen* to a preserved 0644, and widening after the content is
+    written is safe where narrowing after is not.
 
 ---
 
 ## 4. Rules for editing
 
 1. **Run the suite after every change** and say in your report that you did:
-   `python3 -m pytest tests/ -q`. It is 267 tests in under two seconds and it
+   `python3 -m pytest tests/ -q`. It is 268 tests in under two seconds and it
    costs nothing — several bugs above only appear with awkward paths, or only
    when a claude call fails.
 2. **Preserve the five invariants in section 1** and everything in section 3.
@@ -264,7 +273,7 @@ reports success:
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 267 tests, <2s, no install needed
+python3 -m pytest tests/ -q          # 268 tests, <2s, no install needed
 ```
 
 Fixtures worth knowing, in `tests/conftest.py` and the two per-command

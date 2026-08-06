@@ -93,9 +93,23 @@ def write(path, doc, what, mode=None):
     """Replace `path` with `doc`, atomically.
 
     `mode` forces a permission; without it an existing file's mode is preserved.
-    Either way the chmod happens on the temp file BEFORE os.replace, so there is
-    no window in which the contents exist at the default 0644 - which matters
-    because settings.json can contain an auth token.
+
+    The temp file is *created* 0600, rather than created at the umask default
+    and chmod-ed once the content is in it. settings.json can hold an auth
+    token, and open() followed by a later chmod leaves that token in a
+    world-readable file for the whole duration of the write - ~/.claude/ is
+    0755, so every user on the box can read it while it is being written.
+
+    Born private, then relaxed. The chmod before os.replace stays, and is not
+    redundant: `effective` may be WIDER than 0600 - 0644 for a settings.json
+    with no token in it - and widening after the content is written is safe
+    where narrowing after would not be. It must also stay BEFORE the replace,
+    so the document never becomes visible under its real name at the wrong mode.
+
+    A file created from nothing therefore ends up 0600 rather than at the umask
+    default, since there is no `existing` mode to relax to. Deliberate: both
+    documents this command writes may hold a credential or the user's project
+    history, and neither has a reason to be group- or world-readable.
     """
     existing = _mode_of(path)
     try:
@@ -105,10 +119,16 @@ def write(path, doc, what, mode=None):
         pass
 
     tmp = path.with_name("%s.lmi-tmp-%d" % (path.name, os.getpid()))
+    # O_BINARY where it exists (Windows only): an fd opened in the CRT's text
+    # mode translates "\n" to "\r\n" underneath the io layer, which would undo
+    # newline="\n" below. It is absent on POSIX, where getattr yields 0.
+    flags = os.O_CREAT | os.O_WRONLY | os.O_TRUNC | getattr(os, "O_BINARY", 0)
     try:
-        # open(), not Path.write_text(newline=...): that parameter arrived in
-        # 3.10 and the floor here is 3.9.
-        with open(str(tmp), "w", encoding="utf-8", newline="\n") as fh:
+        fd = os.open(str(tmp), flags, 0o600)
+        # fdopen, not open(), so the descriptor carries the 0600 from creation.
+        # Not Path.write_text(newline=...): that parameter arrived in 3.10 and
+        # the floor here is 3.9.
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(doc, fh, indent=2, ensure_ascii=False)
             fh.write("\n")
         effective = mode if mode is not None else existing

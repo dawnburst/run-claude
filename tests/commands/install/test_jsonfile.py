@@ -163,6 +163,42 @@ def test_the_mode_is_set_before_the_file_becomes_visible(tmp_path, monkeypatch):
 
 
 @skip_as_root
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+def test_the_temp_file_is_private_before_any_content_reaches_it(
+    tmp_path, monkeypatch
+):
+    """MANDATORY. Silent failure: a token readable by every user on the box.
+
+    Setting the mode before os.replace is not enough. The temp file is written
+    inside ~/.claude/, which is 0755, so a temp file created at the umask
+    default holds the auth token in a world-readable file for the whole
+    duration of the write - and the finished settings.json is 0600 afterwards,
+    so nothing about the end state shows it ever happened.
+
+    The window is what is pinned here, not the outcome: the mode is captured at
+    the moment the descriptor is handed to the writer, which is before the
+    first byte of the document exists on disk.
+    """
+    captured = {}
+    real_fdopen = os.fdopen
+
+    def spy(fd, *args, **kwargs):
+        captured["mode"] = stat.S_IMODE(os.fstat(fd).st_mode)
+        return real_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(jsonfile.os, "fdopen", spy)
+    path = tmp_path / "settings.json"
+    jsonfile.write(
+        path, {"env": {"ANTHROPIC_AUTH_TOKEN": "sk-secret"}}, "settings",
+        mode=0o600,
+    )
+
+    assert captured["mode"] == 0o600
+    assert not captured["mode"] & 0o077, "never group- or world-readable"
+    assert stat.S_IMODE(os.stat(str(path)).st_mode) == 0o600
+
+
+@skip_as_root
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
 def test_write_to_an_unwritable_directory_is_exit_3(tmp_path, readonly_dir):
     with pytest.raises(LmiError) as exc:

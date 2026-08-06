@@ -441,7 +441,7 @@ machine changes**. Abandon the command at a prompt and nothing has been touched.
 | Question | When | A blank answer |
 |---|---|---|
 | `Repair the installation?` | only when `claude` is already on PATH — the resolved path is printed first | keeps the default, **no**: exit 0, no npm command, no backup, no write |
-| `Claude Code auth token` | always. Read with `getpass`, so it is never echoed into your scrollback | **keeps whatever token is already configured**, or skips it if there is none |
+| `Claude Code auth token` | on every run that is going to do anything — i.e. once the repair question, if it was asked at all, has been answered yes. Read with `getpass`, so it is never echoed into your scrollback | **keeps whatever token is already configured**, or skips it if there is none |
 | `Full path to bash.exe` | Windows only, and only when no Git Bash was found | skips it, with a `[WARN]` naming `CLAUDE_CODE_GIT_BASH_PATH` |
 
 Declining the repair is not an error. You answered the question; the answer was
@@ -459,10 +459,14 @@ under another name all survive:
   unaltered. `lmi` checks only that it is an object; Claude Code's own schema
   reports a malformed source better than a duplicated validator would.
 
-A `settings.json` that ends up holding the token is set to mode `600`, and the
-`chmod` happens on the temp file *before* the atomic replace, so the contents
-never exist at 644 even momentarily. On Windows `os.chmod` only toggles the
-read-only bit and grants no protection — `lmi` does not pretend otherwise there.
+A `settings.json` that ends up holding the token is mode `600`, and it is `600`
+for the whole of its existence: the temp file it is written through is *created*
+`600` rather than created at the umask default and fixed afterwards, and the mode
+is settled before the atomic replace publishes it. `~/.claude/` is `0755`, so the
+tidier-looking order — write the token, then `chmod` — would leave it readable by
+every user on the box for the length of the write, and leave nothing behind to
+show it had. On Windows `os.chmod` only toggles the read-only bit and grants no
+protection — `lmi` does not pretend otherwise there.
 
 `~/.claude.json`, one key: `hasCompletedOnboarding` set to `true`. **Lowercase
 `b`.** `hasCompletedOnBoarding` is the natural way to write it, and it writes
@@ -491,8 +495,12 @@ history; a backup at the default 644 would publish it. If a backup fails, **the
 file it was for is not modified** and the run stops there with exit 3: changing a
 file we could not preserve first is not worth the risk.
 
-Every backup is reported by full path at the end of the run, which is the only
-moment you learn that a file you may want back exists. **They are never pruned.**
+Every backup is reported by full path at the end of the run, which is normally
+the only moment you learn that a file you may want back exists. Normally, because
+that summary is printed only when the run reaches the end: if a later step fails,
+backups already taken are on disk but never announced. On a run that ended with
+an error, look for `.bk_` beside `~/.claude/settings.json` and `~/.claude.json`
+rather than assuming there is nothing there. **They are never pruned.**
 A provisioning tool that deletes your previous configuration to keep a directory
 tidy has its priorities backwards.
 
@@ -563,10 +571,16 @@ should not have to learn a per-command definition of "a bug in `lmi`".
 | 3 | A Claude config file could not be read, backed up or written | `install` |
 | 4 | A bug in `lmi` | `install` |
 
-`3` is separate from `1` on purpose. By the time a config file is written npm has
-already succeeded, so the outcome is a working `claude` with unwritten settings —
-partial success, which wants its own code. Folding it into `1` would report that
-the install failed.
+`3` is separate from `1` on purpose. When a config file cannot be *written*, npm
+has already succeeded, so the outcome is a working `claude` with unwritten
+settings — partial success, which wants its own code. Folding it into `1` would
+report that the install failed.
+
+`3` on its own does **not** mean the install happened, though, so do not key a
+provisioning script off it as "partially done". `~/.claude/settings.json` is
+*read* before any npm command runs — that is how the command knows whether a
+token is already configured — so an unparseable one there is exit 3 with nothing
+installed and nothing changed. The message says which it was; the code does not.
 
 ### Real-run checklist
 
@@ -634,7 +648,7 @@ python3 -m pytest tests/ -v
 No install is required first — pytest puts the repository root on `sys.path`,
 so the suite runs against a clean checkout. A virtual environment is only
 needed to exercise the installed `lmi` console script itself, not to run the
-tests. Currently **267 tests, all passing**, in under two seconds.
+tests. Currently **268 tests, all passing**, in under two seconds.
 
 The suite never reaches a real `claude`, and never a real `npm`: the
 `fake_claude` and `fake_npm` fixtures replace `PATH` entirely with a temporary
