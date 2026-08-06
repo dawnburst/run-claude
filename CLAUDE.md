@@ -1,9 +1,11 @@
 # lmi — project context and handoff
 
-`lmi` is a Python CLI that runs the Claude Code CLI unattended. Its one command,
-`lmi schedule`, loops `claude -p` in the foreground, carrying progress between
-iterations through a state file. `README.md` is the user-facing documentation and
-is accurate; this file is what you need before *editing* the code.
+`lmi` is a Python CLI that runs the Claude Code CLI unattended. `lmi schedule`
+loops `claude -p` in the foreground, carrying progress between iterations through
+a state file; `lmi install claude` installs and configures that CLI in the first
+place, from an internal npm registry on an air-gapped machine. `README.md` is the
+user-facing documentation and is accurate; this file is what you need before
+*editing* the code.
 
 Read section 3 before changing any behaviour. Every item there is a bug that was
 already paid for once, and most of them fail **silently** — a run that reports
@@ -23,8 +25,12 @@ These come from the user and are invariants, not preferences:
    continues. Quota and rate-limit wording is additionally flagged `[QUOTA]`.
    The same holds for exceptions on the way to claude: they are logged and the
    iteration is recorded as skipped (`ITERATION_ERROR_RC`).
-3. **Nothing may ever wait for a keypress.** The prompt is fed on stdin; every
-   wait is a `time.sleep`.
+3. **`lmi schedule` may never wait for a keypress.**
+   Nothing may ever wait for a keypress in the unattended runner: the prompt is
+   fed on stdin, and every wait is a `time.sleep`. This is a property of that
+   runner, not of `lmi` as a whole — `lmi install` is interactive by design and
+   asks before it changes anything. It has no `--yes`, and guards only against
+   *hanging*: with no terminal it exits 2 rather than waiting forever.
 4. **Python 3.9 floor, standard library only at runtime.** No `match`, no
    `X | Y` runtime unions, no builtin generics in evaluated annotations. `pytest`
    is a dev extra and must never be imported by `lmi/`.
@@ -48,6 +54,16 @@ lmi/commands/schedule/      the command, as a self-contained package
   state.py                  template, backup-or-resume, completion check
   runner.py                 the loop and the claude invocation
   exit_codes.py             this command's own codes (1, 3, 4)
+lmi/commands/install/       `lmi install claude`, as a self-contained package
+  config.py                 arguments, config-file discovery, the frozen Config
+  prompts.py                every question, and the no-terminal guard
+  npm.py                    locating npm, one npm command, the --global fallback
+  jsonfile.py               read / back up / atomically write a JSON document
+  settings.py               what goes into ~/.claude/settings.json
+  claude_json.py            what goes into ~/.claude.json
+  gitbash.py                Windows Git Bash discovery and the env var
+  runner.py                 the flow
+  exit_codes.py             this command's codes (1, 3, 4)
 lmi/core/                   only genuinely command-agnostic code
   errors.py                 LmiError and the global codes (0, 2)
   fs.py                     path classification that never raises
@@ -184,14 +200,46 @@ reports success.
     identically on every remaining iteration, so it ends the run instead of
     burning the loop.
 
+The rest belong to `lmi install`, and every one of them is silent — the run
+reports success:
+
+13. **The onboarding key is `hasCompletedOnboarding`, lowercase `b`.**
+    Verified in the 2.1.222 binary. **Silent:** the natural spelling
+    `hasCompletedOnBoarding` writes cleanly, parses cleanly and does nothing —
+    the user meets the onboarding flow the command promised to skip, and the
+    run reports success.
+14. **`npm install -g` is never retried without `-g`.** `npm config set`
+    retrying without `--global` is a correct fallback to `~/.npmrc`. The same
+    move on the install is not. **Silent:** it installs into `./node_modules`
+    of the current directory, creates no `claude`, and exits 0. Hence the
+    comment in `npm.install` telling you not to give it `config_set`'s shape.
+15. **A failing npm step must touch no Claude config file.** The order in
+    `install/runner._run` is load-bearing: npm first, config documents after.
+    **Silent:** the machine ends up with the 256K profile, the marketplaces and
+    onboarding skipped, but no binary — it looks provisioned and is not.
+16. **Declining the repair question changes nothing at all.** No npm command,
+    no backup, no write. Exit 0, because the user answered rather than erred.
+17. **Git Bash work is Windows-only.** `CLAUDE_CODE_GIT_BASH_PATH` is resolved
+    through `path/win32` and is never read elsewhere, so off Windows nothing is
+    probed, `setx` never runs and the key never reaches `settings.json`.
+    Candidates are validated the way Claude Code validates — basename in
+    `bash.exe`/`sh.exe`/`bash`/`sh`, and the file exists — because a path it
+    rejects looks configured and is not.
+18. **`settings.json` `env` values are strings.** A JSON number is silently the
+    wrong type, so the 256K profile does not apply. `config._env` refuses one
+    with exit 2 rather than passing it through.
+19. **An unparseable `settings.json` or `.claude.json` is refused, not
+    overwritten.** Treating it as `{}` would discard everything the user had.
+    `jsonfile.read` raises exit 3 and names the file; nothing is written.
+
 ---
 
 ## 4. Rules for editing
 
 1. **Run the suite after every change** and say in your report that you did:
-   `python3 -m pytest tests/ -q`. It is 135 tests in under a second and it costs
-   nothing — several bugs above only appear with awkward paths, or only when a
-   claude call fails.
+   `python3 -m pytest tests/ -q`. It is 267 tests in under two seconds and it
+   costs nothing — several bugs above only appear with awkward paths, or only
+   when a claude call fails.
 2. **Preserve the five invariants in section 1** and everything in section 3.
    Where a comment in the code says "do not simplify this back to X", X is the
    bug.
@@ -216,18 +264,21 @@ reports success.
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 135 tests, <1s, no install needed
+python3 -m pytest tests/ -q          # 267 tests, <2s, no install needed
 ```
 
-Fixtures worth knowing, all in `tests/conftest.py` and
-`tests/commands/schedule/conftest.py`:
+Fixtures worth knowing, in `tests/conftest.py` and the two per-command
+`conftest.py` files under `tests/commands/`:
 
 | Fixture | What it gives you |
 |---|---|
 | `fake_claude` | A fake CLI on an exclusive PATH; records argv and the composed prompt per call, and can be told to misbehave through `FAKE_RC`, `FAKE_OUT`, `FAKE_STATE_FILE`, `FAKE_COMPLETE_AT`, `FAKE_PROSE`, `FAKE_BLANK_FIRST_LINE`, `FAKE_WRECK_TMP` |
+| `fake_npm` | The same trick for npm — an exclusive PATH, argv recorded per call, `FAKE_NPM_RC` and `FAKE_NPM_FAIL_GLOBAL` (fail only when a global flag is present, which is how the `--global` fallback is exercised without root) |
+| `home` | A throwaway `HOME`/`USERPROFILE`, so no install test can touch the developer's real `~/.claude` |
+| `answers` | In `tests/commands/install/test_runner.py`: a scripted queue behind `prompts.confirm/secret/text`, so no test reaches a real stdin |
 | `make_cfg` | A `Config` factory, so its ten fields are built in one place |
 | `readonly_dir` | A 0o500 directory, restored on teardown |
-| `on_windows` | Takes the Windows branch of `paths.py` (patches `_on_windows`, never `os.name`, which pathlib reads at instantiation) |
+| `on_windows` | Takes the Windows branch of `paths.py` (patches `_on_windows`, never `os.name`, which pathlib reads at instantiation). The install suite patches `gitbash.on_windows` for the same reason |
 | `deny_touch` | Makes the writability probe fail the way `C:\Windows` does |
 | `skip_as_root` | The root-skip marker described in section 4 |
 
@@ -238,4 +289,12 @@ completion check must turn those tests red.
 
 What a fake CLI can **never** cover is how the real one behaves: regressions 1 and
 2 were both found by real runs, not by tests. `README.md` has the two real-run
-checks worth doing, and names the two measurements still outstanding.
+checks worth doing, names the two measurements still outstanding, and carries the
+four `lmi install claude` checks that only a real Artifactory and a real Windows
+box can settle.
+
+`tests/test_docs.py` is the one module that tests documentation rather than code:
+that `examples/lmi.json` still passes `config.build_config`, that the README
+still spells the three silent keys, and that invariant 3 above stays scoped to
+`schedule`. The example config is what a new site copies, so it going stale is a
+usage error on somebody's first day.

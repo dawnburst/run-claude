@@ -11,6 +11,10 @@ iteration is a fresh `claude -p` invocation that reads the state file the previo
 iteration wrote, continues from there, and updates it. The loop stops early the
 moment the state file reports the task is done.
 
+A second command, [`lmi install claude`](#lmi-install-claude), installs and
+configures that CLI in the first place — on an air-gapped machine, from an
+internal npm registry.
+
 Pure Python, standard library only. Requires Python 3.9 or newer and the Claude
 Code CLI.
 
@@ -19,7 +23,9 @@ Code CLI.
 ## Requirements
 
 - **Python 3.9 or newer.** No runtime dependencies beyond the standard library.
-- The **Claude Code CLI on `PATH`**, resolvable as `claude`.
+- The **Claude Code CLI on `PATH`**, resolvable as `claude`. If the machine does
+  not have it yet, [`lmi install claude`](#lmi-install-claude) installs it from
+  an internal npm registry and configures it.
 - **Authentication already done**, interactively, once: `claude auth login`. An
   unattended run has nobody to complete a sign-in prompt. Credentials live in
   `~/.claude/.credentials.json` (`%USERPROFILE%\.claude\` on Windows) and are
@@ -264,8 +270,11 @@ read the next morning. An exception on the way to claude — an unwritable temp
 workspace, a transient `OSError` from `subprocess.run` — is logged with its
 traceback and the iteration is recorded as skipped; the loop still continues.
 
-**Nothing ever waits for a keypress.** The prompt arrives on stdin and every wait
-is a `time.sleep`.
+**Nothing in `lmi schedule` ever waits for a keypress.** The prompt arrives on
+stdin and every wait is a `time.sleep`. This is a property of the unattended
+runner rather than of `lmi` as a whole:
+[`lmi install claude`](#lmi-install-claude) is interactive by design, and guards
+only against *hanging*.
 
 ### Logging
 
@@ -335,6 +344,250 @@ None of these are scheduled work. If you want one, say so before building it.
 
 ---
 
+## lmi install claude
+
+The second command, and the one you run first. It installs the **Claude Code CLI
+itself** on a machine with no route to the public npm registry: it points npm at
+your internal Artifactory, runs `npm install -g @anthropic-ai/claude-code`, and
+then writes the configuration the site expects — the auth token, the
+marketplaces, the 256K context profile, the Windows Git Bash path — and marks
+onboarding complete, so the first `claude` gets to work instead of asking
+questions.
+
+```
+lmi install claude [--config PATH]
+```
+
+**It is interactive, and it needs a terminal.** It asks before repairing an
+existing install, asks for the auth token, and asks for the Git Bash path when it
+cannot find one. There is deliberately no `--yes`, so it cannot be driven from an
+Ansible play, a Dockerfile or a CI step — an accepted cost, not an oversight.
+What it will never do is *hang*: with no terminal, `input()` and `getpass()`
+raise `EOFError`, and that becomes exit 2 with a message rather than a
+provisioning run blocked forever with nobody there to answer it.
+
+**npm has to be there already.** If `npm` is not on PATH the command stops with
+exit 2 and says to install Node.js 18 or newer first. `lmi` deliberately does not
+bootstrap a runtime, and it never invokes `sudo`.
+
+### The config file
+
+Everything that differs between sites lives in one JSON file; nothing
+site-specific is compiled into `lmi`. [`examples/lmi.json`](examples/lmi.json) is
+a complete one — copy it and edit it.
+
+Searched in this order, first match wins:
+
+1. `--config PATH`
+2. `$LMI_CONFIG`
+3. `./lmi.json`
+4. `~/.lmi/config.json`
+
+A `--config` that points at a file which does not exist is **exit 2**, never a
+quiet fall-through to the next candidate: an explicitly named file that silently
+resolves to a different one is how a machine gets provisioned against the wrong
+registry without anybody finding out.
+
+```json
+{
+  "claude": {
+    "registry": "https://artifactory.example.com/api/npm/npm-virtual/",
+    "cafile": "/etc/ssl/certs/corp-ca.pem",
+    "marketplaces": {
+      "corp-tools": {
+        "source": {
+          "source": "git",
+          "url": "https://git.example.com/claude/marketplace.git"
+        }
+      }
+    },
+    "env": {
+      "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "256000",
+      "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "204800",
+      "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000"
+    }
+  }
+}
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `registry` | **yes** | The npm registry URL to install from — your internal Artifactory. |
+| `cafile` | no | PEM file for the internal CA. Present: TLS verification stays on. Absent: `npm config set strict-ssl false`, with a warning every run. |
+| `marketplaces` | no | Merged verbatim into `extraKnownMarketplaces` in `~/.claude/settings.json`. |
+| `env` | no | Merged into `env` in `~/.claude/settings.json`. Defaults to the three keys above. |
+
+Anything else in the file is ignored, and the whole `claude` section is validated
+before a single npm command runs. `cafile` in particular is checked for existence
+up front, because `npm config set cafile /typo` succeeds and the mistake resurfaces
+much later as an unrelated TLS error from the install step.
+
+**The three `env` keys are the 256K context profile, and they are a default
+rather than a hardcode.** A config file with no `env` still gets them; a site that
+needs different numbers, or an extra variable such as `ANTHROPIC_BASE_URL` for a
+gateway, sets them here and no code changes. **The values are strings** —
+`"256000"`, not `256000`. Claude Code types `settings.json` `env` as string to
+string, so a JSON number writes cleanly, parses cleanly and does nothing at all.
+`lmi` refuses one with exit 2 rather than letting you discover that a month later.
+
+The auth token is **not** a config key. The file is site-wide and meant to be
+copied between machines; the token is per user, and it is prompted for.
+
+### What it asks
+
+At most three questions, and all of them are asked **before anything on the
+machine changes**. Abandon the command at a prompt and nothing has been touched.
+
+| Question | When | A blank answer |
+|---|---|---|
+| `Repair the installation?` | only when `claude` is already on PATH — the resolved path is printed first | keeps the default, **no**: exit 0, no npm command, no backup, no write |
+| `Claude Code auth token` | always. Read with `getpass`, so it is never echoed into your scrollback | **keeps whatever token is already configured**, or skips it if there is none |
+| `Full path to bash.exe` | Windows only, and only when no Git Bash was found | skips it, with a `[WARN]` naming `CLAUDE_CODE_GIT_BASH_PATH` |
+
+Declining the repair is not an error. You answered the question; the answer was
+no; exit 0.
+
+### What it writes
+
+`~/.claude/settings.json`, merged one level down rather than at the document
+root, so `model`, `theme`, an `env` key `lmi` does not manage and a marketplace
+under another name all survive:
+
+- `env` — the 256K profile, plus `ANTHROPIC_AUTH_TOKEN` if you gave one, plus
+  `CLAUDE_CODE_GIT_BASH_PATH` on Windows.
+- `extraKnownMarketplaces` — your `marketplaces` object, passed through
+  unaltered. `lmi` checks only that it is an object; Claude Code's own schema
+  reports a malformed source better than a duplicated validator would.
+
+A `settings.json` that ends up holding the token is set to mode `600`, and the
+`chmod` happens on the temp file *before* the atomic replace, so the contents
+never exist at 644 even momentarily. On Windows `os.chmod` only toggles the
+read-only bit and grants no protection — `lmi` does not pretend otherwise there.
+
+`~/.claude.json`, one key: `hasCompletedOnboarding` set to `true`. **Lowercase
+`b`.** `hasCompletedOnBoarding` is the natural way to write it, and it writes
+cleanly, parses cleanly and does nothing — you meet the onboarding flow this
+command promised to skip, and the run reports success. A key already exactly
+`true` means the file is not rewritten at all: no backup and no churn on a 63 KB
+document for a no-op. A key present but `false` is corrected.
+
+Both writes are atomic — temp file beside the target, then `os.replace`. A
+half-written `settings.json` is invalid JSON and Claude Code will not start
+without it. And an existing file that is **already** invalid JSON is refused with
+exit 3 and left byte-identical, rather than treated as an empty document and
+overwritten: that would silently discard everything you had hand-edited.
+
+### Backups
+
+Any file about to be modified, that already exists, is copied first to:
+
+```
+<name>.bk_<YYYYmmdd-HHMMSS>
+```
+
+— `settings.json.bk_20260806-141530`, `.claude.json.bk_20260806-141530`. The copy
+preserves the mode, because `~/.claude.json` is `600` and holds your per-project
+history; a backup at the default 644 would publish it. If a backup fails, **the
+file it was for is not modified** and the run stops there with exit 3: changing a
+file we could not preserve first is not worth the risk.
+
+Every backup is reported by full path at the end of the run, which is the only
+moment you learn that a file you may want back exists. **They are never pruned.**
+A provisioning tool that deletes your previous configuration to keep a directory
+tidy has its priorities backwards.
+
+### Git Bash — Windows only
+
+`CLAUDE_CODE_GIT_BASH_PATH` is resolved by Claude Code through
+`require("path/win32")` and is **never read on Linux or macOS**. So on those
+platforms this work does not run at all — not "runs and no-ops": nothing is
+probed, `setx` is never called, and the variable never appears in
+`settings.json`, where it would just be a meaningless line in a file you read.
+
+Claude Code's own detection checks exactly two paths —
+`C:\Program Files\Git\bin\bash.exe` and the `(x86)` variant — so a Git installed
+anywhere else is invisible to it. That is what makes searching harder worth
+doing. In order, first hit wins: an existing valid `CLAUDE_CODE_GIT_BASH_PATH`,
+`InstallPath` from `HKLM\SOFTWARE\GitForWindows` in both registry views, the two
+paths above, `C:\Program Files\Git\usr\bin\bash.exe`, a per-user install under
+`%LOCALAPPDATA%\Programs\Git`, and finally a path derived from `where git`.
+
+Every candidate is validated **the way Claude Code validates**: the basename must
+be one of `bash.exe`, `sh.exe`, `bash`, `sh`, and the file must exist. Anything
+else it warns about and ignores — so writing a path it rejects is worse than
+writing nothing, because the machine looks configured and is not. The same check
+is applied to the path you type at the prompt.
+
+What is found is persisted twice, for different reasons: `setx` for the user
+environment variable, so every future shell has it, and `settings.json` `env`, so
+it applies however `claude` is launched. A failed `setx` is a `[WARN]`, not a
+failed install — npm has already succeeded by then, and the `settings.json` half
+still takes effect.
+
+### When it does not work
+
+- **`npm install -g` failed with `EACCES`.** The global `node_modules` is
+  root-owned. Either re-run with `sudo` (an Administrator shell on Windows), or
+  give npm a prefix you own — `npm config set prefix ~/.npm-global`, then put
+  `~/.npm-global/bin` on your PATH — and run this again. `lmi` never invokes
+  `sudo` itself: a provisioning tool that silently escalates is one nobody can
+  audit. Note that `npm config set` *does* retry without `--global`, writing
+  `~/.npmrc`, which needs no root and still governs every `npm install -g` you
+  run. `npm install -g` has no such fallback, on purpose — dropping `-g` does not
+  degrade, it installs into `./node_modules` of whatever directory you were in,
+  creates no `claude`, and exits 0.
+- **"npm reported success but `claude` is not on PATH".** Exit 0 with a `[WARN]`,
+  and normally not a problem: this is what the first use of npm's global bin
+  directory on a machine looks like, because the running process cannot see a
+  PATH change made a moment ago. **Open a new terminal** and run `claude`. If it
+  is still missing, add the `bin` subdirectory of `npm prefix -g` to your PATH.
+  Exiting non-zero here would fail runs that in fact succeeded.
+- **"certificate verification is now OFF".** You have no `cafile` configured, so
+  `strict-ssl` was turned off for **every** npm install by this user, not just
+  this one. The risk is not interception from outside — it is that anyone on the
+  internal network who can answer as the registry host gets a package whose
+  install scripts run. Point `cafile` at your internal CA to close it. The
+  warning repeats every run, deliberately.
+
+### Exit codes
+
+`0` and `2` mean the same thing for every `lmi` command. `4` matches `schedule`'s
+`4` rather than exercising the freedom to differ, because a provisioning script
+should not have to learn a per-command definition of "a bug in `lmi`".
+
+| Code | Meaning | Scope |
+|---|---|---|
+| 0 | Done — including "you declined the repair" and the PATH warning above | global |
+| 1 | An npm command failed | `install` |
+| 2 | Bad or missing config, npm not on PATH, or no terminal to ask in | global |
+| 3 | A Claude config file could not be read, backed up or written | `install` |
+| 4 | A bug in `lmi` | `install` |
+
+`3` is separate from `1` on purpose. By the time a config file is written npm has
+already succeeded, so the outcome is a working `claude` with unwritten settings —
+partial success, which wants its own code. Folding it into `1` would report that
+the install failed.
+
+### Real-run checklist
+
+The suite drives a **fake npm** on an exclusive PATH, which proves the argv, the
+order and the exit codes and proves nothing whatever about the real one. Four
+things need a real machine, and are worth doing once per site:
+
+1. **Artifactory really serves `@anthropic-ai/claude-code`** and its whole
+   dependency tree — a virtual repository that proxies the public registry has to
+   have been populated, and this command does not populate it.
+2. **`--global` behaves as documented on the site's Node layout**, or the
+   `~/.npmrc` fallback fires and the install still lands.
+3. **`extraKnownMarketplaces` in user scope really registers the marketplace.**
+   Check with `/plugin marketplace list` inside `claude`; a wrong key writes
+   cleanly and does nothing.
+4. **A Windows box with Git in a non-default location ends up with a working Bash
+   tool** — the case Claude Code's own two-path detection cannot see, and the
+   whole reason the registry search exists.
+
+---
+
 ## Project layout
 
 ```
@@ -344,11 +597,15 @@ lmi/                  the package
                       BOM-aware decoding, the single-instance lock
                       (fcntl / msvcrt), logging
   commands/
+    install/          the lmi install claude command: config discovery and
+                      validation, the prompts, npm, the two Claude config
+                      documents, Windows Git Bash
     schedule/         the lmi schedule command: config/validation, paths,
                       prompt composition, the state file, the iteration loop
 tests/                pytest suite, mirrors the lmi/ tree
+examples/lmi.json     a complete lmi install claude config file, to copy and edit
 docs/install/         per-platform install guides, one file each
-docs/superpowers/     the lmi schedule design spec
+docs/superpowers/     the design specs, one per command
 scripts/              install scripts, all four installing the same wheel:
                       install-linux.sh, install-macos.sh,
                       install-windows.cmd, install-windows.ps1
@@ -377,12 +634,14 @@ python3 -m pytest tests/ -v
 No install is required first — pytest puts the repository root on `sys.path`,
 so the suite runs against a clean checkout. A virtual environment is only
 needed to exercise the installed `lmi` console script itself, not to run the
-tests. Currently **135 tests, all passing**, in under a second.
+tests. Currently **267 tests, all passing**, in under two seconds.
 
-The suite never reaches a real `claude`: the `fake_claude` fixture replaces
-`PATH` entirely with a temporary directory holding a fake CLI, so no test can
-spend quota. That fake is a real subprocess, deliberately, because the argv, the
-stdin redirection and the exit code are the parts most worth covering.
+The suite never reaches a real `claude`, and never a real `npm`: the
+`fake_claude` and `fake_npm` fixtures replace `PATH` entirely with a temporary
+directory holding a fake, so no test can spend quota, rewrite your `~/.npmrc` or
+install a real package. Both fakes are real subprocesses, deliberately, because
+the argv, the stdin redirection and the exit code are the parts most worth
+covering.
 
 What a fake can **never** cover is how the real CLI behaves. The two most
 expensive bugs in this project's history — a state file the CLI refused to write
@@ -431,7 +690,8 @@ is not.
 ### Still to verify
 
 Two measurements have not been taken. Neither blocks use of `lmi schedule`; both
-are named so nobody mistakes reasoning for evidence.
+are named so nobody mistakes reasoning for evidence. `lmi install claude` has its
+own four, in [Real-run checklist](#real-run-checklist).
 
 1. **A real multi-iteration loop against the actual `claude` CLI.** The
    single-iteration half passes: a real run against `~/.local/bin/claude`
