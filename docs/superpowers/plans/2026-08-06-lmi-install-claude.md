@@ -2960,7 +2960,11 @@ breaks - inviting someone to remove its prompts."
 | §12 testing, incl. all seven MANDATORY items | Tasks 1–7 |
 | §13 documentation | Task 8 |
 
-All seven spec §12 MANDATORY items are present: onboarding spelling (T5), failed npm touches nothing (T7), no `-g` retry (T3), unparseable settings not overwritten (T4), declining repair changes nothing (T7), Git Bash basename validation (T6), no Git Bash work off Windows (T6). Four more were added where the same silent-failure test applies: `--config` not falling through (T1), non-string `env` values (T1), `secret()` not echoing (T2), `shell=True` absent (T3).
+**14 tests carry `MANDATORY`.** All seven the spec §12 named are present: onboarding spelling (T5), failed npm touches nothing (T7), no `-g` retry (T3), unparseable settings not overwritten (T4), declining repair changes nothing (T7), Git Bash basename validation (T6), no Git Bash work off Windows (T6).
+
+Seven more were added, each meeting the same bar — the failure it pins reports success while being wrong: `--config` not falling through to a different registry (T1), non-string `env` values (T1), `secret()` not falling back to `input()` (T2), EOF failing fast instead of hanging (T2), `shell=True` absent (T3), the `extraKnownMarketplaces` spelling (T5), and `CLAUDE.md` keeping invariant 3 scoped to `schedule` (T8).
+
+Verify the count with `grep -c 'MANDATORY\.' ` on this file before trusting any summary of it.
 
 **Placeholder scan:** clean. Every code step carries real code. Task 8 Step 4 is a content checklist rather than literal prose — deliberate, because the README's existing voice should be matched by whoever writes it, and `tests/test_docs.py` mechanically enforces the parts that matter.
 
