@@ -1310,14 +1310,31 @@ def test_write_can_force_a_mode(tmp_path):
 
 @skip_as_root
 @pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
-def test_a_forced_mode_is_applied_before_the_content_is_visible(tmp_path):
-    """The temp file is chmod-ed before os.replace, not after.
+def test_the_mode_is_set_before_the_file_becomes_visible(tmp_path, monkeypatch):
+    """MANDATORY. Silent failure: a token briefly readable by everyone.
 
-    Otherwise there is a window in which a token is on disk at 0644.
+    The chmod must land on the temp file BEFORE os.replace publishes it, or
+    there is a window in which settings.json holds an auth token at the default
+    0644 and any user on the box can read it. Nothing observable afterwards
+    distinguishes the two orderings - the end state is identical - so the only
+    way to pin it is to look at the mode at the instant of the rename.
+
+    Deliberately behavioural. An earlier draft asserted
+    `inspect.getsource(...).index("chmod") < ....index("os.replace")`, which
+    could never fail: getsource includes the docstring, and the docstring says
+    "chmod ... BEFORE os.replace", so the assertion was satisfied by prose no
+    matter what the code did.
     """
-    import inspect
-    source = inspect.getsource(jsonfile.write)
-    assert source.index("chmod") < source.index("os.replace")
+    captured = {}
+    real_replace = os.replace
+
+    def spy(src, dst):
+        captured["mode"] = stat.S_IMODE(os.stat(src).st_mode)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(jsonfile.os, "replace", spy)
+    jsonfile.write(tmp_path / "s.json", {"a": 1}, "settings", mode=0o600)
+    assert captured["mode"] == 0o600
 
 
 @skip_as_root
