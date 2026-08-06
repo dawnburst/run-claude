@@ -239,14 +239,18 @@ reports success:
     state is identical and nothing afterwards shows the window existed. The
     `os.chmod` before `os.replace` is still needed and is not the same guard —
     it exists to *widen* to a preserved 0644, and widening after the content is
-    written is safe where narrowing after is not.
+    written is safe where narrowing after is not. Which is why
+    `test_the_mode_is_set_before_the_file_becomes_visible` forces **0644**: at
+    0600 it asserts the birth mode and passes with the chmod deleted entirely.
+    The `O_BINARY` in the same `os.open` is a separate guard again — section 4,
+    rule 4.
 
 ---
 
 ## 4. Rules for editing
 
 1. **Run the suite after every change** and say in your report that you did:
-   `python3 -m pytest tests/ -q`. It is 268 tests in under two seconds and it
+   `python3 -m pytest tests/ -q`. It is 269 tests in under two seconds and it
    costs nothing — several bugs above only appear with awkward paths, or only
    when a claude call fails.
 2. **Preserve the five invariants in section 1** and everything in section 3.
@@ -260,6 +264,17 @@ reports success:
    verified Windows install ran that way. Leave both as they are unless changing
    them is the point — cmd.exe can misparse an LF batch file, so this is worth a
    deliberate decision rather than an accident.
+
+   The same rule reaches into the code, in one place this suite **cannot see**:
+   `jsonfile.write` opens its temp file with
+   `os.O_BINARY` (via `getattr(os, "O_BINARY", 0)`, absent and therefore 0 on
+   POSIX). Without it `os.open` on Windows hands back a descriptor in the CRT's
+   *text* mode, which rewrites `\n` to `\r\n` underneath the io layer and
+   defeats the `newline="\n"` passed to `os.fdopen`. Dropping the flag stays
+   green on Linux — `test_write_uses_lf_even_on_windows` can only ever assert
+   the POSIX case from here — while writing CRLF `settings.json` on the site's
+   Windows machines. The flag is load-bearing; only a real Windows run can catch
+   its absence.
 5. Tests that mark themselves `MANDATORY` in their docstring pin one of the
    silent failures above. If one goes red, that failure is back — do not adjust
    the test to match new behaviour.
@@ -273,7 +288,7 @@ reports success:
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 268 tests, <2s, no install needed
+python3 -m pytest tests/ -q          # 269 tests, <2s, no install needed
 ```
 
 Fixtures worth knowing, in `tests/conftest.py` and the two per-command

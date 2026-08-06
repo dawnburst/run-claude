@@ -136,15 +136,24 @@ def test_write_can_force_a_mode(tmp_path):
 @skip_as_root
 @pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
 def test_the_mode_is_set_before_the_file_becomes_visible(tmp_path, monkeypatch):
-    """MANDATORY. Silent failure: a token briefly readable by everyone.
+    """MANDATORY. Silent failure: a file published at the wrong mode.
 
-    The chmod must land on the temp file BEFORE os.replace publishes it, or
-    there is a window in which settings.json holds an auth token at the default
-    0644 and any user on the box can read it. Nothing observable afterwards
-    distinguishes the two orderings - the end state is identical - so the only
-    way to pin it is to look at the mode at the instant of the rename.
+    This pins the WIDENING case, and only the widening case. The temp file is
+    born 0600 (see the test below), so a target mode that is narrower or equal
+    is already satisfied at birth and the chmod could be deleted, moved after
+    os.replace, or moved to next Tuesday without any test noticing. A mode that
+    must end up LESS restrictive than the birth mode is the one that can only
+    come from the chmod - and it still has to land on the temp file, before the
+    rename, or settings.json becomes visible under its real name at 0600 and
+    only then widens.
 
-    Deliberately behavioural. An earlier draft asserted
+    Hence 0644 rather than 0600, which is what makes the assertion
+    discriminating. Do not "tidy" it back to 0600 to match its neighbours: that
+    is exactly how this test was hollowed out once already, when the birth mode
+    changed underneath it and it stayed green with the chmod moved after the
+    replace.
+
+    Deliberately behavioural, for the same reason. An earlier draft asserted
     `inspect.getsource(...).index("chmod") < ....index("os.replace")`, which
     could never fail: getsource includes the docstring, and the docstring says
     "chmod ... BEFORE os.replace", so the assertion was satisfied by prose no
@@ -158,8 +167,23 @@ def test_the_mode_is_set_before_the_file_becomes_visible(tmp_path, monkeypatch):
         return real_replace(src, dst)
 
     monkeypatch.setattr(jsonfile.os, "replace", spy)
-    jsonfile.write(tmp_path / "s.json", {"a": 1}, "settings", mode=0o600)
-    assert captured["mode"] == 0o600
+    jsonfile.write(tmp_path / "s.json", {"a": 1}, "settings", mode=0o644)
+    assert captured["mode"] == 0o644
+
+
+@skip_as_root
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+def test_a_brand_new_file_is_created_0600(tmp_path):
+    """With no `mode` and no existing file there is nothing to relax to.
+
+    The 0600 outcome is emergent - it holds because `effective` stays None - so
+    a tidy-up like `effective = mode if mode is not None else (existing or
+    0o644)` would undo it silently. Both documents this command writes may hold
+    a credential or the user's project history; neither wants the umask default.
+    """
+    path = tmp_path / "settings.json"
+    jsonfile.write(path, {"a": 1}, "settings")
+    assert stat.S_IMODE(os.stat(str(path)).st_mode) == 0o600
 
 
 @skip_as_root

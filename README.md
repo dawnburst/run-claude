@@ -648,7 +648,7 @@ python3 -m pytest tests/ -v
 No install is required first — pytest puts the repository root on `sys.path`,
 so the suite runs against a clean checkout. A virtual environment is only
 needed to exercise the installed `lmi` console script itself, not to run the
-tests. Currently **268 tests, all passing**, in under two seconds.
+tests. Currently **269 tests, all passing**, in under two seconds.
 
 The suite never reaches a real `claude`, and never a real `npm`: the
 `fake_claude` and `fake_npm` fixtures replace `PATH` entirely with a temporary
