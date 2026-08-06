@@ -882,9 +882,15 @@ with open(os.path.join(os.environ["FAKE_NPM_DIR"], "argv-%d.txt" % n), "w") as f
 
 print("fake npm call %d: %s" % (n, " ".join(sys.argv[1:])))
 
-# Fail only when --global is present, which is how the EACCES fallback that a
-# root-owned global npmrc produces is exercised without needing root.
-if os.environ.get("FAKE_NPM_FAIL_GLOBAL") and "--global" in sys.argv:
+# Fail only when a global-scope flag is present (--global or its synonym -g),
+# which is how the EACCES fallback that a root-owned global npmrc produces is
+# exercised without needing root. Both spellings, not just --global: `npm
+# install -g` spells the flag the short way, so a fixture that matches only the
+# long form cannot fail an install for being global at all - which is what made
+# the MANDATORY never-retried-without-g test pass for the wrong reason.
+if os.environ.get("FAKE_NPM_FAIL_GLOBAL") and (
+    "--global" in sys.argv or "-g" in sys.argv
+):
     sys.exit(243)
 
 sys.exit(int(os.environ.get("FAKE_NPM_RC", "0")))
@@ -1056,8 +1062,9 @@ Expected: `ModuleNotFoundError: No module named 'lmi.commands.install.npm'`.
 ```python
 """Locating npm, and running one npm command.
 
-Every invocation is a list argv through subprocess.run, never shell=True: the
-registry URL comes from a config file and must never reach a shell. Output is
+Every invocation is a list argv through subprocess.run, with the shell never
+invoked: the registry URL comes from a config file and must never reach a
+shell. Output is
 inherited rather than captured, so npm's own progress and errors reach the user
 as they happen, and check=False so a non-zero exit returns instead of raising.
 """

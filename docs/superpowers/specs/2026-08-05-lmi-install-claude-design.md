@@ -412,11 +412,17 @@ worse than having written nothing.
    `git_root` is the parent of the parent of `git.exe` - it sits in `cmd\` or
    `bin\`
 
-Not found: ask for a path with `prompts.text`, validating the same way and
-re-asking once. Still nothing - or a blank answer - is a `[WARN]`, not a
-failure: the install itself succeeded, Claude Code has its own fallback, and the
-user can set the variable later. The warning names the variable and what it is
-for.
+Not found: ask for a path **once** with `prompts.text`, validating the same way.
+An invalid answer says so and is not re-asked. Nothing usable - an invalid
+answer or a blank one - is a `[WARN]`, not a failure: the install itself
+succeeded, Claude Code has its own fallback, and the user can set the variable
+later. The warning names the variable and what it is for.
+
+*(Amended after implementation: this said "re-asking once", and
+`runner._resolve_git_bash` asks once and does not retry. The code and the README
+agree with each other; the spec was the odd one out. An interactive retry loop
+added at merge time would ship untested, and buys a second chance at a path the
+user can also set by hand afterwards.)*
 
 ### 8.2 Persisting it
 
@@ -473,9 +479,16 @@ The constant is re-declared in this package rather than imported from
 `commands/schedule/paths.py`: commands do not import each other, and promoting
 it to `core/` in advance is the thing the architecture rule warns against.
 
-Every backup is reported at the end of the run, by full path, in the summary -
-which is the requirement, and is also the only moment at which a user learns a
-file they may want back exists.
+Every backup a **completed** run made is reported at the end, by full path, in
+the summary - the only moment at which a user learns a file they may want back
+exists.
+
+*(Amended after implementation: this claimed every backup is reported, full
+stop, which is false on every failure path. `runner._run` reports from `_report`
+at the end; a write that raises after a backup succeeded propagates and
+`_report` never runs, so the backup sits on disk unannounced. Accepted rather
+than fixed - the file it preserves is intact and named predictably beside the
+original - but the README documents it and the spec must not claim otherwise.)*
 
 Backups are never pruned. A provisioning tool that deletes the user's previous
 configuration to keep a directory tidy has its priorities backwards.
@@ -528,8 +541,10 @@ already renders as `[ERROR] <message>` on stderr. No new error plumbing.
 **exclusive** PATH - `monkeypatch.setenv("PATH", str(bindir))`, replacing rather
 than prepending, so a real npm cannot win and quietly reconfigure the
 developer's own npmrc or install a real package. Records each invocation's argv
-in order; honours `FAKE_NPM_RC` and `FAKE_NPM_FAIL_GLOBAL` (fail only when
-`--global` is present, which is how the fallback is exercised). Grows an
+in order; honours `FAKE_NPM_RC` and `FAKE_NPM_FAIL_GLOBAL` (fail only when a
+global-scope flag is present - `--global` **or its synonym `-g`**, and treating
+`-g` as one is what makes the no-retry test below bite, since `npm install`
+spells the flag that way). Grows an
 `npm.cmd` shim on Windows the way `fake_claude` grows `claude.bat`.
 
 **`answers`**, a fixture that monkeypatches `prompts.confirm/secret/text` with a
@@ -558,7 +573,9 @@ every question is asked before the first npm command.
 *npm* - commands run in order with the configured registry; `cafile` present
 sends `cafile` and never `strict-ssl`; absent sends `strict-ssl false` and
 warns; a non-zero install is exit 1 and **no config file is touched**; npm
-missing is exit 2; `shell=True` appears nowhere in the package.
+missing is exit 2; `shell=True` appears nowhere in `npm.py` - which is the
+module that builds an argv from a config value, and the only one the test
+inspects. Read as "nowhere in the package" it overstates what is checked.
 
 *The `--global` fallback* - with `FAKE_NPM_FAIL_GLOBAL`, each `npm config set`
 is attempted twice and the second omits `--global`; `npm install -g` is
@@ -567,7 +584,9 @@ attempted **once** and the run exits 1.
 *Git Bash* - each of the seven candidates wins in isolation and the order holds
 when several exist; a candidate whose basename is `git.exe`, or which does not
 exist, is skipped; registry lookup absent falls through cleanly; not-found
-prompts, re-asks once, then warns and still exits 0; the resolved path reaches
+prompts **once**, then warns and still exits 0 - the test asserts the question
+was asked and that the warning reached the output, not merely that the variable
+is absent; the resolved path reaches
 both `setx` and `settings.json` `env`; **on Linux and macOS no candidate is
 probed, no `setx` runs, and `CLAUDE_CODE_GIT_BASH_PATH` never appears in
 settings**.
@@ -576,15 +595,22 @@ settings**.
 marketplaces under other names survive; a managed key is overwritten not
 duplicated; missing file and missing `~/.claude/` are created; invalid existing
 JSON is exit 3 and leaves the file byte-identical; a written token leaves the
-file mode `600` on POSIX; the temp file is gone on both success and failure.
+file mode `600` on POSIX - the test pre-creates the file at `644`, without which
+it passes against a file that was **born** `600` and pins nothing; the temp file
+is gone on both success and failure.
 
 *.claude.json* - absent key is written; `false` is corrected to `true`; already
 `true` writes nothing **and creates no backup**; mode `600` survives on the file
-and on the backup; a 63 KB document round-trips with only that key changed.
+and on the backup; a multi-key document round-trips with only that key changed.
 
 *Backups* - naming is `<name>.bk_<stamp>`; both files are backed up when both
-change; a failed backup aborts before any write; every backup path appears in
-the final summary.
+change; every backup path a completed run made appears in the final summary.
+
+Two claims this section used to make are **not** tested, and are recorded here
+rather than quietly dropped: a 63 KB `.claude.json` (the round-trip test uses a
+three-key document, so size is unproven), and "a failed backup aborts before any
+write" (`jsonfile.backup` raising before a write is exercised by no test, though
+`runner._back_up` is called before every `jsonfile.write` by construction).
 
 *Registration* - `[c.NAME for c in COMMANDS] == ["install", "schedule"]`.
 `tests/test_cli.py::test_schedule_is_registered` asserts the exact list and

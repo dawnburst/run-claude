@@ -22,12 +22,21 @@ NO_NPM = (
     "    lmi deliberately does not install Node.js itself."
 )
 
+# Two hypotheses, not one. The registry clause is first because this command
+# exists for air-gapped machines: the likeliest failure by far is that the
+# internal registry is unreachable or has never mirrored the package, and
+# populating it is explicitly not lmi's job. Answering that with "try sudo"
+# sends the operator to the wrong side of the building. npm's own output is
+# inherited and appears immediately above this, so keep both clauses short.
 INSTALL_FAILED = (
     "npm install -g %s failed (exit %d).\n"
-    "    The commonest cause is that the global node_modules directory is owned\n"
-    "    by root. Either:\n"
-    "      - re-run this command with sudo (an Administrator shell on Windows), or\n"
-    "      - give npm a prefix you own:\n"
+    "    npm's own output above says which of these it was:\n"
+    "      - the registry, if npm reported a network error or a 404. Check the\n"
+    "        \"registry\" value in the config file, and that Artifactory really\n"
+    "        mirrors this package - lmi does not populate it.\n"
+    "      - permissions, if the global node_modules directory is owned by root.\n"
+    "        Either re-run this command with sudo (an Administrator shell on\n"
+    "        Windows), or give npm a prefix you own:\n"
     "          npm config set prefix ~/.npm-global\n"
     "        and put ~/.npm-global/bin on your PATH, then run this again.\n"
     "    lmi never invokes sudo itself."

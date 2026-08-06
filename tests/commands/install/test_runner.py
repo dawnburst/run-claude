@@ -265,9 +265,26 @@ def test_every_question_is_asked_before_npm_runs(
 @pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
 def test_a_written_token_forces_mode_600(
         fake_npm, home, cfg_file, answers, no_claude):
+    """The 0644 pre-creation is what makes this test discriminating.
+
+    jsonfile.write preserves an existing file's mode and, with nothing to
+    preserve, creates the file 0600 anyway. Against a fresh HOME this test
+    therefore passes with runner._write_settings' token rule deleted outright -
+    the mode it asserts is the birth mode, not the mode the token forced. An
+    existing 0644 settings.json is the only state in which those two differ.
+    Identical trap to CLAUDE.md item 20's
+    test_the_mode_is_set_before_the_file_becomes_visible; do not drop the chmod.
+    """
+    (home / ".claude").mkdir()
+    path = home / ".claude" / "settings.json"
+    with open(str(path), "w", encoding="utf-8", newline="\n") as fh:
+        json.dump({"theme": "dark"}, fh)
+    os.chmod(str(path), 0o644)
+
     answers["secret"] = ["sk-secret"]
     runner.run(Args(str(cfg_file)))
-    path = home / ".claude" / "settings.json"
+
+    assert read_settings(home)["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-secret"
     assert stat.S_IMODE(os.stat(str(path)).st_mode) == 0o600
 
 
@@ -303,11 +320,24 @@ def test_windows_writes_the_git_bash_path_into_settings(
 
 
 def test_windows_without_git_bash_asks_then_warns(
-        fake_npm, home, cfg_file, answers, no_claude, monkeypatch):
+        fake_npm, home, cfg_file, answers, no_claude, monkeypatch, capsys):
+    """The ask and the warning, not only the absent key.
+
+    Asserting just that gitbash.VAR is missing from env passes with the whole
+    prompt-and-warn block deleted from runner._resolve_git_bash: the `answers`
+    fixture raises when a queue is empty, never when one is left undrained, so
+    a question that is never asked is silent. A Windows box with Git somewhere
+    the seven candidates miss would then never be asked for the path, never be
+    warned that the variable is unset, and the run would report success.
+    """
     monkeypatch.setattr(gitbash, "on_windows", lambda: True)
     monkeypatch.setattr(gitbash, "find", lambda: None)
     answers["secret"] = [""]
     answers["text"] = [""]          # user declines to supply one
 
     assert runner.run(Args(str(cfg_file))) == 0
+    assert any("bash.exe" in q for q in answers["asked"]), \
+        "the path question must actually be asked"
+    assert not answers["text"], "and the scripted answer consumed"
+    assert runner.GIT_BASH_MISSING % gitbash.VAR in capsys.readouterr().out
     assert gitbash.VAR not in read_settings(home).get("env", {})

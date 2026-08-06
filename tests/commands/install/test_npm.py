@@ -72,10 +72,18 @@ def test_install_is_never_retried_without_g(fake_npm, monkeypatch):
 
 
 def test_install_failure_names_both_ways_forward(fake_npm, monkeypatch):
+    """Both hypotheses, not just the permissions one.
+
+    On the air-gapped machines this command is for, an unreachable registry or
+    an Artifactory that never mirrored the package is the likelier failure, and
+    a message that answers it with "try sudo" sends the operator the wrong way.
+    """
     monkeypatch.setenv("FAKE_NPM_RC", "1")
     with pytest.raises(LmiError) as exc:
         npm.install(npm.find(), [].append)
     message = str(exc.value)
+    assert "registry" in message
+    assert "Artifactory" in message
     assert "sudo" in message
     assert "prefix" in message
 

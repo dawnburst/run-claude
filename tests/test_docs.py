@@ -39,6 +39,20 @@ def test_the_example_documents_every_supported_key():
     assert set(doc["claude"]) == {"registry", "cafile", "marketplaces", "env"}
 
 
+def test_the_printed_example_matches_the_shipped_one():
+    """config.EXAMPLE is what an operator pastes when the command has failed.
+
+    It is printed by _nothing_found and by the missing-"claude"-section error,
+    with nothing else on screen to copy from, and it had no test at all while
+    examples/lmi.json had one - which is how it came to omit `env`, the key the
+    256K profile rests on. Key sets, not bytes: the URLs differ deliberately.
+    """
+    printed = json.loads(config.EXAMPLE)
+    shipped = json.loads((REPO / "examples" / "lmi.json").read_text(
+        encoding="utf-8"))
+    assert set(printed["claude"]) == set(shipped["claude"])
+
+
 def test_the_readme_names_the_silent_keys():
     """Anyone editing these by hand needs the exact spelling in front of them."""
     readme = (REPO / "README.md").read_text(encoding="utf-8")

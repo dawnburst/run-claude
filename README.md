@@ -576,11 +576,22 @@ has already succeeded, so the outcome is a working `claude` with unwritten
 settings — partial success, which wants its own code. Folding it into `1` would
 report that the install failed.
 
-`3` on its own does **not** mean the install happened, though, so do not key a
-provisioning script off it as "partially done". `~/.claude/settings.json` is
-*read* before any npm command runs — that is how the command knows whether a
-token is already configured — so an unparseable one there is exit 3 with nothing
-installed and nothing changed. The message says which it was; the code does not.
+`3` on its own tells you **nothing** about how far the run got, so do not key a
+provisioning script off it as "partially done" — or as "nothing happened". Both
+extremes occur:
+
+- `~/.claude/settings.json` is *read* before any npm command runs — that is how
+  the command knows whether a token is already configured — so an unparseable
+  one **there** is exit 3 with nothing installed and nothing changed.
+- `~/.claude.json` is read *last*, after npm has installed Claude Code and after
+  `settings.json` has been backed up and rewritten. An unparseable one **there**
+  is exit 3 with the install done, the settings replaced, a
+  `settings.json.bk_<stamp>` on disk — and no summary, because the run ends
+  before the closing report that would have named it.
+
+The message says which file it was, and every backup is named
+`<original>.bk_<timestamp>` beside the original whether it was announced or not.
+The exit code does not distinguish the two cases.
 
 ### Real-run checklist
 
@@ -648,7 +659,7 @@ python3 -m pytest tests/ -v
 No install is required first — pytest puts the repository root on `sys.path`,
 so the suite runs against a clean checkout. A virtual environment is only
 needed to exercise the installed `lmi` console script itself, not to run the
-tests. Currently **269 tests, all passing**, in under two seconds.
+tests. Currently **270 tests, all passing**, in under two seconds.
 
 The suite never reaches a real `claude`, and never a real `npm`: the
 `fake_claude` and `fake_npm` fixtures replace `PATH` entirely with a temporary

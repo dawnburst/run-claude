@@ -250,7 +250,7 @@ reports success:
 ## 4. Rules for editing
 
 1. **Run the suite after every change** and say in your report that you did:
-   `python3 -m pytest tests/ -q`. It is 269 tests in under two seconds and it
+   `python3 -m pytest tests/ -q`. It is 270 tests in under two seconds and it
    costs nothing — several bugs above only appear with awkward paths, or only
    when a claude call fails.
 2. **Preserve the five invariants in section 1** and everything in section 3.
@@ -288,7 +288,7 @@ reports success:
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 269 tests, <2s, no install needed
+python3 -m pytest tests/ -q          # 270 tests, <2s, no install needed
 ```
 
 Fixtures worth knowing, in `tests/conftest.py` and the two per-command

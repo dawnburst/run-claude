@@ -6,7 +6,7 @@ parse-and-dispatch as commands accumulate.
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -32,6 +32,13 @@ DEFAULT_ENV = {
     "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000",
 }
 
+# Printed when no config file is found, so it is what a first-time operator
+# pastes into their first lmi.json - with the command having just failed, and
+# nothing else on screen to copy from. It must therefore document EVERY key,
+# `env` included: leaving out the key the 256K profile rests on teaches the
+# operator the profile is not configurable. examples/lmi.json is the same
+# document with real-looking URLs, and tests/test_docs.py pins the two key sets
+# equal so they cannot drift apart again.
 EXAMPLE = """{
   "claude": {
     "registry": "https://artifactory.example.com/api/npm/npm-virtual/",
@@ -40,6 +47,11 @@ EXAMPLE = """{
       "corp-tools": {
         "source": {"source": "git", "url": "https://git.example.com/m.git"}
       }
+    },
+    "env": {
+      "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "256000",
+      "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "204800",
+      "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000"
     }
   }
 }"""
