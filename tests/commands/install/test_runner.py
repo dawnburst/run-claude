@@ -222,8 +222,17 @@ def test_a_failed_npm_install_touches_no_config_file(
 
     If the config steps ran anyway, the machine would look provisioned - the
     256K profile, the marketplaces, onboarding skipped - with no claude binary.
+
+    FAKE_NPM_FAIL_GLOBAL, not FAKE_NPM_RC: do not simplify this back. FAKE_NPM_RC
+    fails every npm call, so the run dies at the first `npm config set` and never
+    reaches `npm install` - which pins only "no config write before the FIRST npm
+    command" and leaves the failure this test is named for untested. Moving the
+    two writes to between _configure_npm and npm.install would keep it green.
+    Failing only the global-scope calls lets config_set succeed through its
+    documented user-level fallback, so the run reaches `npm install -g` and fails
+    there, which is the ordering that matters.
     """
-    monkeypatch.setenv("FAKE_NPM_RC", "1")
+    monkeypatch.setenv("FAKE_NPM_FAIL_GLOBAL", "1")
     answers["secret"] = ["sk-x"]
 
     with pytest.raises(LmiError) as exc:
@@ -270,7 +279,10 @@ def test_a_missing_claude_afterwards_warns_but_exits_0(
     """
     answers["secret"] = [""]
     assert runner.run(Args(str(cfg_file))) == 0
-    assert "[WARN]" in capsys.readouterr().out
+    # The specific warning, not just "[WARN]": this config has no cafile, so
+    # _configure_npm prints TLS_WARNING, which also starts "[WARN]" and would
+    # satisfy a bare check even with _report's branch deleted outright.
+    assert runner.NO_CLAUDE_ON_PATH in capsys.readouterr().out
 
 
 def test_windows_writes_the_git_bash_path_into_settings(
