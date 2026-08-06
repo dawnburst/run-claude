@@ -1,7 +1,12 @@
 """`lmi install` - install and configure a coding agent CLI.
 
-The four-name command contract (NAME, HELP, add_arguments, run) is completed
-in runner.py; this module is not registered in lmi/commands/__init__.py until
-run() exists, so that test_every_command_satisfies_the_contract cannot see a
-half-built command.
+The four-name command contract: NAME and HELP here, add_arguments from
+config.py (validation lives with the command, not in cli.py) and run from
+runner.py.
 """
+
+from .config import add_arguments  # noqa: F401
+from .runner import run  # noqa: F401
+
+NAME = "install"
+HELP = "Install and configure the Claude Code CLI"
