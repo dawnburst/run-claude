@@ -19,9 +19,14 @@ def test_unknown_command_exits_2():
     assert exc.value.code == 2
 
 
-def test_schedule_is_registered():
+def test_the_registry_lists_every_command_in_help_order():
+    """The intended tripwire: adding a command must update this list.
+
+    Registry order is --help order, and `install` comes first because that is
+    the order a user meets the commands - install the tool, then schedule it.
+    """
     from lmi.commands import COMMANDS
-    assert [c.NAME for c in COMMANDS] == ["schedule"]
+    assert [c.NAME for c in COMMANDS] == ["install", "schedule"]
 
 
 def test_every_command_satisfies_the_contract():

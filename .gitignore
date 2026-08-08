@@ -10,6 +10,11 @@ run-claude.lock
 # Local Claude Code settings
 .claude/
 
+# Scratch space for a subagent-driven plan execution: ledger, task briefs,
+# reports and review packages. Working notes, not history - once a plan is
+# finished its directory is deleted and git log is the record.
+.superpowers/
+
 # Python build/test artefacts
 __pycache__/
 *.pyc
