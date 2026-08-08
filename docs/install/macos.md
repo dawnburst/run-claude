@@ -2,11 +2,20 @@
 
 Goal: type `lmi` and have it run. No `python3 -m`, no activating anything.
 
-> **Not yet verified on macOS.** Every step below is standard macOS practice, and
-> the install script is a close mirror of the Linux one, which is exercised end to
-> end — its shared logic was also run on Linux to check it works. But nothing here
-> has executed on a Mac. Treat it as intended rather than proven, and please
-> report what breaks. Linux and Windows have both been verified.
+> **The scripted install is verified; `lmi` itself is not.** The script has now
+> run end to end on macOS 15 with the Command Line Tools Python 3.9.6 — build,
+> venv, install, link, and `lmi --version`. What that run has *not* exercised is
+> `lmi schedule` or `lmi install claude` on a Mac, or `--uninstall`, or the
+> by-hand and `pipx` routes below. Treat those as intended rather than proven,
+> and please report what breaks.
+>
+> That first run also found a real bug, now fixed: the pip that Apple's Command
+> Line Tools ship cannot build this wheel, and says so only by exiting 0 having
+> built an empty `UNKNOWN-0.0.0-py3-none-any.whl`. The script now notices and
+> rebuilds with a newer pip, so the fix reaches you as one `warning` line.
+> **Air-gapped machines are unaffected either way:** that rebuild belongs to the
+> build step, which never runs when you carry the wheel in — see
+> [Air-gapped](#air-gapped-machines) below.
 
 ---
 
@@ -132,6 +141,19 @@ Carry in the wheel. Installing it needs no network: the install command passes
 `--no-index`, and a wheel needs no build backend — that is the difference between
 installing a wheel and installing from source, where pip fetches
 `setuptools>=61`.
+
+Put `lmi-0.1.0-py3-none-any.whl` beside the script, or in `dist/`, or name it
+with `--wheel`. Any of the three and the script's build step — the only part that
+wants a network, including its rebuild-with-a-newer-pip fallback — is skipped
+outright. Measured against an unreachable index: 0.9 s reusing a venv, 2.3 s
+creating one.
+
+Do **not** expect an air-gapped machine to build the wheel from the checkout.
+It cannot: pip must fetch `setuptools>=61` first, and no fallback changes that.
+The script now says so in seconds rather than after several index timeouts, and
+prints the end of pip's own log so the cause is visible. Build the wheel on a
+networked machine — `python3 -m pip wheel --no-deps --wheel-dir dist .`, then
+check the filename really begins `lmi-`.
 
 The only other thing you need is an already-authenticated Claude Code CLI;
 `claude auth login` is browser-based and cannot be automated.

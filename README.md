@@ -46,7 +46,7 @@ your PATH — no `python -m` prefix and nothing to activate.
 | Linux, including WSL | [docs/install/linux.md](docs/install/linux.md) | verified on Ubuntu 24.04, Python 3.12 and 3.9.23 |
 | Windows — `cmd.exe` | [docs/install/windows-cmd.md](docs/install/windows-cmd.md) | verified on Windows, Python 3.13 |
 | Windows — PowerShell | [docs/install/windows-powershell.md](docs/install/windows-powershell.md) | verified on Windows, Python 3.13 |
-| macOS | [docs/install/macos.md](docs/install/macos.md) | script written — **never run on a Mac** |
+| macOS | [docs/install/macos.md](docs/install/macos.md) | install script verified on macOS 15, Python 3.9.6; **`lmi` itself not yet run there** |
 
 Each guide gives a scripted route, the same steps by hand, and `pipx` if you
 prefer it to manage isolation for you — plus a first run, updating,
@@ -97,11 +97,29 @@ Bypass` for that one invocation, because a default Windows refuses to run a loca
 `.ps1`. Note **git is not on a stock Windows** — both Windows guides start from
 downloading the wheel and the script into one folder, which the installer expects.
 
-macOS has `scripts/install-macos.sh`, a close mirror of the Linux one. Its shared
-logic has been exercised on Linux; its macOS-specific parts — the `python3`
-search, the `readlink -f`-free ownership check, naming `~/.zshrc`, bash 3.2
-syntax — are written from documentation. **It has never run on a Mac.** Treat it
-as intended rather than proven.
+macOS has `scripts/install-macos.sh`, a close mirror of the Linux one. It has now
+run end to end on macOS 15 with the Command Line Tools Python 3.9.6, which
+exercised the macOS-specific parts — the `python3` search, the `readlink -f`-free
+ownership check, bash 3.2 syntax — and produced a working `lmi --version`.
+`--uninstall` has not run there.
+
+That run found the one bug the mirror could not predict: the Command Line Tools
+pip (21.2.4) mis-resolves the paths of its own build environment, so the
+`setuptools>=61` it downloads never reaches the build backend, and the system
+setuptools 58 — which predates PEP 621 and cannot read `[project]` — builds an
+empty `UNKNOWN-0.0.0-py3-none-any.whl` and reports success. Both Unix installers
+now check that a wheel called `lmi-*` actually appeared, and rebuild in a
+throwaway venv with a current pip if not.
+
+That retry is deliberately narrow, for the air-gapped case: it fires only when
+pip exited **0** having built the wrong thing. A non-zero pip is a real failure —
+usually no network — which a second pip cannot fix either, so it is reported
+straight away rather than retried behind another venv and two more index
+timeouts. And none of it runs at all when a wheel is supplied: with
+`lmi-*.whl` beside the script, in `dist/`, or passed to `--wheel`, the build
+block is skipped entirely and the install is pure `--no-index`. Verified against
+an unreachable index: 0.9 s with the wheel present, 2.3 s including creating the
+venv from scratch.
 
 **Installing needs no network.** Every install command passes `--no-index`, and a
 wheel needs no build backend — unlike `pip install .`, which fetches
@@ -694,11 +712,15 @@ Development happens on Linux. What has actually been executed elsewhere:
   **Windows file-locking branch** (`msvcrt.locking`) has therefore now run — and
   running it is what exposed the UNC limitation in
   [Known limitations](#known-limitations).
-- **macOS: never executed.** Neither the install script nor `lmi` itself. The
-  script's shared logic was exercised on Linux; its macOS-specific parts are
-  written from documentation.
+- **macOS: the install script only.** `scripts/install-macos.sh` has run end to
+  end on macOS 15 with the Command Line Tools Python 3.9.6 — Python search,
+  wheel build, venv, install, symlink, and `lmi --version` returning `lmi 0.1.0`.
+  That run is what found the empty-`UNKNOWN-0.0.0`-wheel bug described above.
+  **`lmi` itself has still not run on a Mac** — no `lmi schedule` iteration, no
+  `lmi install claude`, and `--uninstall` untried.
 
-Do not describe macOS support as proven. It is unverified, not assumed working.
+Do not describe macOS support as proven beyond that: installing works, running
+is unverified rather than assumed working.
 
 **The interpreter floor is verified.** The full suite and an end-to-end CLI run
 both pass on **CPython 3.9.23** — single run, a loop that stops early on
@@ -709,8 +731,8 @@ is refused with exit 3. This matters because one real bug was found exactly here
 every run died at the first iteration on 3.9. A syntax-level check cannot catch a
 parameter added in a later version — only running the older interpreter can.
 
-So: the **3.9 floor** is tested. **Linux** and **Windows** are tested. **macOS**
-is not.
+So: the **3.9 floor** is tested. **Linux** and **Windows** are tested. On
+**macOS**, installing is tested and running is not.
 
 ### Still to verify
 
