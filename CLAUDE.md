@@ -244,13 +244,24 @@ reports success:
     0600 it asserts the birth mode and passes with the chmod deleted entirely.
     The `O_BINARY` in the same `os.open` is a separate guard again — section 4,
     rule 4.
+21. **A config file at the pre-move `./lmi.json` is refused, not skipped.** The
+    working-directory default is `./config/lmi.json`; `config._refuse_legacy`
+    turns a file left at the old path into exit 2 naming both paths. **Silent:**
+    skipping it lets the next candidate win — `~/.lmi/config.json`, a different
+    registry, quite possibly a different site — so npm succeeds, the run reports
+    success, and the machine is provisioned from the wrong source while an
+    `lmi.json` sits in plain view in the working directory. It is the mirror of
+    the `--config`-does-not-fall-through rule, and is checked at the point in
+    the search order the old path used to occupy, so `--config` and
+    `$LMI_CONFIG` still win and never trip over it — including `--config
+    ./lmi.json`, the escape hatch the message offers.
 
 ---
 
 ## 4. Rules for editing
 
 1. **Run the suite after every change** and say in your report that you did:
-   `python3 -m pytest tests/ -q`. It is 270 tests in under two seconds and it
+   `python3 -m pytest tests/ -q`. It is 274 tests in under two seconds and it
    costs nothing — several bugs above only appear with awkward paths, or only
    when a claude call fails.
 2. **Preserve the five invariants in section 1** and everything in section 3.
@@ -288,7 +299,7 @@ reports success:
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 270 tests, <2s, no install needed
+python3 -m pytest tests/ -q          # 274 tests, <2s, no install needed
 ```
 
 Fixtures worth knowing, in `tests/conftest.py` and the two per-command

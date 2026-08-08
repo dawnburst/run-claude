@@ -1,0 +1,10 @@
+{
+  "claude": {
+    "registry": "https://registry.npmjs.org/",
+    "env": {
+      "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "256000",
+      "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "204800",
+      "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000"
+    }
+  }
+}
