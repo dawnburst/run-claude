@@ -153,12 +153,72 @@ if [ -z "$WHEEL" ]; then
     # Needs setuptools, which pip fetches unless it is already local - so this
     # is the one step that wants a network. An air-gapped machine should carry
     # the built wheel in instead; installing it needs nothing.
-    python3 -m pip wheel --no-deps --quiet --wheel-dir "$REPO/dist" "$REPO" || die \
-        "could not build the wheel. On a machine with no network that is
-    expected: pip fetches setuptools to build. Carry the built wheel in and
-    pass it with --wheel."
-    WHEEL="$(newest_wheel "$REPO/dist" || true)"
-    [ -n "$WHEEL" ] || die "pip reported success but no wheel appeared in $REPO/dist."
+    #
+    # Built into a scratch directory rather than straight into dist/, because a
+    # failed build here does not look like one: see the fallback below, which
+    # leaves an empty UNKNOWN-0.0.0-py3-none-any.whl behind. That must not be
+    # left lying beside the real wheels, where `--wheel` and a later reader
+    # would both have to know to ignore it.
+    BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/lmi-build.XXXXXX")" \
+        || die "could not create a temporary build directory."
+    trap 'rm -rf "$BUILD_DIR"' EXIT INT TERM
+    BUILD_LOG="$BUILD_DIR/build.log"
+
+    # Quiet while it works; the log is printed only if we end up failing.
+    BUILD_RC=0
+    python3 -m pip wheel --no-deps --quiet --wheel-dir "$BUILD_DIR" "$REPO" \
+        >"$BUILD_LOG" 2>&1 || BUILD_RC=$?
+
+    # Exit 0 with no lmi-*.whl, and only that, is the signature worth retrying.
+    # A non-zero pip is a genuine build failure - most often no network, which a
+    # second pip cannot fix either - and retrying it would make an air-gapped
+    # machine sit through a venv and two more index timeouts before failing with
+    # the message it could have had straight away.
+    if [ "$BUILD_RC" -eq 0 ] && [ -z "$(newest_wheel "$BUILD_DIR" || true)" ]; then
+        # pip can exit 0 and still not have built lmi, whenever the
+        # setuptools>=61 that pyproject.toml asks for
+        # does not reach the build backend - a distro pip old enough to ignore
+        # build-system.requires, or one whose build environment mis-resolves its
+        # own paths (this is what the Command Line Tools pip does on macOS).
+        # The build then falls back to the distro's setuptools, and anything
+        # before 61 predates PEP 621 and so cannot read [project] at all: it
+        # writes a 1.7KB UNKNOWN-0.0.0-py3-none-any.whl containing nothing but
+        # metadata, and reports success.
+        #
+        # Do not "fix" this by relaxing the wheel glob to *.whl. That empty
+        # wheel installs cleanly, provides no `lmi`, and would be caught three
+        # steps later as a missing console script - if at all.
+        #
+        # A venv gets its own current pip, which has neither problem.
+        warn "that pip could not build the wheel; retrying with a newer one"
+        BOOT="$BUILD_DIR/venv"
+        if python3 -m venv "$BOOT" >>"$BUILD_LOG" 2>&1; then
+            # Best effort, and bounded: ensurepip's pip is as old as the
+            # interpreter, so it usually does need upgrading, but an index that
+            # accepts connections and then stalls must not hang the install.
+            # Failure here is fine - the build below reports it better.
+            "$BOOT/bin/python" -m pip install --quiet --upgrade \
+                --timeout 15 --retries 1 pip >>"$BUILD_LOG" 2>&1 || true
+            "$BOOT/bin/python" -m pip wheel --no-deps --quiet \
+                --wheel-dir "$BUILD_DIR" "$REPO" >>"$BUILD_LOG" 2>&1 || true
+        fi
+    fi
+
+    BUILT="$(newest_wheel "$BUILD_DIR" || true)"
+    if [ -z "$BUILT" ]; then
+        printf '\n' >&2
+        tail -n 20 "$BUILD_LOG" >&2 || true
+        die "could not build the wheel; the last of the build log is above.
+
+    On a machine with no network that is expected: pip fetches setuptools to
+    build. Carry the built wheel in and pass it with --wheel.
+    A venv build also needs python3-venv:
+
+        sudo apt install python3-venv"
+    fi
+    mkdir -p "$REPO/dist" && cp "$BUILT" "$REPO/dist/" \
+        || die "built $(basename "$BUILT") but could not copy it into $REPO/dist."
+    WHEEL="$REPO/dist/$(basename "$BUILT")"
 fi
 ok "$(basename "$WHEEL")"
 
