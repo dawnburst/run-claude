@@ -25,10 +25,13 @@ def write(path, doc):
 
 MINIMAL = {"claude": {"registry": "https://artifactory.corp.local/api/npm/npm/"}}
 
+# The working-directory default: ./config/lmi.json, not ./lmi.json.
+CWD = ("config", "lmi.json")
+
 
 def test_explicit_config_wins(tmp_path, monkeypatch):
     chosen = write(tmp_path / "chosen.json", MINIMAL)
-    write(tmp_path / "lmi.json", {"claude": {"registry": "https://wrong/"}})
+    write(tmp_path.joinpath(*CWD), {"claude": {"registry": "https://wrong/"}})
     monkeypatch.chdir(tmp_path)
     cfg = config.build_config(Args(config=str(chosen)))
     assert cfg.registry == "https://artifactory.corp.local/api/npm/npm/"
@@ -39,10 +42,10 @@ def test_missing_explicit_config_does_not_fall_through(tmp_path, monkeypatch):
     """MANDATORY. Silent failure: provisioning against the wrong registry.
 
     A --config the user named and that does not exist must be an error, never
-    a quiet fall-through to ./lmi.json - which would install from a different
-    registry than the one asked for and report success.
+    a quiet fall-through to ./config/lmi.json - which would install from a
+    different registry than the one asked for and report success.
     """
-    write(tmp_path / "lmi.json", MINIMAL)
+    write(tmp_path.joinpath(*CWD), MINIMAL)
     monkeypatch.chdir(tmp_path)
     with pytest.raises(LmiError) as exc:
         config.build_config(Args(config=str(tmp_path / "nope.json")))
@@ -51,7 +54,7 @@ def test_missing_explicit_config_does_not_fall_through(tmp_path, monkeypatch):
 
 def test_env_var_beats_cwd(tmp_path, monkeypatch):
     from_env = write(tmp_path / "env.json", MINIMAL)
-    write(tmp_path / "lmi.json", {"claude": {"registry": "https://wrong/"}})
+    write(tmp_path.joinpath(*CWD), {"claude": {"registry": "https://wrong/"}})
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("LMI_CONFIG", str(from_env))
     assert config.build_config(Args()).source == from_env
@@ -63,9 +66,50 @@ def test_cwd_beats_home(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     write(tmp_path / "home" / ".lmi" / "config.json",
           {"claude": {"registry": "https://wrong/"}})
-    here = write(tmp_path / "work" / "lmi.json", MINIMAL)
+    here = write(tmp_path.joinpath("work", *CWD), MINIMAL)
     monkeypatch.chdir(tmp_path / "work")
     assert config.build_config(Args()).source == here
+
+
+def test_a_config_left_at_the_old_path_is_refused_not_skipped(
+        tmp_path, monkeypatch):
+    """MANDATORY. Silent failure: provisioning against the wrong registry.
+
+    The working-directory default moved from ./lmi.json into ./config/. A file
+    left at the old path must not be passed over in silence, because the next
+    candidate is ~/.lmi/config.json - a different registry - and installing
+    from that while an lmi.json sits in view in the working directory reports
+    success having provisioned the machine against the wrong source.
+    """
+    monkeypatch.delenv("LMI_CONFIG", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    write(tmp_path / "home" / ".lmi" / "config.json",
+          {"claude": {"registry": "https://wrong/"}})
+    (tmp_path / "work").mkdir()
+    legacy = write(tmp_path / "work" / "lmi.json", MINIMAL)
+    monkeypatch.chdir(tmp_path / "work")
+
+    with pytest.raises(LmiError) as exc:
+        config.build_config(Args())
+    assert exc.value.code == 2
+    message = str(exc.value)
+    assert str(legacy) in message         # which file it means
+    assert "config" in message            # and where it belongs now
+
+
+def test_the_old_path_does_not_override_an_explicit_config(tmp_path, monkeypatch):
+    """The refusal is for the search, not for a file the user named.
+
+    --config and $LMI_CONFIG are answers to the question the refusal asks, so
+    neither may trip over it - including --config pointing at the old path
+    itself, which is the escape hatch the message offers.
+    """
+    legacy = write(tmp_path / "lmi.json", MINIMAL)
+    monkeypatch.chdir(tmp_path)
+    assert config.build_config(Args(config=str(legacy))).source == legacy
+    monkeypatch.setenv("LMI_CONFIG", str(legacy))
+    assert config.build_config(Args()).source == legacy
 
 
 def test_home_is_the_last_resort(tmp_path, monkeypatch):

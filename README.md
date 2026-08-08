@@ -398,8 +398,19 @@ Searched in this order, first match wins:
 
 1. `--config PATH`
 2. `$LMI_CONFIG`
-3. `./lmi.json`
+3. `./config/lmi.json`
 4. `~/.lmi/config.json`
+
+The working-directory default is `./config/lmi.json` — a checkout keeps its
+config in one obvious place rather than loose in the root. This repository
+ships one, pointing at the public npm registry; a site replaces it.
+
+A file left at the **old** `./lmi.json` path is **exit 2**, not a silent skip.
+Skipping it would let `~/.lmi/config.json` win — a different registry — while
+an `lmi.json` sits in plain view in the working directory, which is the same
+wrong-registry provisioning the `--config` rule below prevents, arrived at from
+the other direction. The message says how to move it, and `--config ./lmi.json`
+keeps it where it is.
 
 A `--config` that points at a file which does not exist is **exit 2**, never a
 quiet fall-through to the next candidate: an explicitly named file that silently
@@ -646,6 +657,8 @@ lmi/                  the package
     schedule/         the lmi schedule command: config/validation, paths,
                       prompt composition, the state file, the iteration loop
 tests/                pytest suite, mirrors the lmi/ tree
+config/lmi.json       the config lmi install claude reads by default, when run
+                      from this directory
 examples/lmi.json     a complete lmi install claude config file, to copy and edit
 docs/install/         per-platform install guides, one file each
 docs/superpowers/     the design specs, one per command

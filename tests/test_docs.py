@@ -61,6 +61,28 @@ def test_the_readme_names_the_silent_keys():
         assert key in readme, "README.md must document %s" % key
 
 
+def test_the_shipped_default_config_is_accepted_by_the_validator():
+    """config/lmi.json is what `lmi install claude` reads from a checkout.
+
+    Unlike examples/lmi.json it is not copied and edited first, so a shape the
+    validator rejects is not a bad first day - it is the command failing where
+    it is supposed to work. It deliberately omits `cafile`: that key is checked
+    to exist, so a placeholder path would be exit 2 on every machine.
+    """
+    shipped = REPO / config.CWD_CONFIG_DIR / config.CWD_CONFIG_NAME
+    assert shipped.is_file(), "%s must exist" % config.CWD_CONFIG
+    cfg = config.build_config(Args(str(shipped)))
+    assert cfg.registry
+    assert "cafile" not in json.loads(shipped.read_text(encoding="utf-8"))["claude"]
+
+
+def test_the_readme_names_the_working_directory_default():
+    """The search order is the first thing an operator reads and the easiest to
+    leave stale: it moved from ./lmi.json into ./config/ once already."""
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    assert config.CWD_CONFIG in readme
+
+
 def test_claude_md_scopes_the_keypress_invariant_to_schedule():
     """MANDATORY. Invariant 3 was global and `lmi install` contradicts it.
 

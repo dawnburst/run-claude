@@ -20,6 +20,11 @@ PACKAGE = "@anthropic-ai/claude-code"
 
 CONFIG_ENV_VAR = "LMI_CONFIG"
 CWD_CONFIG_NAME = "lmi.json"
+# The working-directory default lives in ./config/, not loose in the directory
+# itself, so a checkout has one obvious place for it. Kept as two names because
+# _find has to look for the pre-move path as well - see _refuse_legacy.
+CWD_CONFIG_DIR = "config"
+CWD_CONFIG = "%s/%s" % (CWD_CONFIG_DIR, CWD_CONFIG_NAME)
 HOME_CONFIG = "~/.lmi/config.json"
 
 # The 256K context profile, shipped as a default so a machine whose config
@@ -65,7 +70,7 @@ def add_arguments(parser):
     parser.add_argument(
         "--config", dest="config", metavar="PATH",
         help="config file. Default: $%s, ./%s, %s"
-             % (CONFIG_ENV_VAR, CWD_CONFIG_NAME, HOME_CONFIG),
+             % (CONFIG_ENV_VAR, CWD_CONFIG, HOME_CONFIG),
     )
 
 
@@ -110,13 +115,42 @@ def _find(explicit):
     from_env = os.environ.get(CONFIG_ENV_VAR)
     if from_env:
         candidates.append(_expand(from_env))
-    candidates.append(Path.cwd() / CWD_CONFIG_NAME)
+    in_cwd = Path.cwd() / CWD_CONFIG_DIR / CWD_CONFIG_NAME
+    candidates.append(in_cwd)
     candidates.append(_expand(HOME_CONFIG))
 
     for candidate in candidates:
         if _kind(candidate) == fs.FILE:
             return candidate
+        # Checked at the point in the order the old path used to occupy, so an
+        # explicit --config or $LMI_CONFIG still wins and never sees this.
+        if candidate == in_cwd:
+            _refuse_legacy(Path.cwd() / CWD_CONFIG_NAME, in_cwd)
     raise LmiError(_nothing_found(candidates), EXIT_USAGE)
+
+
+def _refuse_legacy(legacy, expected):
+    """The working-directory default moved into ./config/. Say so; do not skip.
+
+    Passing over a file at the old path is not harmless. The next candidate is
+    ~/.lmi/config.json - a different registry, quite possibly a different site -
+    and installing from it while an lmi.json sits in plain view in the working
+    directory is exactly the wrong-registry provisioning that the --config rule
+    above exists to prevent, reached from the other direction. It is also the
+    silent kind: npm succeeds, the run reports success, and the machine is
+    provisioned against the wrong source.
+    """
+    if _kind(legacy) != fs.FILE:
+        return
+    raise LmiError(
+        "the working-directory config file has moved into %s/, so %s is no "
+        "longer read.\n"
+        "    Move it:\n\n"
+        "        mkdir -p %s && mv %s %s\n\n"
+        "    or keep it where it is by naming it: --config %s"
+        % (CWD_CONFIG_DIR, legacy, expected.parent, legacy, expected, legacy),
+        EXIT_USAGE,
+    )
 
 
 def _nothing_found(candidates):
