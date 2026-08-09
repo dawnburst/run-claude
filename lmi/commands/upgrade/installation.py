@@ -152,7 +152,7 @@ def _user_scripts_dir():
     if hasattr(sysconfig, "get_preferred_scheme"):
         scheme = sysconfig.get_preferred_scheme("user")
     else:
-        scheme = "nt_user" if os.name == "nt" else "posix_user"
+        scheme = "nt_user" if _on_windows() else "posix_user"
     return Path(sysconfig.get_path("scripts", scheme))
 
 
@@ -161,7 +161,17 @@ def _user_site_dir():
 
 
 def _script_name():
-    return "lmi.exe" if os.name == "nt" else "lmi"
+    return "lmi.exe" if _on_windows() else "lmi"
+
+
+def _on_windows():
+    """os.name == "nt", in a form a test can override.
+
+    Monkeypatching os.name itself is not an option: pathlib chooses its
+    concrete class from it at instantiation, so setting it to "nt" on Linux
+    makes every Path() raise NotImplementedError - including pytest's own.
+    """
+    return os.name == "nt"
 
 
 def _editable():

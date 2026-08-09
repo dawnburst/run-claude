@@ -133,3 +133,31 @@ def test_a_venv_whose_lmi_is_somewhere_else_is_refused(venv, monkeypatch, tmp_pa
     with pytest.raises(LmiError) as exc:
         installation.detect()
     assert exc.value.code == 2
+
+
+def test_the_console_script_is_named_per_platform(monkeypatch):
+    monkeypatch.setattr(installation, "_on_windows", lambda: True)
+    assert installation._script_name() == "lmi.exe"
+
+    monkeypatch.setattr(installation, "_on_windows", lambda: False)
+    assert installation._script_name() == "lmi"
+
+
+def test_user_scripts_dir_falls_back_to_the_39_scheme_names(monkeypatch):
+    """sysconfig.get_preferred_scheme is 3.10+; on the 3.9 floor this fallback
+    is the path every user-site install actually takes, not a corner case."""
+    monkeypatch.delattr(installation.sysconfig, "get_preferred_scheme", raising=False)
+
+    calls = []
+    monkeypatch.setattr(
+        installation.sysconfig, "get_path",
+        lambda name, scheme=None: calls.append((name, scheme)) or "/x",
+    )
+
+    monkeypatch.setattr(installation, "_on_windows", lambda: True)
+    installation._user_scripts_dir()
+    assert calls[-1] == ("scripts", "nt_user")
+
+    monkeypatch.setattr(installation, "_on_windows", lambda: False)
+    installation._user_scripts_dir()
+    assert calls[-1] == ("scripts", "posix_user")

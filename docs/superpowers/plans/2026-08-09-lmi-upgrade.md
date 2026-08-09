@@ -1119,7 +1119,7 @@ pinned against its own."
   - `installation.Installation` — frozen dataclass with fields `kind: str`, `pip_prefix: List[str]`, `user_flag: bool`, `script: Path`, `where: Path`
   - `installation.detect() -> Installation` — raises `LmiError(…, EXIT_USAGE)` for anything it will not upgrade
 
-**The testability rule for this module:** every fact it needs comes from its own one-line helper (`_package_dir`, `_prefix`, `_base_prefix`, `_executable`, `_scripts_dir`, `_user_scripts_dir`, `_user_site_dir`, `_editable`, `_has_pip`, `_base_python`). Tests replace the *fact*, never `sys.prefix` itself. This is the same reason `schedule/paths.py` has `_on_windows` rather than reading `os.name` at the point of use, and the fixture table in `CLAUDE.md` §5 says so explicitly.
+**The testability rule for this module:** every fact it needs comes from its own one-line helper (`_package_dir`, `_prefix`, `_base_prefix`, `_executable`, `_scripts_dir`, `_user_scripts_dir`, `_user_site_dir`, `_editable`, `_has_pip`, `_base_python`, `_on_windows`). Tests replace the *fact*, never `sys.prefix` itself. This is the same reason `schedule/paths.py` has `_on_windows` rather than reading `os.name` at the point of use, and the fixture table in `CLAUDE.md` §5 says so explicitly.
 
 - [ ] **Step 1: Write the failing tests, two of them MANDATORY**
 
@@ -1425,7 +1425,7 @@ def _user_scripts_dir():
     if hasattr(sysconfig, "get_preferred_scheme"):
         scheme = sysconfig.get_preferred_scheme("user")
     else:
-        scheme = "nt_user" if os.name == "nt" else "posix_user"
+        scheme = "nt_user" if _on_windows() else "posix_user"
     return Path(sysconfig.get_path("scripts", scheme))
 
 
@@ -1434,7 +1434,17 @@ def _user_site_dir():
 
 
 def _script_name():
-    return "lmi.exe" if os.name == "nt" else "lmi"
+    return "lmi.exe" if _on_windows() else "lmi"
+
+
+def _on_windows():
+    """os.name == "nt", in a form a test can override.
+
+    Monkeypatching os.name itself is not an option: pathlib chooses its
+    concrete class from it at instantiation, so setting it to "nt" on Linux
+    makes every Path() raise NotImplementedError - including pytest's own.
+    """
+    return os.name == "nt"
 
 
 def _editable():
