@@ -1,9 +1,13 @@
 """Reading, backing up and atomically writing one JSON document.
 
-Split from settings.py and claude_json.py on purpose: those two know *what*
-belongs in a document, this one knows *how* to touch a file the user cares
-about. The dangerous part is here, tested once and thoroughly, without knowing
-anything about Claude Code's schema.
+Nothing here knows what Claude Code is, which is why it lives in core/ rather
+than in the command that first needed it. It was promoted out of
+commands/install/ when `lmi config switch` became the second caller - the
+moment CLAUDE.md section 2 names for promoting, rather than in advance.
+
+Every function takes the exit `code` to raise with, because core/ cannot know
+a command's codes and two commands must be free to disagree about them. Both
+current callers pass 3.
 
 Every write is atomic - a temp file beside the target, then os.replace, which
 is atomic on POSIX and on Windows. A half-written settings.json is invalid
@@ -16,9 +20,8 @@ import shutil
 import stat as _stat
 from datetime import datetime
 
-from .exit_codes import EXIT_CONFIG_WRITE
-from ...core import fs, text
-from ...core.errors import LmiError
+from . import fs, text
+from .errors import LmiError
 
 # Re-declared rather than imported from commands/schedule/paths.py: commands do
 # not import each other, and promoting a format string to core/ in advance is
@@ -32,7 +35,7 @@ def timestamp():
     return datetime.now().strftime(TS_FORMAT)
 
 
-def read(path, what):
+def read(path, what, code):
     """The document, or {} when the file is absent or empty.
 
     An unparseable file is an error rather than an empty document: treating it
@@ -46,7 +49,7 @@ def read(path, what):
     except OSError as exc:
         raise LmiError(
             "the %s file cannot be read: %s (%s)" % (what, path, exc),
-            EXIT_CONFIG_WRITE,
+            code,
         )
     if not raw.strip():
         return {}
@@ -57,18 +60,18 @@ def read(path, what):
             "the %s file is not valid JSON: %s (%s)\n"
             "    Refusing to overwrite it - fix or move the file and run this "
             "again." % (what, path, exc),
-            EXIT_CONFIG_WRITE,
+            code,
         )
     if not isinstance(doc, dict):
         raise LmiError(
             "the %s file must contain a JSON object: %s\n"
             "    Refusing to overwrite it." % (what, path),
-            EXIT_CONFIG_WRITE,
+            code,
         )
     return doc
 
 
-def backup(path, stamp, what):
+def backup(path, stamp, what, code):
     """Copy `path` beside itself as <name>.bk_<stamp>. None if there is nothing.
 
     copy2, not copy: it preserves the mode, and ~/.claude.json is 0600 and holds
@@ -84,12 +87,12 @@ def backup(path, stamp, what):
             "could not back up the %s file: %s -> %s (%s)\n"
             "    Nothing was changed: modifying a file we cannot preserve is "
             "not worth the risk." % (what, path, dest, exc),
-            EXIT_CONFIG_WRITE,
+            code,
         )
     return dest
 
 
-def write(path, doc, what, mode=None):
+def write(path, doc, what, code, mode=None):
     """Replace `path` with `doc`, atomically.
 
     `mode` forces a permission; without it an existing file's mode is preserved.
@@ -142,7 +145,7 @@ def write(path, doc, what, mode=None):
             pass
         raise LmiError(
             "could not write the %s file: %s (%s)" % (what, path, exc),
-            EXIT_CONFIG_WRITE,
+            code,
         )
 
 

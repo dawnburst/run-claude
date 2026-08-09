@@ -22,11 +22,15 @@ def test_unknown_command_exits_2():
 def test_the_registry_lists_every_command_in_help_order():
     """The intended tripwire: adding a command must update this list.
 
-    Registry order is --help order, and `install` comes first because that is
-    the order a user meets the commands - install the tool, then schedule it.
+    Registry order is --help order, and it is alphabetical. An earlier spec
+    ordered by lifecycle - install, then schedule - but that is already
+    arguable at three commands (you configure after installing, and also
+    between scheduled runs) and becomes a debate at four. Alphabetical has no
+    opinion to disagree with.
     """
     from lmi.commands import COMMANDS
-    assert [c.NAME for c in COMMANDS] == ["install", "schedule", "upgrade"]
+    assert [c.NAME for c in COMMANDS] == ["config", "install", "schedule",
+                                          "upgrade"]
 
 
 def test_every_command_satisfies_the_contract():

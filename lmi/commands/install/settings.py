@@ -4,7 +4,7 @@ Content only - jsonfile.py owns reading, backing up and writing. Nothing here
 touches the filesystem except path().
 """
 
-from pathlib import Path
+from ...core.claude import settings_path
 
 # Verified against the Claude Code 2.1.222 settings schema, which declares
 # extraKnownMarketplaces as record(name, {source}) and whose own writer defaults
@@ -16,7 +16,8 @@ ENV_KEY = "env"
 
 
 def path():
-    return Path.home() / ".claude" / "settings.json"
+    """~/.claude/settings.json. Defined in core.claude - see the note there."""
+    return settings_path()
 
 
 def merge(doc, env, marketplaces):

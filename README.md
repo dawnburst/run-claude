@@ -13,7 +13,9 @@ moment the state file reports the task is done.
 
 A second command, [`lmi install claude`](#lmi-install-claude), installs and
 configures that CLI in the first place — on an air-gapped machine, from an
-internal npm registry.
+internal npm registry. A third, [`lmi config switch`](#lmi-config-switch), moves
+that configuration between profiles afterwards, and puts back the one the
+machine started with.
 
 Pure Python, standard library only. Requires Python 3.9 or newer and the Claude
 Code CLI.
@@ -662,6 +664,156 @@ things need a real machine, and are worth doing once per site:
 
 ---
 
+## lmi config switch
+
+The third command, and the one you run afterwards — repeatedly. It applies a
+partial `settings.json`, a **fragment**, over `~/.claude/settings.json`, so
+moving Claude Code between a gateway and the direct API, or between models,
+is one command rather than a hand edit of the file everything else depends on.
+
+```
+lmi config switch                  apply ./config/settings_switch.json
+lmi config switch --file PATH      apply that fragment
+lmi config switch origin           restore the pristine settings.json
+```
+
+`--file` (`-f`) is the **only** way to name a path. `origin` is a bare word and
+can never be anything else, so the keyword and a file called `origin` never
+occupy the same argument and no precedence rule is needed: that file is reached
+with `--file origin`, and only that way.
+
+A `--file` that points at a file which does not exist is **exit 2**, never a
+quiet fall-through to `./config/settings_switch.json`. Same rule and same reason
+as `--config` above: an explicitly named file that silently resolves to a
+different one is how a machine ends up in a configuration nobody chose.
+
+`origin` **wins over `--file`**, and the fragment is then ignored without
+comment: `lmi config switch origin --file prod.json` restores the pristine
+settings and never looks at `prod.json`. `origin` is the more destructive of the
+two and you named it explicitly, so quietly applying a fragment instead would be
+the worse of the two surprises.
+
+The command writes no log file — everything it does is printed, including the
+path of the fragment it used and the top-level keys it wrote.
+
+### The fragment
+
+A **raw `settings.json` fragment**, not an `lmi` config file. There is no
+wrapper key and no translation layer: what you write is what lands in
+`~/.claude/settings.json`. [`examples/settings_switch.json`](examples/settings_switch.json)
+is a complete one — copy it to `config/settings_switch.json` and edit it.
+
+```json
+{
+  "model": "opus",
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://gateway.example.com/",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "32000"
+  }
+}
+```
+
+`registry` is **not** a `settings.json` key. It belongs to
+[`lmi install claude`](#lmi-install-claude), which hands it to npm to write into
+an npmrc; put it in a fragment and you get a `registry` key in `settings.json`
+that nothing anywhere reads, with no error to tell you so.
+
+Validation goes exactly as far as `lmi` can honestly judge and no further: the
+file must be a JSON object, and an `env` block must map strings to strings.
+**The `env` values are strings** — `"32000"`, not `32000`. Claude Code types
+that block as string to string, so a JSON number writes cleanly, parses cleanly
+and does nothing at all; exit 2 now is cheaper than finding out in a month.
+Every other key passes through unexamined, deliberately: whether `mdel` is a
+typo for `model` is Claude Code's own schema's business, it reports that better
+than a duplicated validator would, and it is what keeps this command working on
+the day Anthropic adds a setting.
+
+The fragment is read through the same BOM-aware decoder as everything else here,
+so a file saved by Notepad or PowerShell's `Set-Content` — both of which write a
+UTF-8 BOM that `json.loads` rejects with a bare "Expecting value" — is read
+correctly rather than reported as broken JSON.
+
+### What the merge does
+
+The fragment is merged **recursively**, so a switch touches only what it names.
+Two objects merge key by key; anything that is not two objects replaces whole.
+Applying `{"env": {"A": "9"}}` to a settings file holding
+`{"env": {"A": "1", "B": "2"}}` leaves `{"env": {"A": "9", "B": "2"}}` — `B`
+survives, and so do `model`, `theme` and every key the fragment never mentions.
+
+Two consequences worth having in front of you before you write one:
+
+- **A list replaces a list**, rather than being appended to or unioned. Merging
+  lists has no single right answer, and guessing produces a `permissions.allow`
+  that nobody wrote. A fragment naming a list must therefore give the whole one.
+- **`null` sets a key to `null`; it does not delete it.** `{"model": null}`
+  leaves `"model": null` in `settings.json`. There is deliberately no delete
+  syntax — `switch origin` is how you get back to a file that never had the key.
+
+### `origin` — the settings you had before any of this
+
+`lmi config switch origin` restores the `settings.json` this machine had before
+the **first** switch, not before the last one. The first switch copies your
+settings to `~/.claude/settings.json.lmi-origin`, mode `600` because
+`settings.json` may carry `ANTHROPIC_AUTH_TOKEN` and `~/.claude/` is `0755`.
+That snapshot is written **once — only if it is not already there** — and no
+later switch touches it. So however many fragments you apply, in whatever order,
+`origin` keeps meaning "the state `lmi` found on this machine".
+
+Restoring **uses the snapshot up**: it is copied back over `settings.json` and
+then removed, so the next switch establishes a fresh pristine point and a second
+`origin` in a row tells you there is nothing left to restore instead of silently
+repeating itself. Running `origin` when no switch has ever been made here is
+**exit 2**, with the reason, rather than a success that did nothing.
+
+**Intermediate states are not recoverable, and that is the design.** After
+`--file prod.json` and then `--file dev.json`, the prod-shaped `settings.json`
+is gone; `origin` skips past it to what you had before either. Nothing is lost
+that cannot be rebuilt — applying `prod.json` again produces that state again,
+which is the whole point of the fragment being a file you keep. It is also why
+this command takes no timestamped `.bk_` backups of its own, unlike
+`lmi install claude`, which edits documents no fragment could reconstruct.
+
+`settings.json` is written **atomically** — a temp file beside it, then
+`os.replace` — because a half-written one is invalid JSON and Claude Code will
+not start without it. An existing `settings.json` that is *already* invalid JSON
+is refused with exit 3 and left byte-identical rather than treated as an empty
+document and overwritten, which would silently discard everything you had
+hand-edited. A merged result holding `ANTHROPIC_AUTH_TOKEN` is written `600`;
+otherwise the file keeps the mode it already had, and one created from nothing
+is born `600` rather than at the umask default. A restore always writes `600`,
+since the snapshot it comes from is `600` and the file it lands on must not be
+looser — so a `settings.json` that started at `644` comes back from `origin`
+at `600`.
+
+### Exit codes
+
+| Code | Meaning | Scope |
+|---|---|---|
+| 0 | The fragment was applied, or the pristine settings were restored | global |
+| 2 | No fragment found, a `--file` that does not exist, a fragment `lmi` will not accept — not UTF-8, not JSON, not an object, a non-string `env` value — or `origin` with nothing to restore | global |
+| 3 | A settings file could not be read or written | `config` |
+| 4 | A bug in `lmi` | `config` |
+
+`3` and `4` keep the meanings they have in `lmi install claude`, so a script
+does not have to learn a per-command vocabulary. There is deliberately **no
+`1`**: in the other two commands `1` means "the external thing we shelled out to
+failed", and this command shells out to nothing at all — no npm, no `claude` —
+so a `1` here would have no meaning to give it.
+
+### The real-run check no test can perform
+
+The suite drives the merge, the snapshot and the exit codes against a throwaway
+`HOME`, which proves what `lmi` writes and proves nothing about whether Claude
+Code **honours** it. Every key but `env` passes through unexamined, so a
+perfectly valid fragment can mean nothing at all. Worth doing once:
+
+1. Switch a fragment that changes `model` — `{"model": "opus"}` is enough.
+2. Run `claude` and confirm the model it reports is the one the fragment named.
+3. `lmi config switch origin`, and confirm it changed back.
+
+---
+
 ## lmi upgrade
 
 The third command. It installs a newer `lmi` from the package index named in the
@@ -779,6 +931,8 @@ see [Still to verify](#still-to-verify).
 
 ---
 
+---
+
 ## Project layout
 
 ```
@@ -786,9 +940,13 @@ lmi/                  the package
   cli.py              top-level argparse parser and command dispatch
   core/               errors and global exit codes, path classification,
                       BOM-aware decoding, the single-instance lock
-                      (fcntl / msvcrt), logging, config file discovery, and
-                      asking a yes/no question
+                      (fcntl / msvcrt), logging, config file discovery,
+                      asking a yes/no question, reading and atomically
+                      writing a JSON document, where Claude Code keeps its
+                      files
   commands/
+    config/           the lmi config switch command: the fragment, the
+                      recursive merge, the pristine snapshot
     install/          the lmi install claude command: the "claude" config
                       section, the prompts, npm, the two Claude config
                       documents, Windows Git Bash
@@ -800,11 +958,14 @@ lmi/                  the package
 tests/                pytest suite, mirrors the lmi/ tree
 config/lmi.json       the config lmi install claude reads by default, when run
                       from this directory. It has no "lmi" section on purpose
-                      (see lmi upgrade, below) - lmi upgrade run against this
-                      checkout with no other config hits the usual "no config
-                      file found" error and prints the pasteable example
+                      (see lmi upgrade, above) - so lmi upgrade run against
+                      this checkout stops with 'the config file has no "lmi"
+                      section' and prints the pasteable example
 examples/lmi.json     a complete lmi.json, with both "claude" and "lmi"
                       sections, to copy and edit
+examples/settings_switch.json
+                      a settings.json fragment for lmi config switch, to copy
+                      to config/settings_switch.json and edit
 docs/install/         per-platform install guides, one file each
 docs/superpowers/     the design specs, one per command
 scripts/              install scripts, all four installing the same wheel:
@@ -835,7 +996,7 @@ python3 -m pytest tests/ -v
 No install is required first — pytest puts the repository root on `sys.path`,
 so the suite runs against a clean checkout. A virtual environment is only
 needed to exercise the installed `lmi` console script itself, not to run the
-tests. Currently **351 tests, 1 skipped, the rest passing**, in under two
+tests. Currently **420 tests, 1 skipped, the rest passing**, in under two
 seconds.
 
 The suite never reaches a real `claude`, a real `npm`, or a real `pip`: the

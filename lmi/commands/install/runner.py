@@ -14,9 +14,10 @@ provisioned and is not.
 
 import shutil
 
-from . import claude_json, gitbash, jsonfile, npm, prompts, settings
+from . import claude_json, gitbash, npm, prompts, settings
 from .config import build_config
-from .exit_codes import EXIT_INTERNAL
+from .exit_codes import EXIT_CONFIG_WRITE, EXIT_INTERNAL
+from ...core import jsonfile
 from ...core.errors import EXIT_OK, LmiError
 
 TLS_WARNING = (
@@ -69,7 +70,7 @@ def _run(args):
         return EXIT_OK
 
     settings_path = settings.path()
-    current = jsonfile.read(settings_path, "Claude Code settings")
+    current = jsonfile.read(settings_path, "Claude Code settings", EXIT_CONFIG_WRITE)
     token = _ask_for_token(current)
     bash_path = _resolve_git_bash()
 
@@ -157,23 +158,25 @@ def _write_settings(cfg, current, token, bash_path, path, stamp, backups):
     # only toggles the read-only bit and grants no protection - lmi does not
     # claim otherwise there.
     mode = 0o600 if settings.token_of(merged) else None
-    jsonfile.write(path, merged, "Claude Code settings", mode=mode)
+    jsonfile.write(path, merged, "Claude Code settings", EXIT_CONFIG_WRITE, mode=mode)
     say("Wrote %s" % path)
 
 
 def _write_onboarding_flag(stamp, backups):
     path = claude_json.path()
-    doc = jsonfile.read(path, "Claude Code state")
+    doc = jsonfile.read(path, "Claude Code state", EXIT_CONFIG_WRITE)
     if not claude_json.needs_update(doc):
         say("Onboarding is already marked complete.")
         return
     _back_up(path, stamp, "Claude Code state", backups)
-    jsonfile.write(path, claude_json.mark_complete(doc), "Claude Code state")
+    jsonfile.write(
+        path, claude_json.mark_complete(doc), "Claude Code state", EXIT_CONFIG_WRITE
+    )
     say("Marked onboarding complete in %s" % path)
 
 
 def _back_up(path, stamp, what, backups):
-    made = jsonfile.backup(path, stamp, what)
+    made = jsonfile.backup(path, stamp, what, EXIT_CONFIG_WRITE)
     if made:
         backups.append(made)
 
