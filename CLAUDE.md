@@ -92,8 +92,8 @@ Three rules hold this shape together:
   startup, and turns a typo into a silently missing command.
 - **Exit codes have owners.** `0` (success) and `2` (usage) are global and live in
   `core/errors.py`; no command may redefine them. Everything else belongs to the
-  command that defines it, which is why `exit_codes.py` exists as its own module
-  despite holding three constants.
+  command that defines it, which is why each command carries an `exit_codes.py`
+  of its own for the two or three constants it defines.
 - **`core/` is for code with no command flavour.** `paths.py` stays inside
   `commands/schedule/` because its rules are that command's. If a second command
   ever needs the path helpers in it, promote them then, not in advance.
@@ -219,9 +219,16 @@ reports success.
     burning the loop.
 
 Items 13 to 21 belong to `lmi install`, and every one of them is silent — the
-run reports success. Two of them now reach further than that command: 19 and 20
-are about `jsonfile.py`, which moved to `core/`, and `lmi config switch` reads
-and writes `settings.json` through the same two functions.
+run reports success. Three of them now reach further than that command: 19 and
+20 are about `jsonfile.py`, which moved to `core/`, and `lmi config switch`
+reads and writes `settings.json` through the same two functions; and 18 is the
+same rule in the same words in `fragment._validate`, which refuses a non-string
+`env` value in a switch fragment for exactly the reason `config._env` refuses
+one in an `lmi` config file. The `env` check there tests for its key with a
+sentinel rather than `doc.get("env") is None`, which cannot tell an absent key
+from `"env": null` — and `null` is a value everywhere else in a fragment, so the
+merge would set `env` to null and discard the whole block, auth token included,
+at exit 0.
 
 13. **The onboarding key is `hasCompletedOnboarding`, lowercase `b`.**
     Verified in the 2.1.222 binary. **Silent:** the natural spelling
@@ -294,7 +301,7 @@ And one for `lmi config switch`, which is the whole of what `origin` means:
 ## 4. Rules for editing
 
 1. **Run the suite after every change** and say in your report that you did:
-   `python3 -m pytest tests/ -q`. It is 336 tests in under two seconds and it
+   `python3 -m pytest tests/ -q`. It is 343 tests in under two seconds and it
    costs nothing — several bugs above only appear with awkward paths, or only
    when a claude call fails.
 2. **Preserve the five invariants in section 1** and everything in section 3.
@@ -332,7 +339,7 @@ And one for `lmi config switch`, which is the whole of what `origin` means:
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 336 tests, <2s, no install needed
+python3 -m pytest tests/ -q          # 343 tests, <2s, no install needed
 ```
 
 Fixtures worth knowing, in `tests/conftest.py` and the three per-command

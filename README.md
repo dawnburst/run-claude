@@ -667,6 +667,12 @@ quiet fall-through to `./config/settings_switch.json`. Same rule and same reason
 as `--config` above: an explicitly named file that silently resolves to a
 different one is how a machine ends up in a configuration nobody chose.
 
+`origin` **wins over `--file`**, and the fragment is then ignored without
+comment: `lmi config switch origin --file prod.json` restores the pristine
+settings and never looks at `prod.json`. `origin` is the more destructive of the
+two and you named it explicitly, so quietly applying a fragment instead would be
+the worse of the two surprises.
+
 The command writes no log file — everything it does is printed, including the
 path of the fragment it used and the top-level keys it wrote.
 
@@ -843,7 +849,7 @@ python3 -m pytest tests/ -v
 No install is required first — pytest puts the repository root on `sys.path`,
 so the suite runs against a clean checkout. A virtual environment is only
 needed to exercise the installed `lmi` console script itself, not to run the
-tests. Currently **336 tests, all passing**, in under two seconds.
+tests. Currently **343 tests, all passing**, in under two seconds.
 
 The suite never reaches a real `claude`, and never a real `npm`: the
 `fake_claude` and `fake_npm` fixtures replace `PATH` entirely with a temporary

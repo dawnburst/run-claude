@@ -64,8 +64,14 @@ arrive behind `--file`.** That is what removes the collision: a file called
 shadowed by a file. No precedence rule is needed because the two never occupy
 the same argument.
 
-`lmi config` with no verb prints the sub-help and exits 2, the way `lmi` with
-no command already does.
+`lmi config` with no verb is **exit 2** with its own message — the three usage
+lines above, raised as an `LmiError`, so `cli.main` prints it prefixed
+`[ERROR]`. That is deliberately not argparse's bare sub-help, which `lmi` with
+no command prints: a message this package owns is a message a test can assert
+on, and the guard behind it is otherwise unpinnable. Without it the command
+falls through to the default fragment search, which also exits 2 — so a
+code-only assertion passes with the guard deleted, and in a directory holding
+`config/settings_switch.json` the guardless command applies it and exits 0.
 
 ---
 
