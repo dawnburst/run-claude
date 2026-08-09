@@ -136,9 +136,19 @@ def test_an_unparseable_settings_file_is_refused(home, tmp_path):
 
 
 def test_no_subcommand_is_a_usage_error(home):
+    """The message matters, not just the code: the fall-through also yields 2.
+
+    Without the `_config_run` guard, `lmi config` with no verb falls through to
+    fragment.load(None), which raises "no switch file found" - also exit 2, so a
+    code-only assertion passes with the guard deleted. Worse, it passes for a
+    reason that depends on the working directory: create config/settings_switch
+    .json and the guardless runner APPLIES it, and the test would sit green next
+    to a live regression.
+    """
     with pytest.raises(LmiError) as exc:
         runner.run(Args(config_command=None))
     assert exc.value.code == 2
+    assert "needs a subcommand" in str(exc.value)
 
 
 @skip_as_root
