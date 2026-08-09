@@ -85,11 +85,17 @@ It installs the wheel into a virtual environment of its own at
 you upgrade; `--uninstall` reverses it. [`lmi upgrade`](#lmi-upgrade) is the
 other way to upgrade, without re-cloning — but it reads its config from the
 same file as `lmi install claude`, and `./config/lmi.json` goes away with the
-clone. A machine you intend to upgrade in place this way wants that file kept
-somewhere the clone's disappearance cannot take with it:
+clone. A machine you intend to upgrade in place this way wants a config kept
+somewhere the clone's disappearance cannot take with it. Copy
+[`examples/lmi.json`](examples/lmi.json), not the shipped `config/lmi.json` —
+the shipped file has no `lmi` section at all, precisely so nobody points
+`lmi upgrade` at public PyPI by accident, where `lmi` is not a package this
+project publishes. Edit the copy's `lmi.index` to name your site's own Python
+index before using it:
 
 ```bash
-mkdir -p ~/.lmi && cp config/lmi.json ~/.lmi/config.json
+mkdir -p ~/.lmi && cp examples/lmi.json ~/.lmi/config.json
+# then edit ~/.lmi/config.json: set "lmi.index" to your site's package index
 ```
 
 Windows:
@@ -674,7 +680,12 @@ place.
 ### The config file
 
 `lmi upgrade` reads the **same config file** as `lmi install claude` — the
-search order above is identical — but its own top-level section, `lmi`:
+search order above is identical — but its own top-level section, `lmi`. The
+shipped `config/lmi.json` in this repository does **not** have one: `lmi` is
+never published anywhere, so the only honest default is none at all rather
+than a placeholder that would resolve a stranger's package of the same name
+from public PyPI. Copy [`examples/lmi.json`](examples/lmi.json) and point
+`lmi.index` at your site's own package index:
 
 ```json
 {
@@ -706,6 +717,13 @@ forever waiting for one, the command exits 2.
 Omit it and `lmi upgrade` asks the index for the newest version. Pass one to
 pin an exact version instead — including going **back** to a known-good
 version if a newer one turns out to be bad.
+
+An unchanged version number means exactly that: nothing to install, exit 0.
+`scripts/install-linux.sh` passes `--force-reinstall` because the version does
+not change on every source change during development; `lmi upgrade`
+deliberately has no such flag, so if a site republishes `0.1.0` with different
+content inside, `lmi upgrade` reports "already at the newest" and changes
+nothing. Bump the version in `pyproject.toml` to ship new code.
 
 ### What it upgrades, and what it refuses
 
@@ -748,7 +766,7 @@ report "upgraded 0.1.0 → 0.2.0" while 0.1.0 was still what ran.
 |---|---|---|
 | 0 | Upgraded, already at the newest (or the requested) version, or you answered no | global |
 | 1 | The pip install failed | `upgrade` |
-| 2 | Bad config, an installation shape `lmi upgrade` cannot handle, or no terminal to ask in | global |
+| 2 | Bad config, an installation shape `lmi upgrade` cannot handle, no terminal to ask in, Ctrl-C at the prompt, or a bad `--version` | global |
 | 3 | pip succeeded, but the installed command now reports the wrong version | `upgrade` |
 | 4 | A bug in `lmi` | `upgrade` |
 
@@ -780,8 +798,11 @@ lmi/                  the package
                       detecting the installation, the one pip command,
                       verifying by running the installed script
 tests/                pytest suite, mirrors the lmi/ tree
-config/lmi.json       the config lmi install claude and lmi upgrade read by
-                      default, when run from this directory
+config/lmi.json       the config lmi install claude reads by default, when run
+                      from this directory. It has no "lmi" section on purpose
+                      (see lmi upgrade, below) - lmi upgrade run against this
+                      checkout with no other config hits the usual "no config
+                      file found" error and prints the pasteable example
 examples/lmi.json     a complete lmi.json, with both "claude" and "lmi"
                       sections, to copy and edit
 docs/install/         per-platform install guides, one file each
@@ -814,7 +835,7 @@ python3 -m pytest tests/ -v
 No install is required first — pytest puts the repository root on `sys.path`,
 so the suite runs against a clean checkout. A virtual environment is only
 needed to exercise the installed `lmi` console script itself, not to run the
-tests. Currently **334 tests, 1 skipped, the rest passing**, in under two
+tests. Currently **351 tests, 1 skipped, the rest passing**, in under two
 seconds.
 
 The suite never reaches a real `claude`, a real `npm`, or a real `pip`: the

@@ -28,9 +28,11 @@ These come from the user and are invariants, not preferences:
 3. **`lmi schedule` may never wait for a keypress.**
    Nothing may ever wait for a keypress in the unattended runner: the prompt is
    fed on stdin, and every wait is a `time.sleep`. This is a property of that
-   runner, not of `lmi` as a whole — `lmi install` is interactive by design and
-   asks before it changes anything. It has no `--yes`, and guards only against
-   *hanging*: with no terminal it exits 2 rather than waiting forever.
+   runner, not of `lmi` as a whole — `lmi install` and `lmi upgrade` are
+   interactive by design and ask before they change anything. Neither has a
+   `--yes`, and both guard only against *hanging*: with no terminal each exits
+   2 rather than waiting forever. `lmi upgrade` is the more dangerous of the
+   two, since it replaces the binary currently running it.
 4. **Python 3.9 floor, standard library only at runtime.** No `match`, no
    `X | Y` runtime unions, no builtin generics in evaluated annotations. `pytest`
    is a dev extra and must never be imported by `lmi/`.
@@ -295,7 +297,7 @@ reports success:
 ## 4. Rules for editing
 
 1. **Run the suite after every change** and say in your report that you did:
-   `python3 -m pytest tests/ -q`. It is 334 tests in under two seconds and it
+   `python3 -m pytest tests/ -q`. It is 351 tests in under two seconds and it
    costs nothing — several bugs above only appear with awkward paths, or only
    when a claude call fails.
 2. **Preserve the five invariants in section 1** and everything in section 3.
@@ -333,7 +335,7 @@ reports success:
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 334 tests, 1 skipped, <2s, no install needed
+python3 -m pytest tests/ -q          # 351 tests, 1 skipped, <2s, no install needed
 ```
 
 Fixtures worth knowing, in `tests/conftest.py` and the three per-command
@@ -343,9 +345,9 @@ Fixtures worth knowing, in `tests/conftest.py` and the three per-command
 |---|---|
 | `fake_claude` | A fake CLI on an exclusive PATH; records argv and the composed prompt per call, and can be told to misbehave through `FAKE_RC`, `FAKE_OUT`, `FAKE_STATE_FILE`, `FAKE_COMPLETE_AT`, `FAKE_PROSE`, `FAKE_BLANK_FIRST_LINE`, `FAKE_WRECK_TMP` |
 | `fake_npm` | The same trick for npm — an exclusive PATH, argv recorded per call, `FAKE_NPM_RC` and `FAKE_NPM_FAIL_GLOBAL` (fail only when a global flag is present, which is how the `--global` fallback is exercised without root) |
-| `fake_pip` | A fake interpreter that records every `-m pip` argv and answers `index versions`, plus a fake installed `lmi` command. pip is never found through `PATH` — it is `<interpreter> -m pip` — so the seam is the interpreter. `FAKE_PIP_RC`, `FAKE_PIP_LATEST`, `FAKE_SCRIPT_VERSION`, `FAKE_SCRIPT_RC` |
+| `fake_pip` | A fake interpreter that records every `-m pip` argv and answers `index versions`, plus a fake installed `lmi` command. pip is never found through `PATH` — it is `<interpreter> -m pip` — so the seam is the interpreter. `FAKE_PIP_RC`, `FAKE_PIP_LATEST`, `FAKE_SCRIPT_VERSION`, `FAKE_SCRIPT_RC`, `FAKE_SCRIPT_STDERR`, `FAKE_SCRIPT_BOM`, `FAKE_SCRIPT_PREFIX` |
 | `home` | A throwaway `HOME`/`USERPROFILE`, so no install test can touch the developer's real `~/.claude` |
-| `answers` | In `tests/commands/install/test_runner.py`: a scripted queue behind `prompts.confirm/secret/text`, so no test reaches a real stdin |
+| `answers` | Two of these now, one per command: `tests/commands/install/test_runner.py`'s is a scripted queue behind `prompts.confirm/secret/text`; `tests/commands/upgrade/test_runner.py`'s is confirm-only, since that command asks exactly one yes/no question. Neither test reaches a real stdin |
 | `make_cfg` | A `Config` factory, so its ten fields are built in one place |
 | `readonly_dir` | A 0o500 directory, restored on teardown |
 | `on_windows` | Takes the Windows branch of `paths.py` (patches `_on_windows`, never `os.name`, which pathlib reads at instantiation). The install suite patches `gitbash.on_windows` for the same reason |
