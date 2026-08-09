@@ -54,7 +54,11 @@ def capture(settings, code):
 
 
 def restore(code):
-    """Put the snapshot back over settings.json and remove it. Returns its path.
+    """Put the snapshot back over settings.json and remove it.
+
+    Returns the path of settings.json - the file that changed - not the snapshot
+    that was consumed. The runner prints it, so the two are not interchangeable:
+    returning the snapshot would tell the user the wrong file was restored.
 
     Removed afterwards so the next switch establishes a fresh pristine point,
     and so a second `origin` says there is nothing left rather than silently

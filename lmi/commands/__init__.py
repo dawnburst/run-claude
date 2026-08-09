@@ -6,6 +6,6 @@ imports every command on every startup, and turns a typo into a silently
 missing command.
 """
 
-from . import install, schedule
+from . import config, install, schedule
 
-COMMANDS = [install, schedule]
+COMMANDS = [config, install, schedule]

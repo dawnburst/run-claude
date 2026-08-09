@@ -71,6 +71,18 @@ def test_restore_puts_it_back_and_removes_the_snapshot(home):
     assert origin.exists() is False
 
 
+def test_restore_returns_the_file_it_overwrote(home):
+    """The return value is settings.json, not the snapshot it consumed.
+
+    runner._restore prints it as "Restored <path>", so returning path() instead
+    would name a file that no longer exists - and every other test in this
+    module stays green either way, which is why this one is here.
+    """
+    put(settings(home), {"a": 1})
+    origin.capture({"a": 1}, CODE)
+    assert origin.restore(CODE) == settings(home)
+
+
 def test_restore_without_a_snapshot_is_usage(home):
     with pytest.raises(LmiError) as exc:
         origin.restore(CODE)
