@@ -2298,12 +2298,15 @@ Order matters. Every question is asked BEFORE anything is modified: a user who
 abandons the command at the prompt, or answers no, leaves the machine exactly
 as they found it.
 
-One rule about this module in particular. From the moment pip runs, this
-process is executing code whose files have just been replaced underneath it.
-Modules already imported stay in memory; a module imported AFTER pip would come
-from the new version, mixed with old ones already loaded. So every import here
-is module-level, and nothing after pip.install does anything but run one
-subprocess and print. Do not add a lazy import, and do not move work below that
+One rule about this module in particular. Every import here is module-level,
+and after pip.install returns, nothing may import anything or touch the lmi
+package: modules already imported stay in memory, but a module imported AFTER
+pip would come from the new version, mixed with old ones already loaded. The
+only things that may run after that line are a subprocess (verify.confirm),
+stdlib calls whose modules were imported long before pip ran, and printing.
+_warn_if_shadowed is that stdlib-only exception: shutil.which and Path.resolve
+touch no lmi code, and both were imported at the top of this module, long
+before pip ran. Do not add a lazy import, and do not move work below that
 line.
 """
 
@@ -2357,7 +2360,7 @@ def _run(args):
         return EXIT_OK
 
     # --- ask everything, change nothing ---------------------------------
-    if not prompts.confirm(_question(target, cfg), default=False):
+    if not prompts.confirm(_question(target), default=False):
         say("Nothing was changed.")
         return EXIT_OK
 
@@ -2398,7 +2401,7 @@ def _target(args, inst, cfg):
     return newest
 
 
-def _question(target, cfg):
+def _question(target):
     if target is None:
         return ("Replace lmi %s with the newest version on the index?"
                 % RUNNING)
