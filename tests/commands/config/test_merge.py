@@ -52,12 +52,18 @@ def test_null_sets_and_does_not_delete():
 
 
 def test_neither_argument_is_mutated():
-    """MANDATORY. Silent failure: the origin snapshot written from a mutated dict.
+    """MANDATORY. deep_merge must never edit what it is handed.
 
-    runner reads settings.json once and passes it here. If deep_merge mutated
-    `base`, the snapshot taken from that same object would already carry the
-    switch - so `switch origin` would restore the switched state and the user's
-    real settings would be gone, with nothing to show it happened.
+    Not, as this docstring used to claim, because the origin snapshot comes from
+    the same object: runner._switch calls origin.capture, which writes the
+    snapshot to disk, BEFORE deep_merge runs, so a mutating merge could not
+    reach it. The real reason is plainer and outlives that ordering. The runner
+    goes on using `current` after the merge, and a helper that quietly edits its
+    argument is a trap for whatever reads it next - here today, and at whatever
+    call site is added later without re-reading this function.
+
+    The test below pins the other half: the copy is deep, so no nested dict ends
+    up shared between an input and the result.
     """
     base = {"env": {"A": "1"}}
     overlay = {"env": {"A": "9"}}

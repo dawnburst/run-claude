@@ -136,7 +136,9 @@ def test_an_unparseable_settings_file_is_refused(home, tmp_path):
 
 
 def test_no_subcommand_is_a_usage_error(home):
-    """The message matters, not just the code: the fall-through also yields 2.
+    """MANDATORY. Silent failure: a config mutation that reports success.
+
+    The message matters, not just the code: the fall-through also yields 2.
 
     Without the `_config_run` guard, `lmi config` with no verb falls through to
     fragment.load(None), which raises "no switch file found" - also exit 2, so a
@@ -161,8 +163,14 @@ def test_a_token_in_the_result_forces_0600(home, tmp_path):
 
 
 def test_the_run_reports_what_changed(home, tmp_path, capsys):
+    """The whole line, not just the path: the snapshot line contains it too.
+
+    "Saved your current settings as the restore point: .../settings.json
+    .lmi-origin" has the settings.json path as a substring, so a bare `str(
+    settings(home)) in out` passes with the "Wrote %s" line deleted outright.
+    """
     put(settings(home), {"model": "sonnet"})
     runner.run(Args(file=str(frag(tmp_path, {"model": "opus"}))))
     out = capsys.readouterr().out
     assert "model" in out
-    assert str(settings(home)) in out
+    assert "Wrote %s" % settings(home) in out

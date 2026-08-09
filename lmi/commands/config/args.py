@@ -21,7 +21,10 @@ def add_arguments(parser):
     sub = parser.add_subparsers(dest="config_command", metavar="<subcommand>")
     switch = sub.add_parser("switch", help=SWITCH_HELP, description=SWITCH_HELP)
     switch.add_argument(
-        "target", nargs="?", choices=["origin"], metavar="[origin]",
+        # metavar without brackets: argparse adds its own for nargs="?", so
+        # "[origin]" renders as "[[origin]]" in usage and as "argument [origin]:"
+        # in an error.
+        "target", nargs="?", choices=["origin"], metavar="origin",
         help="restore the settings.json this machine had before the first switch",
     )
     switch.add_argument(

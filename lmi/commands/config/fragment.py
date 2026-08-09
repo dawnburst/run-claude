@@ -19,6 +19,11 @@ from ...core.text import decode_with_bom
 DEFAULT_NAME = "config/settings_switch.json"
 ENV_KEY = "env"
 
+# A fragment with no "env" key and a fragment with "env": null are different
+# documents, and doc.get(ENV_KEY) collapses them into the same None. See
+# _validate.
+_MISSING = object()
+
 EXAMPLE = """{
   "model": "opus",
   "env": {
@@ -116,8 +121,13 @@ def _validate(doc, path):
         raise LmiError(
             "the switch file must contain a JSON object: %s" % path, EXIT_USAGE
         )
-    env = doc.get(ENV_KEY)
-    if env is None:
+    # The sentinel, not doc.get(ENV_KEY) is None, which cannot tell an absent
+    # key from "env": null and so let the second through. Silent failure: null
+    # is a value everywhere else here, so deep_merge would set env to null and
+    # discard the whole block - ANTHROPIC_AUTH_TOKEN and all - at exit 0, while
+    # "env": [] and "env": "x" beside it are exit 2.
+    env = doc.get(ENV_KEY, _MISSING)
+    if env is _MISSING:
         return
     if not isinstance(env, dict):
         raise LmiError('"env" must be a JSON object: %s' % path, EXIT_USAGE)

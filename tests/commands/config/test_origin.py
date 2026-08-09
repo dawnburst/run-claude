@@ -102,7 +102,18 @@ def test_restore_twice_is_usage_the_second_time(home):
 @skip_as_root
 @pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
 def test_the_snapshot_is_0600(home):
-    """It can hold ANTHROPIC_AUTH_TOKEN, and ~/.claude/ is 0755."""
+    """It can hold ANTHROPIC_AUTH_TOKEN, and ~/.claude/ is 0755.
+
+    This asserts the BIRTH mode and cannot prove the forced one. jsonfile.write
+    creates its temp file 0600 and has no existing mode to relax to here -
+    capture() only ever writes when the snapshot is absent - so `mode=0o600` can
+    be dropped from the call and this stays green under any normal umask. The
+    argument is still right and stays: it is what makes the mode a stated
+    property of the snapshot rather than a coincidence of the writer, and
+    jsonfile is free to change its default. Same trap as
+    test_a_written_token_forces_mode_600 in the install suite, which can escape
+    it with a pre-existing 0644 file; no reachable state here can.
+    """
     origin.capture({"env": {"ANTHROPIC_AUTH_TOKEN": "sk-x"}}, CODE)
     assert stat.S_IMODE(os.stat(str(origin.path())).st_mode) == 0o600
 

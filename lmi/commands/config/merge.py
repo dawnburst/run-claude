@@ -15,10 +15,14 @@ def deep_merge(base, overlay):
     replaces a list rather than being appended to or unioned, because merging
     lists has no single right answer and guessing produces settings nobody wrote.
 
-    Returning a copy is not politeness. The runner reads settings.json once and
-    uses the same object for the origin snapshot; mutating `base` here would put
-    the switched state into the snapshot, so `switch origin` would restore the
-    switch instead of undoing it.
+    Returning a copy is not politeness, though it is not the origin snapshot
+    either: runner._switch calls origin.capture, which writes to disk, BEFORE
+    this runs, so a mutating merge could not reach the snapshot. Two other
+    reasons hold it. The runner still holds `current` after the merge and every
+    caller is entitled to find its argument unchanged - a function that edits
+    what it is handed is a trap whether or not today's caller notices. And the
+    copy has to be deep: a shallow one would alias the nested dicts, so editing
+    result["env"] would reach into base["env"] as well.
     """
     result = copy.deepcopy(base)
     for key, value in overlay.items():

@@ -106,6 +106,32 @@ def test_a_non_object_env_is_rejected(tmp_path):
     assert exc.value.code == 2
 
 
+def test_a_null_env_is_rejected(tmp_path):
+    """MANDATORY. Silent failure: the whole env block discarded at exit 0.
+
+    `null` is a value here, not an absence, so a merged "env": null replaces the
+    entire block - ANTHROPIC_AUTH_TOKEN, base URL and all - and reports success.
+    A `doc.get("env") is None` guard cannot see the difference between this and
+    a fragment that never mentioned env, so it waves it through while rejecting
+    "env": [] and "env": "x" beside it.
+    """
+    path = write(tmp_path / "f.json", {"env": None})
+    with pytest.raises(LmiError) as exc:
+        fragment.load(str(path))
+    assert exc.value.code == 2
+    assert "env" in str(exc.value)
+
+
+def test_a_null_value_under_another_key_is_still_accepted(tmp_path):
+    """Only `env` is typed. Everywhere else null is an ordinary value - it sets.
+
+    The counterpart to test_null_sets_and_does_not_delete in the merge suite: a
+    validator that grew a blanket "no nulls" rule would take that away.
+    """
+    path = write(tmp_path / "f.json", {"model": None})
+    assert fragment.load(str(path))[0] == {"model": None}
+
+
 def test_an_unknown_key_passes_through_untouched(tmp_path):
     """lmi does not model Claude Code's schema; it reports typos better."""
     exotic = {"somethingAddedIn2027": {"nested": [1, {"a": 2}]}}

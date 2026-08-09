@@ -12,9 +12,16 @@ from lmi.core.errors import LmiError
 from tests.conftest import skip_as_root
 
 # The exit code is the caller's to choose now that jsonfile lives in core/.
-# 3 is what both real callers pass; these tests assert the code is propagated,
-# not that core/ has an opinion about it.
+# 3 is what both real callers pass, so most of this module uses it: those tests
+# pin the value the real callers see. They cannot pin the *parameter*, because 3
+# is also what was hardcoded here before the promotion - every one of them stayed
+# green with the five `code` arguments replaced by a literal 3, which is the
+# whole of what the refactor changed. That job belongs to SENTINEL below.
 CODE = 3
+
+# A value no caller passes and nothing in lmi means, so an argument that reaches
+# the raise unread cannot produce it by coincidence.
+SENTINEL = 7
 
 
 def write_json(path, doc, mode=None):
@@ -241,3 +248,50 @@ def test_a_failed_write_leaves_no_temp_file(tmp_path, readonly_dir):
     with pytest.raises(LmiError):
         jsonfile.write(readonly_dir / "s.json", {"a": 1}, "settings", CODE)
     assert list(readonly_dir.iterdir()) == []
+
+
+# The `code` parameter is the only thing the promotion to core/ changed about
+# this module's behaviour, and it is invisible to every test above: they pass 3,
+# which is exactly what the five raise sites hardcoded beforehand. The tests
+# below pass SENTINEL instead, so a raise that ignores its argument reports 3 and
+# fails. There is one per raise site rather than one per function, because a
+# single unpinned site is enough to reintroduce a core/ module with an opinion
+# about a command's exit codes.
+
+
+@pytest.mark.parametrize(
+    "content", ['{"model": }', "[1, 2]"], ids=["unparseable", "not-an-object"]
+)
+def test_read_raises_with_the_code_it_was_given(tmp_path, content):
+    path = tmp_path / "s.json"
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(LmiError) as exc:
+        jsonfile.read(path, "settings", SENTINEL)
+    assert exc.value.code == SENTINEL
+
+
+@skip_as_root
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
+def test_an_unreadable_file_raises_with_the_code_it_was_given(tmp_path):
+    path = write_json(tmp_path / "s.json", {"a": 1}, mode=0o000)
+    with pytest.raises(LmiError) as exc:
+        jsonfile.read(path, "settings", SENTINEL)
+    assert exc.value.code == SENTINEL
+
+
+@skip_as_root
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
+def test_backup_raises_with_the_code_it_was_given(tmp_path):
+    """The source is a file (so backup proceeds) that copy2 cannot open."""
+    path = write_json(tmp_path / "s.json", {"a": 1}, mode=0o000)
+    with pytest.raises(LmiError) as exc:
+        jsonfile.backup(path, "20260806-120000", "settings", SENTINEL)
+    assert exc.value.code == SENTINEL
+
+
+@skip_as_root
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permissions")
+def test_write_raises_with_the_code_it_was_given(readonly_dir):
+    with pytest.raises(LmiError) as exc:
+        jsonfile.write(readonly_dir / "s.json", {"a": 1}, "settings", SENTINEL)
+    assert exc.value.code == SENTINEL
