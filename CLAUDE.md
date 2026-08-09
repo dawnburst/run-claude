@@ -64,12 +64,22 @@ lmi/commands/install/       `lmi install claude`, as a self-contained package
   gitbash.py                Windows Git Bash discovery and the env var
   runner.py                 the flow
   exit_codes.py             this command's codes (1, 3, 4)
+lmi/commands/upgrade/       `lmi upgrade`, as a self-contained package
+  config.py                 arguments, the "lmi" config section, the frozen Config
+  installation.py           detects the venv/--user install and refuses the rest
+  pip.py                    the one pip command, and the version-probe read
+  prompts.py                the one question, wrapping core/prompts.py
+  verify.py                 confirms the upgrade by running the new script
+  runner.py                 the flow
+  exit_codes.py             this command's codes (1, 3, 4)
 lmi/core/                   only genuinely command-agnostic code
   errors.py                 LmiError and the global codes (0, 2)
   fs.py                     path classification that never raises
   text.py                   BOM-aware decoding
   lock.py                   single-instance lock (fcntl / msvcrt)
   log.py                    one line to console and log file
+  config.py                 config file discovery, decoding and parsing
+  prompts.py                asking a question, and the no-terminal guard
 ```
 
 Three rules hold this shape together:
@@ -87,6 +97,11 @@ Three rules hold this shape together:
 - **`core/` is for code with no command flavour.** `paths.py` stays inside
   `commands/schedule/` because its rules are that command's. If a second command
   ever needs the path helpers in it, promote them then, not in advance.
+  `config.py` and `prompts.py` are that rule working rather than an exception to
+  it: both started inside `commands/install/`, and were promoted into `core/`
+  only once `lmi upgrade` became the second command to need config-file
+  discovery and a yes/no question — not before, on the guess that something
+  might.
 
 The claude invocation, in `runner.py`, is the delicate part:
 
@@ -255,13 +270,32 @@ reports success:
     the search order the old path used to occupy, so `--config` and
     `$LMI_CONFIG` still win and never trip over it — including `--config
     ./lmi.json`, the escape hatch the message offers.
+22. **`lmi upgrade` never reports its own `__version__` as proof.** That
+    value was imported before pip ran, so it is the *old* version whatever is
+    now on disk. Success is confirmed by running the installed console script
+    in a subprocess and comparing. **Silent:** the command announces
+    "upgraded 0.1.0 → 0.2.0" while 0.1.0 is still installed, which is the
+    stale-wheel failure with a new front end.
+23. **An installation shape that cannot be upgraded is refused, not guessed
+    at.** An editable checkout, a pipx install, a system-wide install:
+    `installation.detect` raises exit 2 for each, before pip is invoked.
+    **Silent** in three different ways — a released wheel over a developer's
+    working tree; pipx's record describing a version that is gone; a `--user`
+    copy that the `PATH` entry never reaches. The order of the checks is
+    load-bearing: editable is tested first because a dev checkout is usually
+    also inside a venv.
+24. **The version probe's failure must never fail the command.** `pip index
+    versions` is experimental and absent from older pips. Every failure is
+    `None`, which degrades the question the user is asked and nothing else. A
+    diagnostic that blocks the thing it diagnoses is worse than no
+    diagnostic.
 
 ---
 
 ## 4. Rules for editing
 
 1. **Run the suite after every change** and say in your report that you did:
-   `python3 -m pytest tests/ -q`. It is 274 tests in under two seconds and it
+   `python3 -m pytest tests/ -q`. It is 334 tests in under two seconds and it
    costs nothing — several bugs above only appear with awkward paths, or only
    when a claude call fails.
 2. **Preserve the five invariants in section 1** and everything in section 3.
@@ -299,16 +333,17 @@ reports success:
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 274 tests, <2s, no install needed
+python3 -m pytest tests/ -q          # 334 tests, 1 skipped, <2s, no install needed
 ```
 
-Fixtures worth knowing, in `tests/conftest.py` and the two per-command
+Fixtures worth knowing, in `tests/conftest.py` and the three per-command
 `conftest.py` files under `tests/commands/`:
 
 | Fixture | What it gives you |
 |---|---|
 | `fake_claude` | A fake CLI on an exclusive PATH; records argv and the composed prompt per call, and can be told to misbehave through `FAKE_RC`, `FAKE_OUT`, `FAKE_STATE_FILE`, `FAKE_COMPLETE_AT`, `FAKE_PROSE`, `FAKE_BLANK_FIRST_LINE`, `FAKE_WRECK_TMP` |
 | `fake_npm` | The same trick for npm — an exclusive PATH, argv recorded per call, `FAKE_NPM_RC` and `FAKE_NPM_FAIL_GLOBAL` (fail only when a global flag is present, which is how the `--global` fallback is exercised without root) |
+| `fake_pip` | A fake interpreter that records every `-m pip` argv and answers `index versions`, plus a fake installed `lmi` command. pip is never found through `PATH` — it is `<interpreter> -m pip` — so the seam is the interpreter. `FAKE_PIP_RC`, `FAKE_PIP_LATEST`, `FAKE_SCRIPT_VERSION`, `FAKE_SCRIPT_RC` |
 | `home` | A throwaway `HOME`/`USERPROFILE`, so no install test can touch the developer's real `~/.claude` |
 | `answers` | In `tests/commands/install/test_runner.py`: a scripted queue behind `prompts.confirm/secret/text`, so no test reaches a real stdin |
 | `make_cfg` | A `Config` factory, so its ten fields are built in one place |
