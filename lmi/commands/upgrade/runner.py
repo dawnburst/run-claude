@@ -23,7 +23,7 @@ from . import installation, pip, prompts, verify
 from .config import build_config
 from .exit_codes import EXIT_INTERNAL
 from ... import __version__
-from ...core.errors import EXIT_OK, LmiError
+from ...core.errors import EXIT_OK, EXIT_USAGE, LmiError
 
 # The version this process is running, read at import - the FROM side of the
 # upgrade, and the one version this process can honestly report. It is NEVER
@@ -75,7 +75,17 @@ def _run(args):
     got = verify.confirm(inst.script, target)
 
     say("")
-    say("Upgraded lmi %s -> %s" % (RUNNING, got))
+    if got == RUNNING:
+        # target was None (the probe in pip.latest could not say what is
+        # newest) and pip found nothing newer to install: this is the "no pip
+        # index versions on this pip" machine, exactly current, reporting
+        # exit 0 having changed nothing. Saying "Upgraded" here would be the
+        # silent-success failure CLAUDE.md section 3 exists to prevent - an
+        # already-current run claiming it upgraded on every single invocation.
+        say("lmi is unchanged: still %s -> %s. Nothing was upgraded; the "
+            "index had nothing newer to install." % (RUNNING, got))
+    else:
+        say("Upgraded lmi %s -> %s" % (RUNNING, got))
     say("  %s" % inst.script)
     _warn_if_shadowed(inst.script)
     return EXIT_OK
@@ -90,6 +100,13 @@ def _target(args, inst, cfg):
     """The version to install, None for "the newest", or _NOTHING_TO_DO."""
     wanted = getattr(args, "version", None)
     if wanted is not None:
+        wanted = wanted.strip()
+        if not wanted:
+            # "" or whitespace passes straight through pip.install and becomes
+            # "lmi==", which pip rejects on its own - surfacing as exit 1 with
+            # a message that sends the operator to check the index, when the
+            # actual mistake is a bad argument. That belongs at exit 2.
+            raise LmiError('--version must not be empty', EXIT_USAGE)
         if wanted == RUNNING:
             say("Already at %s - nothing to do." % wanted)
             return _NOTHING_TO_DO

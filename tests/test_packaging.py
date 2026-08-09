@@ -14,6 +14,7 @@ success, and a real wheel install was exercised by hand on Linux and Windows.
 import re
 from pathlib import Path
 
+import lmi
 from lmi.cli import main
 
 REPO = Path(__file__).resolve().parent.parent
@@ -59,6 +60,25 @@ def test_the_package_is_pure_python():
         for p in (REPO / "lmi").rglob(pattern)
     ]
     assert compiled == [], "compiled sources would end the py3-none-any wheel: %s" % compiled
+
+
+def test_lmi_version_matches_pyproject():
+    """`lmi upgrade`'s verify.confirm compares two version strings that come
+    from two different places: the index's answer, which traces back to
+    pyproject.toml's `version` via the wheel filename, and `lmi --version`,
+    which argparse prints from lmi.__version__. Nothing else ties them
+    together - if they ever drift by one character, EVERY `lmi upgrade` at
+    every site that actually installs the newest version still ends in exit 3,
+    after pip has already changed the machine, because the freshly-installed
+    command would report a version that does not match what the index said it
+    shipped.
+    """
+    match = re.search(r'^\s*version\s*=\s*"([^"]+)"\s*$', PYPROJECT, re.MULTILINE)
+    assert match, "pyproject.toml must declare [project] version = \"...\""
+    assert lmi.__version__ == match.group(1), (
+        "lmi/__init__.py's __version__ (%s) and pyproject.toml's version (%s) "
+        "have drifted apart" % (lmi.__version__, match.group(1))
+    )
 
 
 def test_main_returns_its_exit_code(tmp_path, monkeypatch):

@@ -48,23 +48,45 @@ def confirm(script, expected):
     `expected` may be None, which happens only when the index could not be
     asked what the newest version is. Verification is then weaker - it still
     catches an install that does not run, just not one that is stale.
+
+    stderr is captured SEPARATELY from stdout, and every line of stdout is a
+    candidate for the version line - not just the first. A DeprecationWarning,
+    a .pth file's own output, a locale complaint or a sitecustomize message
+    lands on stderr (or ahead of the version line on stdout) before argparse's
+    version action ever runs, and none of that is claude's prose: it is a
+    two-token line the program itself emits, so there is no reason to accept
+    only line 1 the way schedule/state.check_complete deliberately does for
+    claude's restated protocol sentence. The combined text is used only for
+    the DID_NOT_RUN / UNREADABLE diagnostics, so a failure still shows the
+    operator everything the command said.
     """
     try:
         done = subprocess.run([str(script), "--version"],
                               stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT)
+                              stderr=subprocess.PIPE)
     except OSError as exc:
         raise LmiError(DID_NOT_RUN % (script, exc), EXIT_VERIFY_FAILED)
 
-    text = done.stdout.decode("utf-8", "replace").strip()
+    out = done.stdout.decode("utf-8", "replace")
+    err = done.stderr.decode("utf-8", "replace")
+    combined = (out + err).strip()
     if done.returncode != 0:
-        raise LmiError(DID_NOT_RUN % (script, text or "exit %d" % done.returncode),
-                       EXIT_VERIFY_FAILED)
+        raise LmiError(
+            DID_NOT_RUN % (script, combined or "exit %d" % done.returncode),
+            EXIT_VERIFY_FAILED,
+        )
 
-    lines = text.splitlines()
-    match = VERSION_RE.match(lines[0]) if lines else None
+    match = None
+    for line in out.splitlines():
+        # A BOM some interpreters/launchers prepend, and stray leading/trailing
+        # whitespace, are not "prose" the way schedule's problem is - strip
+        # them before matching rather than failing on cosmetics.
+        candidate = line.lstrip("\ufeff").strip()
+        match = VERSION_RE.match(candidate)
+        if match:
+            break
     if match is None:
-        raise LmiError(UNREADABLE % (script, text or "nothing"),
+        raise LmiError(UNREADABLE % (script, combined or "nothing"),
                        EXIT_VERIFY_FAILED)
 
     got = match.group(1)

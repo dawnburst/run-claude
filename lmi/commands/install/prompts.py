@@ -7,8 +7,6 @@ it comes to be missing. What stays here is this command's own NO_TERMINAL text
 points that tests/commands/install/test_runner.py patches to drive the flow.
 """
 
-import getpass  # noqa: F401 - kept so `prompts.getpass` still resolves
-
 from ...core import prompts as _prompts
 from ...core.prompts import CANCELLED  # noqa: F401
 

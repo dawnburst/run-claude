@@ -73,7 +73,7 @@ def test_secret_uses_getpass_not_input(monkeypatch):
         raise AssertionError("secret() must not use input()")
 
     monkeypatch.setattr(builtins, "input", explode)
-    monkeypatch.setattr(prompts.getpass, "getpass", lambda prompt="": " tok ")
+    monkeypatch.setattr(core_prompts.getpass, "getpass", lambda prompt="": " tok ")
     assert prompts.secret("Token") == "tok"
 
 

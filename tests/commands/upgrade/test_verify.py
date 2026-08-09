@@ -49,6 +49,47 @@ def test_a_missing_command_is_exit_3(tmp_path):
     assert exc.value.code == 3
 
 
+def test_a_stderr_warning_before_the_version_line_still_succeeds(fake_pip, monkeypatch):
+    """MANDATORY. This is the false exit-3 the whole-branch review found.
+
+    stdout and stderr used to be merged with stderr=subprocess.STDOUT, and only
+    line 0 of the result was checked. Any byte the new interpreter writes to
+    stderr before argparse's version action fires - a DeprecationWarning, a
+    .pth file's own output, a locale complaint - became line 0, the match
+    failed, and a SUCCESSFUL upgrade raised UNREADABLE at exit 3. stderr must be
+    captured separately, and every stdout line must be a candidate.
+    """
+    monkeypatch.setenv("FAKE_SCRIPT_VERSION", "0.2.0")
+    monkeypatch.setenv("FAKE_SCRIPT_STDERR",
+                       "DeprecationWarning: something noisy on stderr")
+    assert verify.confirm(fake_pip.script, "0.2.0") == "0.2.0"
+
+
+def test_a_version_line_followed_by_a_nonzero_exit_is_still_exit_3(fake_pip,
+                                                                    monkeypatch):
+    """The returncode check must keep winning even once every stdout line is a
+    candidate: printing a correct-looking version line does not excuse a
+    process that then reports failure."""
+    monkeypatch.setenv("FAKE_SCRIPT_VERSION", "0.2.0")
+    monkeypatch.setenv("FAKE_SCRIPT_RC", "1")
+    with pytest.raises(LmiError) as exc:
+        verify.confirm(fake_pip.script, "0.2.0")
+    assert exc.value.code == 3
+
+
+def test_a_bom_before_the_version_line_is_handled(fake_pip, monkeypatch):
+    monkeypatch.setenv("FAKE_SCRIPT_VERSION", "0.2.0")
+    monkeypatch.setenv("FAKE_SCRIPT_BOM", "1")
+    assert verify.confirm(fake_pip.script, "0.2.0") == "0.2.0"
+
+
+def test_unusual_whitespace_before_the_version_line_is_handled(fake_pip,
+                                                                monkeypatch):
+    monkeypatch.setenv("FAKE_SCRIPT_VERSION", "0.2.0")
+    monkeypatch.setenv("FAKE_SCRIPT_PREFIX", "  \t")
+    assert verify.confirm(fake_pip.script, "0.2.0") == "0.2.0"
+
+
 def test_unreadable_output_is_exit_3(fake_pip, monkeypatch, tmp_path):
     odd = tmp_path / "odd"
     odd.write_text("#!%s\nprint('something else')\n" % __import__("sys").executable)

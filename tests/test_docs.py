@@ -7,8 +7,11 @@ validator accepts, every new site starts with a broken file and a usage error.
 import json
 from pathlib import Path
 
+import pytest
+
 from lmi.commands.install import claude_json, config, gitbash, settings
 from lmi.commands.upgrade import config as upgrade_config
+from lmi.core.errors import LmiError
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -77,6 +80,22 @@ def test_the_shipped_default_config_is_accepted_by_the_validator():
     cfg = config.build_config(Args(str(shipped)))
     assert cfg.registry
     assert "cafile" not in json.loads(shipped.read_text(encoding="utf-8"))["claude"]
+
+
+def test_the_shipped_default_config_is_rejected_by_the_upgrade_validator():
+    """The mirror image of the test above, and load-bearing in the other
+    direction: config/lmi.json must NOT carry an "lmi" section, because lmi is
+    never published anywhere and a live index there could only ever resolve a
+    stranger's package of that name. If someone re-adds one - even a
+    placeholder - this catches it before it ships, rather than a checkout
+    quietly starting to point `lmi upgrade` at public PyPI.
+    """
+    shipped = REPO / config.CWD_CONFIG_DIR / config.CWD_CONFIG_NAME
+    assert "lmi" not in json.loads(shipped.read_text(encoding="utf-8"))
+    with pytest.raises(LmiError) as exc:
+        upgrade_config.build_config(Args(str(shipped)))
+    assert exc.value.code == 2
+    assert '"lmi"' in str(exc.value)
 
 
 def test_the_readme_names_the_working_directory_default():

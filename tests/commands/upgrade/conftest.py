@@ -47,11 +47,29 @@ sys.exit(int(os.environ.get("FAKE_PIP_RC", "0")))
 FAKE_SCRIPT = """\
 #!{python}
 import os, sys
+
+# FAKE_SCRIPT_STDERR: an extra line written to stderr BEFORE the version line
+# on stdout - a DeprecationWarning, a .pth file's own output, a locale
+# complaint - the shape that used to become "line 0" and fail verification
+# when stdout and stderr were merged.
+stderr_line = os.environ.get("FAKE_SCRIPT_STDERR")
+if stderr_line:
+    sys.stderr.write(stderr_line + "\\n")
+
+# FAKE_SCRIPT_BOM and FAKE_SCRIPT_PREFIX: a UTF-8 BOM or odd leading
+# whitespace ahead of "lmi" itself on the version line.
+bom = "\\ufeff" if os.environ.get("FAKE_SCRIPT_BOM") else ""
+prefix = os.environ.get("FAKE_SCRIPT_PREFIX", "")
+version = os.environ.get("FAKE_SCRIPT_VERSION", "0.1.0")
+sys.stdout.write("%s%slmi %s\\n" % (bom, prefix, version))
+
+# The version line is written above UNCONDITIONALLY, so FAKE_SCRIPT_RC can
+# exercise "printed a version line and then still exited non-zero" - the
+# returncode check must keep winning over a matched version line.
 rc = int(os.environ.get("FAKE_SCRIPT_RC", "0"))
 if rc:
     sys.stderr.write("boom\\n")
     sys.exit(rc)
-sys.stdout.write("lmi %s\\n" % os.environ.get("FAKE_SCRIPT_VERSION", "0.1.0"))
 """
 
 
