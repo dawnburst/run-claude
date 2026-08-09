@@ -8,11 +8,14 @@ import json
 from pathlib import Path
 
 from lmi.commands.install import claude_json, config, gitbash, settings
+from lmi.commands.upgrade import config as upgrade_config
 
 REPO = Path(__file__).resolve().parent.parent
 
 
 class Args:
+    version = None
+
     def __init__(self, config, target="claude"):
         self.config = config
         self.target = target
@@ -92,3 +95,36 @@ def test_claude_md_scopes_the_keypress_invariant_to_schedule():
     text = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
     start = text.index("Nothing may ever wait for a keypress")
     assert "schedule" in text[start - 400:start + 400]
+
+
+def test_the_example_documents_every_upgrade_key():
+    doc = json.loads((REPO / "examples" / "lmi.json").read_text(encoding="utf-8"))
+    assert set(doc["lmi"]) == {"index", "cafile"}
+
+
+def test_the_printed_upgrade_example_matches_the_shipped_one():
+    """upgrade's EXAMPLE is pasted by an operator whose command just failed.
+
+    Pinned against its own section rather than the whole document, so the two
+    commands can each document their own keys without either one having to know
+    about the other.
+    """
+    printed = json.loads(upgrade_config.EXAMPLE)
+    shipped = json.loads((REPO / "examples" / "lmi.json").read_text(
+        encoding="utf-8"))
+    assert set(printed["lmi"]) == set(shipped["lmi"])
+
+
+def test_the_example_config_is_accepted_by_the_upgrade_validator(tmp_path):
+    example = REPO / "examples" / "lmi.json"
+    doc = json.loads(example.read_text(encoding="utf-8"))
+    pem = tmp_path / "ca.pem"
+    pem.write_bytes(b"-----BEGIN CERTIFICATE-----\n")
+    doc["lmi"]["cafile"] = str(pem)
+    staged = tmp_path / "lmi.json"
+    with open(str(staged), "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(doc, fh)
+
+    cfg = upgrade_config.build_config(Args(str(staged)))
+    assert cfg.index
+    assert cfg.cafile == pem

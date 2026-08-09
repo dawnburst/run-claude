@@ -1,4 +1,8 @@
 {
+  "lmi": {
+    "index": "https://artifactory.example.com/api/pypi/pypi-virtual/simple/",
+    "cafile": "/etc/ssl/certs/corp-ca.pem"
+  },
   "claude": {
     "registry": "https://artifactory.example.com/api/npm/npm-virtual/",
     "cafile": "/etc/ssl/certs/corp-ca.pem",

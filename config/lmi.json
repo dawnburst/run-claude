@@ -1,4 +1,7 @@
 {
+  "lmi": {
+    "index": "https://pypi.org/simple/"
+  },
   "claude": {
     "registry": "https://registry.npmjs.org/",
     "env": {
