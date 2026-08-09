@@ -674,7 +674,7 @@ place.
 ### The config file
 
 `lmi upgrade` reads the **same config file** as `lmi install claude` — the
-search order below is identical — but its own top-level section, `lmi`:
+search order above is identical — but its own top-level section, `lmi`:
 
 ```json
 {
@@ -782,8 +782,8 @@ lmi/                  the package
 tests/                pytest suite, mirrors the lmi/ tree
 config/lmi.json       the config lmi install claude and lmi upgrade read by
                       default, when run from this directory
-examples/lmi.json     a complete lmi.json, "claude" and "lmi" sections both, to
-                      copy and edit
+examples/lmi.json     a complete lmi.json, with both "claude" and "lmi"
+                      sections, to copy and edit
 docs/install/         per-platform install guides, one file each
 docs/superpowers/     the design specs, one per command
 scripts/              install scripts, all four installing the same wheel:
