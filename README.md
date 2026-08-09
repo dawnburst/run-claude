@@ -84,7 +84,21 @@ cd ~/lmi && ./scripts/install-linux.sh
 It installs the wheel into a virtual environment of its own at
 `~/.local/share/lmi/venv` and symlinks the generated command into
 `~/.local/bin`, so **the clone is disposable afterwards**. Re-running it is how
-you upgrade; `--uninstall` reverses it.
+you upgrade; `--uninstall` reverses it. [`lmi upgrade`](#lmi-upgrade) is the
+other way to upgrade, without re-cloning — but it reads its config from the
+same file as `lmi install claude`, and `./config/lmi.json` goes away with the
+clone. A machine you intend to upgrade in place this way wants a config kept
+somewhere the clone's disappearance cannot take with it. Copy
+[`examples/lmi.json`](examples/lmi.json), not the shipped `config/lmi.json` —
+the shipped file has no `lmi` section at all, precisely so nobody points
+`lmi upgrade` at public PyPI by accident, where `lmi` is not a package this
+project publishes. Edit the copy's `lmi.index` to name your site's own Python
+index before using it:
+
+```bash
+mkdir -p ~/.lmi && cp examples/lmi.json ~/.lmi/config.json
+# then edit ~/.lmi/config.json: set "lmi.index" to your site's package index
+```
 
 Windows:
 
@@ -359,6 +373,12 @@ editor is inlined into the next prompt correctly rather than as mojibake.
 
   Verified: state file and lock on the local drive, log on the share, working
   directory still the UNC path, exit 0. Local NTFS is unaffected throughout.
+- **Do not upgrade while `lmi schedule` is looping.** The upgrade replaces
+  files underneath that process. Modules it has already imported stay in
+  memory, but one it has not yet imported would come from the new version. The
+  locks are per state file in arbitrary directories, so there is nothing for
+  `lmi upgrade` to enumerate and no honest way for it to detect this. Upgrade
+  between runs.
 
 None of these are scheduled work. If you want one, say so before building it.
 
@@ -794,6 +814,125 @@ perfectly valid fragment can mean nothing at all. Worth doing once:
 
 ---
 
+## lmi upgrade
+
+The third command. It installs a newer `lmi` from the package index named in the
+config file, over the installation it is currently running from.
+
+```
+lmi upgrade [--version VERSION] [--config PATH]
+```
+
+It exists because the install scripts need a clone, and the guides above say the
+clone is disposable — re-cloning it every time you want a newer `lmi` defeats
+that. `lmi upgrade` lets an already-installed `lmi` update itself, with no clone
+and no network access beyond the same index that provisioned it in the first
+place.
+
+### The config file
+
+`lmi upgrade` reads the **same config file** as `lmi install claude` — the
+search order above is identical — but its own top-level section, `lmi`. The
+shipped `config/lmi.json` in this repository does **not** have one: `lmi` is
+never published anywhere, so the only honest default is none at all rather
+than a placeholder that would resolve a stranger's package of the same name
+from public PyPI. Copy [`examples/lmi.json`](examples/lmi.json) and point
+`lmi.index` at your site's own package index:
+
+```json
+{
+  "lmi": {
+    "index": "https://artifactory.example.com/api/pypi/pypi-virtual/simple/",
+    "cafile": "/etc/ssl/certs/corp-ca.pem"
+  }
+}
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `index` | **yes** | The Python package index to install from — pip's `--index-url`. It **replaces** pip's default index rather than adding to it, so an air-gapped machine cannot silently resolve `lmi` from public PyPI. |
+| `cafile` | no | A CA certificate file — pip's `--cert`. Checked for existence when the config is read, not when pip runs, for the same reason `claude.cafile` is: a typo here would otherwise surface much later as an unrelated TLS error. |
+
+### What it asks
+
+At most one question, asked **before anything on the machine changes**:
+whether to replace the running `lmi` with the version it found (the newest on
+the index, or the one named by `--version`). Abandon it there and nothing has
+been touched. There is deliberately no `--yes` — this command replaces the
+binary that is currently executing it, and that is not something to automate
+past. It has the same no-keypress-when-unattended guard as `lmi install
+claude`: with no terminal, the question cannot be asked, and rather than hang
+forever waiting for one, the command exits 2.
+
+### `--version`
+
+Omit it and `lmi upgrade` asks the index for the newest version. Pass one to
+pin an exact version instead — including going **back** to a known-good
+version if a newer one turns out to be bad.
+
+An unchanged version number means exactly that: nothing to install, exit 0.
+`scripts/install-linux.sh` passes `--force-reinstall` because the version does
+not change on every source change during development; `lmi upgrade`
+deliberately has no such flag, so if a site republishes `0.1.0` with different
+content inside, `lmi upgrade` reports "already at the newest" and changes
+nothing. Bump the version in `pyproject.toml` to ship new code.
+
+### What it upgrades, and what it refuses
+
+`lmi upgrade` upgrades exactly the two installation shapes the install scripts
+produce:
+
+- a **virtual environment of its own** — `~/.local/share/lmi/venv`, the shape
+  `install-linux.sh` and `install-macos.sh` create.
+- a **`pip install --user`** install — the shape `install-windows.cmd`
+  produces.
+
+Anything else is refused with exit 2, before pip is invoked, rather than
+guessed at:
+
+- **An editable checkout** (`pip install -e`, what a repo clone under active
+  development looks like). Upgrading it would install a released wheel over a
+  working tree — it would look exactly like a successful upgrade while
+  discarding whatever is uncommitted there.
+- **A pipx install.** Upgrading it from underneath pipx would leave pipx's own
+  record describing a version that is no longer installed. The message says to
+  run `pipx upgrade lmi` instead.
+- **Anything else** — a system-wide install, in particular. A wrong guess here
+  installs a second copy that nothing on `PATH` ever reaches, which is worse
+  than refusing.
+
+### Verification
+
+Success is confirmed by running the **installed console script** in a fresh
+subprocess and reading what it reports — never by reading this process's own
+`lmi.__version__`. That value was imported before pip ran, so it is always the
+*old* version, whatever pip just put on disk: a command that trusted it would
+report "upgraded 0.1.0 → 0.2.0" while 0.1.0 was still what ran.
+
+### Exit codes
+
+`0` and `2` mean the same thing for every `lmi` command; `4` matches
+`schedule`'s and `install`'s.
+
+| Code | Meaning | Scope |
+|---|---|---|
+| 0 | Upgraded, already at the newest (or the requested) version, or you answered no | global |
+| 1 | The pip install failed | `upgrade` |
+| 2 | Bad config, an installation shape `lmi upgrade` cannot handle, no terminal to ask in, Ctrl-C at the prompt, or a bad `--version` | global |
+| 3 | pip succeeded, but the installed command now reports the wrong version | `upgrade` |
+| 4 | A bug in `lmi` | `upgrade` |
+
+`3` is separate from `1` on purpose: by the time verification runs, pip has
+already succeeded and the machine has changed, so "the upgrade failed" would be
+the wrong sentence for what happened.
+
+Whether pip can displace a running `lmi.exe` on Windows is not yet settled —
+see [Still to verify](#still-to-verify).
+
+---
+
+---
+
 ## Project layout
 
 ```
@@ -801,21 +940,29 @@ lmi/                  the package
   cli.py              top-level argparse parser and command dispatch
   core/               errors and global exit codes, path classification,
                       BOM-aware decoding, the single-instance lock
-                      (fcntl / msvcrt), logging, reading and atomically
+                      (fcntl / msvcrt), logging, config file discovery,
+                      asking a yes/no question, reading and atomically
                       writing a JSON document, where Claude Code keeps its
                       files
   commands/
     config/           the lmi config switch command: the fragment, the
                       recursive merge, the pristine snapshot
-    install/          the lmi install claude command: config discovery and
-                      validation, the prompts, npm, the two Claude config
+    install/          the lmi install claude command: the "claude" config
+                      section, the prompts, npm, the two Claude config
                       documents, Windows Git Bash
     schedule/         the lmi schedule command: config/validation, paths,
                       prompt composition, the state file, the iteration loop
+    upgrade/          the lmi upgrade command: the "lmi" config section,
+                      detecting the installation, the one pip command,
+                      verifying by running the installed script
 tests/                pytest suite, mirrors the lmi/ tree
 config/lmi.json       the config lmi install claude reads by default, when run
-                      from this directory
-examples/lmi.json     a complete lmi install claude config file, to copy and edit
+                      from this directory. It has no "lmi" section on purpose
+                      (see lmi upgrade, above) - so lmi upgrade run against
+                      this checkout stops with 'the config file has no "lmi"
+                      section' and prints the pasteable example
+examples/lmi.json     a complete lmi.json, with both "claude" and "lmi"
+                      sections, to copy and edit
 examples/settings_switch.json
                       a settings.json fragment for lmi config switch, to copy
                       to config/settings_switch.json and edit
@@ -849,13 +996,15 @@ python3 -m pytest tests/ -v
 No install is required first — pytest puts the repository root on `sys.path`,
 so the suite runs against a clean checkout. A virtual environment is only
 needed to exercise the installed `lmi` console script itself, not to run the
-tests. Currently **343 tests, all passing**, in under two seconds.
+tests. Currently **420 tests, 1 skipped, the rest passing**, in under two
+seconds.
 
-The suite never reaches a real `claude`, and never a real `npm`: the
-`fake_claude` and `fake_npm` fixtures replace `PATH` entirely with a temporary
-directory holding a fake, so no test can spend quota, rewrite your `~/.npmrc` or
-install a real package. Both fakes are real subprocesses, deliberately, because
-the argv, the stdin redirection and the exit code are the parts most worth
+The suite never reaches a real `claude`, a real `npm`, or a real `pip`: the
+`fake_claude`, `fake_npm` and `fake_pip` fixtures replace `PATH` (or, for pip,
+the interpreter) entirely with a temporary one, so no test can spend quota,
+rewrite your `~/.npmrc`, or install a real package over the developer's own
+`lmi`. The fakes are real subprocesses, deliberately, because the argv, the
+stdin redirection and the exit code are the parts most worth
 covering.
 
 What a fake can **never** cover is how the real CLI behaves. The two most
@@ -908,9 +1057,9 @@ So: the **3.9 floor** is tested. **Linux** and **Windows** are tested. On
 
 ### Still to verify
 
-Two measurements have not been taken. Neither blocks use of `lmi schedule`; both
-are named so nobody mistakes reasoning for evidence. `lmi install claude` has its
-own four, in [Real-run checklist](#real-run-checklist).
+Three measurements have not been taken. None blocks use of `lmi schedule` or
+`lmi upgrade`; all are named so nobody mistakes reasoning for evidence. `lmi
+install claude` has its own four, in [Real-run checklist](#real-run-checklist).
 
 1. **A real multi-iteration loop against the actual `claude` CLI.** The
    single-iteration half passes: a real run against `~/.local/bin/claude`
@@ -926,6 +1075,13 @@ own four, in [Real-run checklist](#real-run-checklist).
    measurement. The remaining unknown is whether the task's own environment
    resolves the `.exe` and its interpreter. Note credentials are per-user: the
    scheduled task must run as the user who did `claude auth login`.
+3. **Whether pip can displace a running `lmi.exe` on Windows.** `lmi upgrade`
+   replaces the package in place, and on Windows the console script being
+   replaced is the one executing the command. pip stashes files by renaming
+   rather than overwriting, and Windows permits renaming a running image on the
+   same volume, so this is expected to work — but only a real Windows run
+   settles it. If it fails, the exit-1 message already carries the
+   `python -m pip …` line to run from a shell where no `lmi` is live.
 
 ---
 

@@ -30,9 +30,11 @@ These come from the user and are invariants, not preferences:
 3. **`lmi schedule` may never wait for a keypress.**
    Nothing may ever wait for a keypress in the unattended runner: the prompt is
    fed on stdin, and every wait is a `time.sleep`. This is a property of that
-   runner, not of `lmi` as a whole — `lmi install` is interactive by design and
-   asks before it changes anything. It has no `--yes`, and guards only against
-   *hanging*: with no terminal it exits 2 rather than waiting forever.
+   runner, not of `lmi` as a whole — `lmi install` and `lmi upgrade` are
+   interactive by design and ask before they change anything. Neither has a
+   `--yes`, and both guard only against *hanging*: with no terminal each exits
+   2 rather than waiting forever. `lmi upgrade` is the more dangerous of the
+   two, since it replaces the binary currently running it.
 4. **Python 3.9 floor, standard library only at runtime.** No `match`, no
    `X | Y` runtime unions, no builtin generics in evaluated annotations. `pytest`
    is a dev extra and must never be imported by `lmi/`.
@@ -72,12 +74,22 @@ lmi/commands/config/        `lmi config switch`, as a self-contained package
   origin.py                 the write-once snapshot
   runner.py                 the flow
   exit_codes.py             this command's codes (3, 4)
+lmi/commands/upgrade/       `lmi upgrade`, as a self-contained package
+  config.py                 arguments, the "lmi" config section, the frozen Config
+  installation.py           detects the venv/--user install and refuses the rest
+  pip.py                    the one pip command, and the version-probe read
+  prompts.py                the one question, wrapping core/prompts.py
+  verify.py                 confirms the upgrade by running the new script
+  runner.py                 the flow
+  exit_codes.py             this command's codes (1, 3, 4)
 lmi/core/                   only genuinely command-agnostic code
   errors.py                 LmiError and the global codes (0, 2)
   fs.py                     path classification that never raises
   text.py                   BOM-aware decoding
   lock.py                   single-instance lock (fcntl / msvcrt)
   log.py                    one line to console and log file
+  config.py                 config file discovery, decoding and parsing
+  prompts.py                asking a question, and the no-terminal guard
   jsonfile.py               read / back up / atomically write a JSON document
   claude.py                 where Claude Code keeps its files
 ```
@@ -97,14 +109,23 @@ Three rules hold this shape together:
 - **`core/` is for code with no command flavour.** `paths.py` stays inside
   `commands/schedule/` because its rules are that command's. If a second command
   ever needs the path helpers in it, promote them then, not in advance.
-  `jsonfile.py` is that rule having fired rather than an exception to it: it
-  lived in `commands/install/` until `lmi config switch` became its second
-  caller, and moved to `core/` at that moment — with `settings_path()` lifted
-  out beside it as `core/claude.py`, because two commands disagreeing about
-  where `settings.json` lives would leave one of them silently configuring a
-  file nothing reads. What made the move honest is that neither module knows
-  what Claude Code is; the exit code to raise with is a parameter, since `core/`
+  Everything now in `core/` beyond the original five is that rule having fired,
+  not an exception to it. Each moved the moment a second caller appeared, and
+  not before, on the guess that one might.
+
+  `jsonfile.py` lived in `commands/install/` until `lmi config switch` became
+  its second caller — with `settings_path()` lifted out beside it as
+  `core/claude.py`, because two commands disagreeing about where
+  `settings.json` lives would leave one of them silently configuring a file
+  nothing reads. What made the move honest is that neither module knows what
+  Claude Code is; the exit code to raise with is a parameter, since `core/`
   cannot know a command's codes.
+
+  `config.py` and `prompts.py` went the same way, when `lmi upgrade` became the
+  second command to need config-file discovery and a yes/no question. Same
+  shape: what a section *means* stays with the command that owns it, and the
+  no-terminal message is the caller's, so neither command's error text
+  mentions the other.
 
 The claude invocation, in `runner.py`, is the delicate part:
 
@@ -282,10 +303,32 @@ at exit 0.
     the search order the old path used to occupy, so `--config` and
     `$LMI_CONFIG` still win and never trip over it — including `--config
     ./lmi.json`, the escape hatch the message offers.
+Three belong to `lmi upgrade`, and all three are silent in the same way — the
+command reports an upgrade:
+
+22. **`lmi upgrade` never reports its own `__version__` as proof.** That
+    value was imported before pip ran, so it is the *old* version whatever is
+    now on disk. Success is confirmed by running the installed console script
+    in a subprocess and comparing. **Silent:** the command announces
+    "upgraded 0.1.0 → 0.2.0" while 0.1.0 is still installed, which is the
+    stale-wheel failure with a new front end.
+23. **An installation shape that cannot be upgraded is refused, not guessed
+    at.** An editable checkout, a pipx install, a system-wide install:
+    `installation.detect` raises exit 2 for each, before pip is invoked.
+    **Silent** in three different ways — a released wheel over a developer's
+    working tree; pipx's record describing a version that is gone; a `--user`
+    copy that the `PATH` entry never reaches. The order of the checks is
+    load-bearing: editable is tested first because a dev checkout is usually
+    also inside a venv.
+24. **The version probe's failure must never fail the command.** `pip index
+    versions` is experimental and absent from older pips. Every failure is
+    `None`, which degrades the question the user is asked and nothing else. A
+    diagnostic that blocks the thing it diagnoses is worse than no
+    diagnostic.
 
 And one for `lmi config switch`, which is the whole of what `origin` means:
 
-22. **The origin snapshot is written only if it does not already exist.**
+25. **The origin snapshot is written only if it does not already exist.**
     `config/origin.capture` takes `~/.claude/settings.json.lmi-origin` on the
     first switch and never again, which is what makes `switch origin` mean the
     settings the machine had before *any* switch rather than before the last
@@ -301,7 +344,7 @@ And one for `lmi config switch`, which is the whole of what `origin` means:
 ## 4. Rules for editing
 
 1. **Run the suite after every change** and say in your report that you did:
-   `python3 -m pytest tests/ -q`. It is 343 tests in under two seconds and it
+   `python3 -m pytest tests/ -q`. It is 420 tests in under two seconds and it
    costs nothing — several bugs above only appear with awkward paths, or only
    when a claude call fails.
 2. **Preserve the five invariants in section 1** and everything in section 3.
@@ -339,18 +382,19 @@ And one for `lmi config switch`, which is the whole of what `origin` means:
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 343 tests, <2s, no install needed
+python3 -m pytest tests/ -q          # 420 tests, 1 skipped, <2s, no install needed
 ```
 
-Fixtures worth knowing, in `tests/conftest.py` and the three per-command
+Fixtures worth knowing, in `tests/conftest.py` and the four per-command
 `conftest.py` files under `tests/commands/`:
 
 | Fixture | What it gives you |
 |---|---|
 | `fake_claude` | A fake CLI on an exclusive PATH; records argv and the composed prompt per call, and can be told to misbehave through `FAKE_RC`, `FAKE_OUT`, `FAKE_STATE_FILE`, `FAKE_COMPLETE_AT`, `FAKE_PROSE`, `FAKE_BLANK_FIRST_LINE`, `FAKE_WRECK_TMP` |
 | `fake_npm` | The same trick for npm — an exclusive PATH, argv recorded per call, `FAKE_NPM_RC` and `FAKE_NPM_FAIL_GLOBAL` (fail only when a global flag is present, which is how the `--global` fallback is exercised without root) |
+| `fake_pip` | A fake interpreter that records every `-m pip` argv and answers `index versions`, plus a fake installed `lmi` command. pip is never found through `PATH` — it is `<interpreter> -m pip` — so the seam is the interpreter. `FAKE_PIP_RC`, `FAKE_PIP_LATEST`, `FAKE_SCRIPT_VERSION`, `FAKE_SCRIPT_RC`, `FAKE_SCRIPT_STDERR`, `FAKE_SCRIPT_BOM`, `FAKE_SCRIPT_PREFIX` |
 | `home` | A throwaway `HOME`/`USERPROFILE`, so no test can touch the developer's real `~/.claude`. Defined separately in the `install` and `config` conftests rather than shared. Every `config` test reaching `settings_path()` or the snapshot must take it, or it writes to the real home |
-| `answers` | In `tests/commands/install/test_runner.py`: a scripted queue behind `prompts.confirm/secret/text`, so no test reaches a real stdin |
+| `answers` | Two of these now, one per command: `tests/commands/install/test_runner.py`'s is a scripted queue behind `prompts.confirm/secret/text`; `tests/commands/upgrade/test_runner.py`'s is confirm-only, since that command asks exactly one yes/no question. Neither test reaches a real stdin |
 | `make_cfg` | A `Config` factory, so its ten fields are built in one place |
 | `readonly_dir` | A 0o500 directory, restored on teardown |
 | `on_windows` | Takes the Windows branch of `paths.py` (patches `_on_windows`, never `os.name`, which pathlib reads at instantiation). The install suite patches `gitbash.on_windows` for the same reason |

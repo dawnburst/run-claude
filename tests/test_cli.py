@@ -29,7 +29,8 @@ def test_the_registry_lists_every_command_in_help_order():
     opinion to disagree with.
     """
     from lmi.commands import COMMANDS
-    assert [c.NAME for c in COMMANDS] == ["config", "install", "schedule"]
+    assert [c.NAME for c in COMMANDS] == ["config", "install", "schedule",
+                                          "upgrade"]
 
 
 def test_every_command_satisfies_the_contract():

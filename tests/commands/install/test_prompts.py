@@ -5,6 +5,7 @@ import builtins
 import pytest
 
 from lmi.commands.install import prompts
+from lmi.core import prompts as core_prompts
 from lmi.core.errors import LmiError
 
 
@@ -72,7 +73,7 @@ def test_secret_uses_getpass_not_input(monkeypatch):
         raise AssertionError("secret() must not use input()")
 
     monkeypatch.setattr(builtins, "input", explode)
-    monkeypatch.setattr(prompts.getpass, "getpass", lambda prompt="": " tok ")
+    monkeypatch.setattr(core_prompts.getpass, "getpass", lambda prompt="": " tok ")
     assert prompts.secret("Token") == "tok"
 
 
@@ -100,7 +101,9 @@ def test_eof_from_getpass_is_also_a_usage_error(monkeypatch):
     def eof(prompt=""):
         raise EOFError
 
-    monkeypatch.setattr(prompts.getpass, "getpass", eof)
+    # The module object is shared, so patching it here is what core.prompts
+    # sees. Named through core.prompts now that the call lives there.
+    monkeypatch.setattr(core_prompts.getpass, "getpass", eof)
     with pytest.raises(LmiError) as exc:
         prompts.secret("Token")
     assert exc.value.code == 2
