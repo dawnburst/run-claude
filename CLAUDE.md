@@ -3,9 +3,11 @@
 `lmi` is a Python CLI that runs the Claude Code CLI unattended. `lmi schedule`
 loops `claude -p` in the foreground, carrying progress between iterations through
 a state file; `lmi install claude` installs and configures that CLI in the first
-place, from an internal npm registry on an air-gapped machine. `README.md` is the
-user-facing documentation and is accurate; this file is what you need before
-*editing* the code.
+place, from an internal npm registry on an air-gapped machine; `lmi config
+switch` applies a `settings.json` fragment over that configuration afterwards,
+and can put the machine's original settings back. `README.md` is the user-facing
+documentation and is accurate; this file is what you need before *editing* the
+code.
 
 Read section 3 before changing any behaviour. Every item there is a bug that was
 already paid for once, and most of them fail **silently** — a run that reports
@@ -58,18 +60,26 @@ lmi/commands/install/       `lmi install claude`, as a self-contained package
   config.py                 arguments, config-file discovery, the frozen Config
   prompts.py                every question, and the no-terminal guard
   npm.py                    locating npm, one npm command, the --global fallback
-  jsonfile.py               read / back up / atomically write a JSON document
   settings.py               what goes into ~/.claude/settings.json
   claude_json.py            what goes into ~/.claude.json
   gitbash.py                Windows Git Bash discovery and the env var
   runner.py                 the flow
   exit_codes.py             this command's codes (1, 3, 4)
+lmi/commands/config/        `lmi config switch`, as a self-contained package
+  args.py                   the nested subparser
+  fragment.py               finding, reading and validating the switch file
+  merge.py                  the recursive merge
+  origin.py                 the write-once snapshot
+  runner.py                 the flow
+  exit_codes.py             this command's codes (3, 4)
 lmi/core/                   only genuinely command-agnostic code
   errors.py                 LmiError and the global codes (0, 2)
   fs.py                     path classification that never raises
   text.py                   BOM-aware decoding
   lock.py                   single-instance lock (fcntl / msvcrt)
   log.py                    one line to console and log file
+  jsonfile.py               read / back up / atomically write a JSON document
+  claude.py                 where Claude Code keeps its files
 ```
 
 Three rules hold this shape together:
@@ -82,11 +92,19 @@ Three rules hold this shape together:
   startup, and turns a typo into a silently missing command.
 - **Exit codes have owners.** `0` (success) and `2` (usage) are global and live in
   `core/errors.py`; no command may redefine them. Everything else belongs to the
-  command that defines it, which is why `exit_codes.py` exists as its own module
-  despite holding three constants.
+  command that defines it, which is why each command carries an `exit_codes.py`
+  of its own for the two or three constants it defines.
 - **`core/` is for code with no command flavour.** `paths.py` stays inside
   `commands/schedule/` because its rules are that command's. If a second command
   ever needs the path helpers in it, promote them then, not in advance.
+  `jsonfile.py` is that rule having fired rather than an exception to it: it
+  lived in `commands/install/` until `lmi config switch` became its second
+  caller, and moved to `core/` at that moment — with `settings_path()` lifted
+  out beside it as `core/claude.py`, because two commands disagreeing about
+  where `settings.json` lives would leave one of them silently configuring a
+  file nothing reads. What made the move honest is that neither module knows
+  what Claude Code is; the exit code to raise with is a parameter, since `core/`
+  cannot know a command's codes.
 
 The claude invocation, in `runner.py`, is the delicate part:
 
@@ -200,8 +218,17 @@ reports success.
     identically on every remaining iteration, so it ends the run instead of
     burning the loop.
 
-The rest belong to `lmi install`, and every one of them is silent — the run
-reports success:
+Items 13 to 21 belong to `lmi install`, and every one of them is silent — the
+run reports success. Three of them now reach further than that command: 19 and
+20 are about `jsonfile.py`, which moved to `core/`, and `lmi config switch`
+reads and writes `settings.json` through the same two functions; and 18 is the
+same rule in the same words in `fragment._validate`, which refuses a non-string
+`env` value in a switch fragment for exactly the reason `config._env` refuses
+one in an `lmi` config file. The `env` check there tests for its key with a
+sentinel rather than `doc.get("env") is None`, which cannot tell an absent key
+from `"env": null` — and `null` is a value everywhere else in a fragment, so the
+merge would set `env` to null and discard the whole block, auth token included,
+at exit 0.
 
 13. **The onboarding key is `hasCompletedOnboarding`, lowercase `b`.**
     Verified in the 2.1.222 binary. **Silent:** the natural spelling
@@ -231,7 +258,7 @@ reports success:
 19. **An unparseable `settings.json` or `.claude.json` is refused, not
     overwritten.** Treating it as `{}` would discard everything the user had.
     `jsonfile.read` raises exit 3 and names the file; nothing is written.
-20. **`jsonfile.write`'s temp file is born 0600, not chmod-ed to it later.**
+20. **`core/jsonfile.write`'s temp file is born 0600, not chmod-ed to it later.**
     `os.open(..., 0o600)` plus `os.fdopen`, never plain `open()`. `~/.claude/`
     is 0755, so writing the auth token first and fixing the mode afterwards
     leaves it in a world-readable file for the length of the write.
@@ -256,12 +283,25 @@ reports success:
     `$LMI_CONFIG` still win and never trip over it — including `--config
     ./lmi.json`, the escape hatch the message offers.
 
+And one for `lmi config switch`, which is the whole of what `origin` means:
+
+22. **The origin snapshot is written only if it does not already exist.**
+    `config/origin.capture` takes `~/.claude/settings.json.lmi-origin` on the
+    first switch and never again, which is what makes `switch origin` mean the
+    settings the machine had before *any* switch rather than before the last
+    one. **Silent:** written unconditionally it becomes undo-one-step while
+    still being spelled `origin` — every single switch behaves identically, the
+    snapshot file is there either way, and nothing at all afterwards
+    distinguishes the two, except that the user's real settings stopped being
+    recoverable at the second switch. The `if not exists()` is the entire
+    mechanism; do not simplify it into an unconditional write.
+
 ---
 
 ## 4. Rules for editing
 
 1. **Run the suite after every change** and say in your report that you did:
-   `python3 -m pytest tests/ -q`. It is 274 tests in under two seconds and it
+   `python3 -m pytest tests/ -q`. It is 343 tests in under two seconds and it
    costs nothing — several bugs above only appear with awkward paths, or only
    when a claude call fails.
 2. **Preserve the five invariants in section 1** and everything in section 3.
@@ -299,17 +339,17 @@ reports success:
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 274 tests, <2s, no install needed
+python3 -m pytest tests/ -q          # 343 tests, <2s, no install needed
 ```
 
-Fixtures worth knowing, in `tests/conftest.py` and the two per-command
+Fixtures worth knowing, in `tests/conftest.py` and the three per-command
 `conftest.py` files under `tests/commands/`:
 
 | Fixture | What it gives you |
 |---|---|
 | `fake_claude` | A fake CLI on an exclusive PATH; records argv and the composed prompt per call, and can be told to misbehave through `FAKE_RC`, `FAKE_OUT`, `FAKE_STATE_FILE`, `FAKE_COMPLETE_AT`, `FAKE_PROSE`, `FAKE_BLANK_FIRST_LINE`, `FAKE_WRECK_TMP` |
 | `fake_npm` | The same trick for npm — an exclusive PATH, argv recorded per call, `FAKE_NPM_RC` and `FAKE_NPM_FAIL_GLOBAL` (fail only when a global flag is present, which is how the `--global` fallback is exercised without root) |
-| `home` | A throwaway `HOME`/`USERPROFILE`, so no install test can touch the developer's real `~/.claude` |
+| `home` | A throwaway `HOME`/`USERPROFILE`, so no test can touch the developer's real `~/.claude`. Defined separately in the `install` and `config` conftests rather than shared. Every `config` test reaching `settings_path()` or the snapshot must take it, or it writes to the real home |
 | `answers` | In `tests/commands/install/test_runner.py`: a scripted queue behind `prompts.confirm/secret/text`, so no test reaches a real stdin |
 | `make_cfg` | A `Config` factory, so its ten fields are built in one place |
 | `readonly_dir` | A 0o500 directory, restored on teardown |
@@ -329,7 +369,12 @@ four `lmi install claude` checks that only a real Artifactory and a real Windows
 box can settle.
 
 `tests/test_docs.py` is the one module that tests documentation rather than code:
-that `examples/lmi.json` still passes `config.build_config`, that the README
-still spells the three silent keys, and that invariant 3 above stays scoped to
-`schedule`. The example config is what a new site copies, so it going stale is a
-usage error on somebody's first day.
+that `examples/lmi.json` still passes `config.build_config` and
+`examples/settings_switch.json` still passes `fragment.load`, that the README
+still spells the three silent keys and still documents `lmi config switch`, that
+invariant 3 above stays scoped to `schedule`, and that item 22 above is still in
+this file. Both examples are what a new site copies, so one going stale is a
+usage error on somebody's first day. The item-22 check is the odd one: it guards
+a paragraph rather than a file a user touches, because that rule exists nowhere
+else — one line of code, no symptom when inverted, and this file the only place
+that says why.

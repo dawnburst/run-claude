@@ -83,6 +83,36 @@ def test_the_readme_names_the_working_directory_default():
     assert config.CWD_CONFIG in readme
 
 
+def test_the_example_switch_fragment_is_accepted(tmp_path):
+    """It is copied and edited, so a rejected shape is a broken starting point."""
+    from lmi.commands.config import fragment
+    src = REPO / "examples" / "settings_switch.json"
+    staged = tmp_path / "f.json"
+    staged.write_bytes(src.read_bytes())
+    doc, _ = fragment.load(str(staged))
+    assert doc
+
+
+def test_the_readme_documents_config_switch():
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    for needle in ("lmi config switch", "settings.json.lmi-origin",
+                   "config/settings_switch.json"):
+        assert needle in readme, "README.md must document %s" % needle
+
+
+def test_claude_md_records_the_write_once_snapshot():
+    """MANDATORY. The rule is one line of code and invisible when inverted.
+
+    If CLAUDE.md does not carry it, the next person to touch origin.capture has
+    nothing telling them why the `if not exists()` is there.
+    """
+    text = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "lmi-origin" in text
+    start = text.index("lmi-origin")
+    window = text[max(0, start - 800):start + 800]
+    assert "once" in window or "only if" in window
+
+
 def test_claude_md_scopes_the_keypress_invariant_to_schedule():
     """MANDATORY. Invariant 3 was global and `lmi install` contradicts it.
 
