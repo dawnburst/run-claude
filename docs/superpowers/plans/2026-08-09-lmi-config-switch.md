@@ -873,7 +873,6 @@ nothing afterwards shows which of the two you built.
 
 import os
 
-from . import exit_codes
 from ...core import fs, jsonfile
 from ...core.claude import settings_path
 from ...core.errors import EXIT_USAGE, LmiError
@@ -937,15 +936,21 @@ def restore(code):
             "%s (%s)\n"
             "    Delete it by hand, or the next switch will not take a fresh one."
             % (snapshot, exc),
-            exit_codes.EXIT_CONFIG_WRITE,
+            code,
         )
     return target
 ```
 
-`fs` is imported for `exists()`; `jsonfile` for the read and write; `exit_codes`
-only for the unlink failure. There is no `shutil` here on purpose — the restore
-goes through `jsonfile.write` rather than `shutil.copy2` so it is atomic and so
-the mode is forced rather than inherited.
+`fs` is imported for `exists()` and `jsonfile` for the read and write — that is
+the whole import list. **`exit_codes` is deliberately not imported here.** Every
+function in this module takes `code` from its caller, the same contract
+`core/jsonfile.py` uses, and raising with a module-level constant in one branch
+while honouring the parameter everywhere else is the kind of inconsistency that
+makes a later reader distrust both.
+
+There is no `shutil` either: the restore goes through `jsonfile.write` rather
+than `shutil.copy2`, so it is atomic and the mode is forced rather than
+inherited.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
