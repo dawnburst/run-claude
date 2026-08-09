@@ -260,13 +260,19 @@ Registration, one line:
 ```python
 from . import config, install, schedule
 
-COMMANDS = [install, config, schedule]
+COMMANDS = [config, install, schedule]
 ```
 
-Registry order is `--help` order, and the existing registry already orders by
-the lifecycle a user moves through rather than alphabetically: install the tool,
-then schedule it. `config` belongs between them — you configure what you have
-installed, before you leave it running unattended.
+**Alphabetical**, and this changes an existing choice deliberately. The
+`lmi install` spec put `install` before `schedule` on the grounds that registry
+order is `--help` order and should follow the lifecycle a user moves through.
+That reasoning scales badly: with three commands the lifecycle order is
+arguable — you configure after installing, but you also re-configure between
+scheduled runs — and with a fourth it becomes a debate every time. Alphabetical
+has no opinion to disagree with, and a reader scanning `--help` for a command
+they already know the name of is better served by a predictable position than by
+a narrative. The `lmi install` spec's §3 note about `--help` order is superseded
+by this one.
 
 ---
 
@@ -341,10 +347,12 @@ unchanged end to end.
 passes against `core/jsonfile.py`, both `MANDATORY` ones included, and the full
 install suite stays green.
 
-*Registration* — `[c.NAME for c in COMMANDS] == ["install", "config",
-"schedule"]`. `tests/test_cli.py::test_the_registry_lists_every_command_in_help_order`
+*Registration* — `[c.NAME for c in COMMANDS] == ["config", "install",
+"schedule"]`, alphabetical. `tests/test_cli.py::test_the_registry_lists_every_command_in_help_order`
 asserts the exact list and will need updating; that is the intended tripwire,
-and updating it is correct rather than a test weakened to pass.
+and updating it is correct rather than a test weakened to pass. Its docstring
+currently explains the lifecycle rationale and must be rewritten to say
+alphabetical, or it will contradict the list directly above it.
 
 **What tests cannot cover:** that Claude Code actually honours a switched
 setting. `README.md` gains a one-line check — switch a profile that changes
