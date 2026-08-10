@@ -93,6 +93,28 @@ def test_no_shipped_template_carries_a_real_looking_token(where):
         "the token placeholder must be an obvious placeholder, not %r" % value
 
 
+def test_the_readme_documents_the_settings_template():
+    """The template is now the whole of what a site configures."""
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    for needle in ("config/settings.json", "ANTHROPIC_AUTH_TOKEN"):
+        assert needle in readme, "README.md must document %s" % needle
+
+
+def test_claude_md_records_that_the_placeholder_must_not_be_installed():
+    """MANDATORY. Item 30 is one refusal in one prompt, and inverting it
+
+    produces a settings.json that looks completely configured. Like items 22
+    and 27 it exists nowhere but CLAUDE.md: no failing command, no symptom lmi
+    can see, and the eventual 401 points at the gateway rather than at here.
+    """
+    text = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "placeholder" in text
+    start = text.index("placeholder")
+    window = text[start - 400:start + 900]
+    assert "blank" in window
+    assert settings.TOKEN_KEY in window
+
+
 def test_the_printed_example_matches_the_shipped_one():
     """config.EXAMPLE is what an operator pastes when the command has failed.
 

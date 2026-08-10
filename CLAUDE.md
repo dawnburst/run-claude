@@ -61,6 +61,7 @@ lmi/commands/schedule/      the command, as a self-contained package
   exit_codes.py             this command's own codes (1, 3, 4)
 lmi/commands/install/       `lmi install claude`, as a self-contained package
   config.py                 arguments, config-file discovery, the frozen Config
+  template.py               finding and validating the settings.json template
   prompts.py                every question, and the no-terminal guard
   npm.py                    locating npm, one npm command, the --global fallback
   settings.py               what goes into ~/.claude/settings.json
@@ -243,14 +244,15 @@ reports success.
 Items 13 to 21 belong to `lmi install`, and every one of them is silent — the
 run reports success. Three of them now reach further than that command: 19 and
 20 are about `jsonfile.py`, which moved to `core/`, and `lmi config switch`
-reads and writes `settings.json` through the same two functions; and 18 is the
-same rule in the same words in `fragment._validate`, which refuses a non-string
-`env` value in a switch fragment for exactly the reason `config._env` refuses
-one in an `lmi` config file. The `env` check there tests for its key with a
-sentinel rather than `doc.get("env") is None`, which cannot tell an absent key
-from `"env": null` — and `null` is a value everywhere else in a fragment, so the
-merge would set `env` to null and discard the whole block, auth token included,
-at exit 0.
+reads and writes `settings.json` through the same two functions; and 18 is one
+rule with three homes, because three different files are each a settings
+document somebody hands to lmi. It is `template._validate` for the install
+template, `fragment._validate` for a switch fragment, and it was
+`config._env` for the `claude.env` block in `lmi.json` until that key was
+removed. All of them test for the key with a sentinel rather than
+`doc.get("env") is None`, which cannot tell an absent key from `"env": null` —
+and `null` is a value everywhere else in these documents, so a merge would set
+`env` to null and discard the whole block, auth token included, at exit 0.
 
 13. **The onboarding key is `hasCompletedOnboarding`, lowercase `b`.**
     Verified in the 2.1.222 binary. **Silent:** the natural spelling
@@ -275,11 +277,20 @@ at exit 0.
     `bash.exe`/`sh.exe`/`bash`/`sh`, and the file exists — because a path it
     rejects looks configured and is not.
 18. **`settings.json` `env` values are strings.** A JSON number is silently the
-    wrong type, so the 256K profile does not apply. `config._env` refuses one
-    with exit 2 rather than passing it through.
-19. **An unparseable `settings.json` or `.claude.json` is refused, not
-    overwritten.** Treating it as `{}` would discard everything the user had.
-    `jsonfile.read` raises exit 3 and names the file; nothing is written.
+    wrong type, so the 256K profile does not apply. `template._validate`
+    refuses one with exit 2 rather than passing it through. The rule used to
+    live in `config._env`, guarding a `claude.env` block in `lmi.json`; that
+    key is gone and the rule moved one file over with the thing it guards, to
+    the settings template. Same words, same `_MISSING` sentinel for the
+    `"env": null` case, for the same reasons as in `fragment._validate`.
+19. **An unparseable `.claude.json` is refused, not overwritten.** Treating it
+    as `{}` would discard everything the user had. `jsonfile.read` raises exit
+    3 and names the file; nothing is written. This used to cover
+    `settings.json` too, and no longer does: nothing parses that file any more
+    — `lmi install` backs it up byte for byte and replaces it whole — so an
+    unparseable one would only block an install that was about to overwrite it
+    regardless. The rule stands unchanged for `.claude.json`, which is still
+    read, and for `lmi config switch`, which still merges into what it finds.
 20. **`core/jsonfile.write`'s temp file is born 0600, not chmod-ed to it later.**
     `os.open(..., 0o600)` plus `os.fdopen`, never plain `open()`. `~/.claude/`
     is 0755, so writing the auth token first and fixing the mode afterwards
@@ -380,12 +391,41 @@ renumbered.
     save and buries the tool calls either side of it. Not silent, but it
     destroys the readability the feature exists for.
 
+And two for the settings template, which is how `lmi install claude` now
+configures Claude Code: a `settings.json` beside the `lmi.json` that discovery
+resolved, installed as `~/.claude/settings.json` verbatim but for the token.
+
+30. **A blank auth token is refused, because the placeholder must never be
+    installed.** The shipped and example templates carry
+    `"ANTHROPIC_AUTH_TOKEN": "<Token from the user input>"`, and the template
+    is installed whole — so unlike every earlier version of this command, a
+    blank answer has nothing left to mean. It cannot mean "keep the token
+    already there" (nothing is kept) and it cannot mean "sign in later"
+    (the placeholder would be written in its place). `runner._ask_for_token`
+    asks three times and then raises exit 2 with nothing changed.
+    **Silent:** the install reports success, `~/.claude/settings.json` looks
+    fully configured, the token key is present and roughly the right shape at
+    a glance — and the 401 the user eventually hits points at the gateway
+    rather than at lmi. Do not "restore" the blank-is-allowed branch;
+    `settings.compose` has no way to tell a placeholder from a token, and
+    teaching it one would mean lmi learning the shape of Anthropic's
+    credentials.
+31. **The backup is now the only copy of the machine's previous settings.**
+    `jsonfile.backup` must stay *before* the write in
+    `runner._write_settings`, and must stay fatal when the copy fails.
+    Under the old merge the user's own keys survived inside the merged
+    document, so a skipped backup cost little; replacing wholesale makes that
+    `.bk_<stamp>` file the entire safety net. Downgrading the failure to a
+    `[WARN]` and carrying on, or moving the copy to after the write, turns an
+    unwritable `~/.claude/` into silent, permanent loss of whatever the
+    operator had hand-edited.
+
 ---
 
 ## 4. Rules for editing
 
 1. **Run the suite after every change** and say in your report that you did:
-   `python3 -m pytest tests/ -q`. It is 420 tests in under two seconds and it
+   `python3 -m pytest tests/ -q`. It is 480 tests in under three seconds and it
    costs nothing — several bugs above only appear with awkward paths, or only
    when a claude call fails.
 2. **Preserve the five invariants in section 1** and everything in section 3.
@@ -423,7 +463,7 @@ renumbered.
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 420 tests, 1 skipped, <2s, no install needed
+python3 -m pytest tests/ -q          # 480 tests, 1 skipped, <3s, no install needed
 ```
 
 Fixtures worth knowing, in `tests/conftest.py` and the four per-command

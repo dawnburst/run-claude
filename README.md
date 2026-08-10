@@ -87,8 +87,9 @@ It installs the wheel into a virtual environment of its own at
 you upgrade; `--uninstall` reverses it. [`lmi upgrade`](#lmi-upgrade) is the
 other way to upgrade, without re-cloning — but it reads its config from the
 same file as `lmi install claude`, and `./config/lmi.json` goes away with the
-clone. A machine you intend to upgrade in place this way wants a config kept
-somewhere the clone's disappearance cannot take with it. Copy
+clone — as does the `settings.json` beside it. A machine you intend to upgrade
+in place this way wants both kept somewhere the clone's disappearance cannot
+take with them. Copy
 [`examples/lmi.json`](examples/lmi.json), not the shipped `config/lmi.json` —
 the shipped file has no `lmi` section at all, precisely so nobody points
 `lmi upgrade` at public PyPI by accident, where `lmi` is not a package this
@@ -457,10 +458,13 @@ None of these are scheduled work. If you want one, say so before building it.
 The second command, and the one you run first. It installs the **Claude Code CLI
 itself** on a machine with no route to the public npm registry: it points npm at
 your internal Artifactory, runs `npm install -g @anthropic-ai/claude-code`, and
-then writes the configuration the site expects — the auth token, the
-marketplaces, the 256K context profile, the Windows Git Bash path — and marks
-onboarding complete, so the first `claude` gets to work instead of asking
-questions.
+then installs the configuration the site expects — a `settings.json` you wrote,
+with the auth token you are asked for written into it and the Windows Git Bash
+path added — and marks onboarding complete, so the first `claude` gets to work
+instead of asking questions.
+
+Two files in one folder, then: `lmi.json`, which says where to install *from*,
+and `settings.json`, which is what Claude Code ends up configured *with*.
 
 ```
 lmi install claude [--config PATH]
@@ -511,20 +515,7 @@ registry without anybody finding out.
 {
   "claude": {
     "registry": "https://artifactory.example.com/api/npm/npm-virtual/",
-    "cafile": "/etc/ssl/certs/corp-ca.pem",
-    "marketplaces": {
-      "corp-tools": {
-        "source": {
-          "source": "git",
-          "url": "https://git.example.com/claude/marketplace.git"
-        }
-      }
-    },
-    "env": {
-      "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "256000",
-      "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "204800",
-      "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000"
-    }
+    "cafile": "/etc/ssl/certs/corp-ca.pem"
   }
 }
 ```
@@ -533,24 +524,77 @@ registry without anybody finding out.
 |---|---|---|
 | `registry` | **yes** | The npm registry URL to install from — your internal Artifactory. |
 | `cafile` | no | PEM file for the internal CA. Present: TLS verification stays on. Absent: `npm config set strict-ssl false`, with a warning every run. |
-| `marketplaces` | no | Merged verbatim into `extraKnownMarketplaces` in `~/.claude/settings.json`. |
-| `env` | no | Merged into `env` in `~/.claude/settings.json`. Defaults to the three keys above. |
 
-Anything else in the file is ignored, and the whole `claude` section is validated
-before a single npm command runs. `cafile` in particular is checked for existence
-up front, because `npm config set cafile /typo` succeeds and the mistake resurfaces
-much later as an unrelated TLS error from the install step.
+Two keys, and no more. Anything else in the file is ignored, and the whole
+`claude` section is validated before a single npm command runs. `cafile` in
+particular is checked for existence up front, because `npm config set cafile
+/typo` succeeds and the mistake resurfaces much later as an unrelated TLS error
+from the install step.
 
-**The three `env` keys are the 256K context profile, and they are a default
-rather than a hardcode.** A config file with no `env` still gets them; a site that
-needs different numbers, or an extra variable such as `ANTHROPIC_BASE_URL` for a
-gateway, sets them here and no code changes. **The values are strings** —
-`"256000"`, not `256000`. Claude Code types `settings.json` `env` as string to
-string, so a JSON number writes cleanly, parses cleanly and does nothing at all.
-`lmi` refuses one with exit 2 rather than letting you discover that a month later.
+Everything that ends up in `~/.claude/settings.json` — the marketplaces, the
+256K context profile, the gateway URL — lives in the settings template below,
+not here. It used to be `marketplaces` and `env` keys in this file, which was
+two spellings for one thing.
 
-The auth token is **not** a config key. The file is site-wide and meant to be
-copied between machines; the token is per user, and it is prompted for.
+The auth token is **not** a config key either. This file is site-wide and meant
+to be copied between machines; the token is per user, and it is prompted for.
+
+### The settings template
+
+Beside the `lmi.json`, in the same folder, sits a **`settings.json`**. It is a
+raw Claude Code settings document, and it is what the command installs as
+`~/.claude/settings.json` — verbatim, with `env.ANTHROPIC_AUTH_TOKEN` replaced
+by the token you type and `CLAUDE_CODE_GIT_BASH_PATH` added on Windows.
+
+[`examples/settings.json`](examples/settings.json) is a complete one; this
+repository also ships a minimal [`config/settings.json`](config/settings.json)
+beside `config/lmi.json`, and a site replaces it.
+
+```json
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "<Token from the user input>",
+    "ANTHROPIC_BASE_URL": "https://api.XXX.com",
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "256000",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "204800",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000"
+  },
+  "extraKnownMarketplaces": {
+    "my-marketplace": {
+      "source": {"source": "url", "url": "https://git.example.com/m.git"}
+    }
+  },
+  "theme": "dark"
+}
+```
+
+**It is found beside whichever `lmi.json` won**, not at a fixed path. `--config
+/site/lmi.json` reads `/site/settings.json`; `$LMI_CONFIG` brings its own; the
+`./config/lmi.json` default reads `./config/settings.json`. One folder, one
+site — a template resolved against the working directory instead could pair one
+site's registry with another site's gateway and report success.
+
+**What you write is what lands.** `lmi` validates only that the file is a JSON
+object and that `env` maps strings to strings; every other key passes through
+unexamined, because whether `mdel` is a typo for `model` is Claude Code's
+schema's business and it reports that better than a duplicated validator would.
+It is also what lets a setting Anthropic adds tomorrow work today, without `lmi`
+learning it first. `extraKnownMarketplaces` is spelled exactly that way — any
+other spelling writes cleanly, parses cleanly and is ignored.
+
+**`env` values are strings** — `"256000"`, not `256000`. Claude Code types
+`settings.json` `env` as string to string, so a JSON number writes cleanly,
+parses cleanly and does nothing at all. `lmi` refuses one with exit 2 rather
+than letting you discover that a month later.
+
+**A missing `settings.json` is exit 2**, before npm runs. Installing the binary
+and skipping the settings would leave a machine with no token, no base URL and
+no marketplaces while the command reported success.
+
+The `ANTHROPIC_AUTH_TOKEN` value in the file is a **placeholder** and is meant
+to stay one — do not commit a real token to it. The prompt refuses a blank
+answer precisely so the placeholder can never be installed as though it were a
+token.
 
 ### What it asks
 
@@ -560,7 +604,7 @@ machine changes**. Abandon the command at a prompt and nothing has been touched.
 | Question | When | A blank answer |
 |---|---|---|
 | `Repair the installation?` | only when `claude` is already on PATH — the resolved path is printed first | keeps the default, **no**: exit 0, no npm command, no backup, no write |
-| `Claude Code auth token` | on every run that is going to do anything — i.e. once the repair question, if it was asked at all, has been answered yes. Read with `getpass`, so it is never echoed into your scrollback | **keeps whatever token is already configured**, or skips it if there is none |
+| `Claude Code auth token` | on every run that is going to do anything — i.e. once the repair question, if it was asked at all, has been answered yes. Read with `getpass`, so it is never echoed into your scrollback | **is refused.** Asked again, up to three times, then exit 2 with nothing changed |
 | `Full path to bash.exe` | Windows only, and only when no Git Bash was found | skips it, with a `[WARN]` naming `CLAUDE_CODE_GIT_BASH_PATH` |
 
 Declining the repair is not an error. You answered the question; the answer was
@@ -568,17 +612,19 @@ no; exit 0.
 
 ### What it writes
 
-`~/.claude/settings.json`, merged one level down rather than at the document
-root, so `model`, `theme`, an `env` key `lmi` does not manage and a marketplace
-under another name all survive:
+`~/.claude/settings.json` — your template, whole. Any file already there is
+copied to `settings.json.bk_<timestamp>` beside itself and then **replaced**,
+not merged into. Two values are written in on the way past: `ANTHROPIC_AUTH_TOKEN`
+gets the token you typed, and `CLAUDE_CODE_GIT_BASH_PATH` is added on Windows.
 
-- `env` — the 256K profile, plus `ANTHROPIC_AUTH_TOKEN` if you gave one, plus
-  `CLAUDE_CODE_GIT_BASH_PATH` on Windows.
-- `extraKnownMarketplaces` — your `marketplaces` object, passed through
-  unaltered. `lmi` checks only that it is an object; Claude Code's own schema
-  reports a malformed source better than a duplicated validator would.
+Replacing rather than merging is the point of the template — a site's settings
+are the file the operator wrote, rather than that file plus an unknown residue
+of every earlier install. It does mean **`model`, `theme` and any other key you
+had hand-edited into `~/.claude/settings.json` are gone**, surviving only in the
+timestamped backup. Put anything you want kept into the template. Backups are
+never deleted; remove them yourself once you are happy.
 
-A `settings.json` that ends up holding the token is mode `600`, and it is `600`
+`settings.json` is mode `600`, and it is `600`
 for the whole of its existence: the temp file it is written through is *created*
 `600` rather than created at the umask default and fixed afterwards, and the mode
 is settled before the atomic replace publishes it. `~/.claude/` is `0755`, so the
@@ -596,9 +642,12 @@ document for a no-op. A key present but `false` is corrected.
 
 Both writes are atomic — temp file beside the target, then `os.replace`. A
 half-written `settings.json` is invalid JSON and Claude Code will not start
-without it. And an existing file that is **already** invalid JSON is refused with
-exit 3 and left byte-identical, rather than treated as an empty document and
-overwritten: that would silently discard everything you had hand-edited.
+without it. An existing `~/.claude.json` that is **already** invalid JSON is
+refused with exit 3 and left byte-identical, rather than treated as an empty
+document and overwritten: that would silently discard everything you had
+hand-edited. `~/.claude/settings.json` is the exception, and only because
+nothing parses it any more — it is backed up byte for byte and replaced, so an
+unparseable one no longer blocks an install that was going to overwrite it.
 
 ### Backups
 
@@ -699,9 +748,9 @@ report that the install failed.
 provisioning script off it as "partially done" — or as "nothing happened". Both
 extremes occur:
 
-- `~/.claude/settings.json` is *read* before any npm command runs — that is how
-  the command knows whether a token is already configured — so an unparseable
-  one **there** is exit 3 with nothing installed and nothing changed.
+- `~/.claude/settings.json` cannot be *backed up* — an unwritable `~/.claude/`,
+  say — and that is checked before it is replaced, so the failure **there** is
+  exit 3 with npm already done and the settings untouched.
 - `~/.claude.json` is read *last*, after npm has installed Claude Code and after
   `settings.json` has been backed up and rewritten. An unparseable one **there**
   is exit 3 with the install done, the settings replaced, a
@@ -1029,8 +1078,14 @@ config/lmi.json       the config lmi install claude reads by default, when run
                       (see lmi upgrade, above) - so lmi upgrade run against
                       this checkout stops with 'the config file has no "lmi"
                       section' and prints the pasteable example
+config/settings.json  the settings.json template installed as
+                      ~/.claude/settings.json, read from beside the lmi.json
+                      above. A site replaces it
 examples/lmi.json     a complete lmi.json, with both "claude" and "lmi"
                       sections, to copy and edit
+examples/settings.json
+                      a complete settings.json template, with a gateway URL,
+                      a marketplace and a status line, to copy and edit
 examples/settings_switch.json
                       a settings.json fragment for lmi config switch, to copy
                       to config/settings_switch.json and edit
