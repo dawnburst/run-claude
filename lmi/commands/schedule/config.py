@@ -53,6 +53,10 @@ def add_arguments(parser):
         "-r", dest="resume", action="store_true",
         help="resume: keep the existing state file instead of backing it up",
     )
+    parser.add_argument(
+        "-v", "--verbose", dest="verbose", action="store_true",
+        help="log the prompt and render claude's activity live as it happens",
+    )
 
 
 @dataclass
@@ -67,6 +71,7 @@ class Config:
     log_arg: Optional[str] = None
     state_arg: Optional[str] = None
     resume: bool = False
+    verbose: bool = False
 
 
 def build_config(args):
@@ -79,6 +84,8 @@ def build_config(args):
     at = _parse_at(args)
     work_dir = _resolve_workdir(args)
     prompt_text, prompt_file = _classify_prompt(args)
+    user_flags = shlex.split(args.flags) if args.flags else []
+    _reject_output_format(args.verbose, user_flags)
     return Config(
         prompt_text=prompt_text,
         prompt_file=prompt_file,
@@ -86,11 +93,38 @@ def build_config(args):
         interval_min=interval_min,
         max_runs=max_runs,
         work_dir=work_dir,
-        user_flags=shlex.split(args.flags) if args.flags else [],
+        user_flags=user_flags,
         log_arg=args.log,
         state_arg=args.state,
         resume=args.resume,
+        verbose=args.verbose,
     )
+
+
+def _reject_output_format(verbose, user_flags):
+    """Refuse -v together with an --output-format of the user's own.
+
+    -f is appended after lmi's flags and claude takes the last occurrence of a
+    repeated option, so -f "--output-format json" silently overrides the
+    stream-json that -v's renderer depends on: the activity block goes quiet
+    and the iteration still exits 0. This is validation, not flag rewriting -
+    lmi never edits or filters -f, it only declines a pair it cannot honour.
+
+    A duplicate --verbose is deliberately NOT rejected here. That flag is a
+    boolean, so a second occurrence is idempotent; --output-format is
+    last-wins. Generalising this into flag deduplication would mean lmi
+    learning claude's flag grammar, and risk dropping a user's flag silently.
+    """
+    if not verbose:
+        return
+    for token in user_flags:
+        if token == "--output-format" or token.startswith("--output-format="):
+            raise LmiError(
+                "-v already sets --output-format stream-json, so it cannot be "
+                "combined with an --output-format in -f. Drop one of the two: "
+                "-v for the rendered activity log, or -f for your own format.",
+                EXIT_USAGE,
+            )
 
 
 def _loop_shape(args):

@@ -53,10 +53,58 @@ if rec:
 else:
     sys.stdin.read()
 
-print("fake claude call %d" % n)
-out = os.environ.get("FAKE_OUT")
-if out:
-    print(out)
+stream = os.environ.get("FAKE_STREAM")
+if stream:
+    # Speak stream-json, the way `claude -p --output-format stream-json` does,
+    # so the -v path is exercised through the renderer rather than through its
+    # non-JSON fallback.
+    import json as _json
+    def emit(event):
+        sys.stdout.write(_json.dumps(event) + "\\n")
+        sys.stdout.flush()
+    emit({{"type": "system", "subtype": "init", "model": "fake-model",
+           "session_id": "s%d" % n, "cwd": os.getcwd()}})
+    emit({{"type": "assistant", "message": {{"content": [
+        {{"type": "text", "text": "fake claude call %d" % n}}]}}}})
+
+    marker = os.environ.get("FAKE_LIVE_MARKER")
+    if marker:
+        # Liveness: block until the runner has LOGGED the line above. Under a
+        # capture-then-replay implementation nothing is logged until this
+        # process exits, so the marker never appears and the second event is
+        # never emitted - which is exactly what the test asserts on. Bounded,
+        # so a regression fails cleanly instead of hanging the suite.
+        import time as _time
+        deadline = _time.time() + 5.0
+        while not os.path.exists(marker) and _time.time() < deadline:
+            _time.sleep(0.01)
+        # Only if the marker really appeared. Emitting it either way would
+        # make the test pass under capture-then-replay too - it would simply
+        # wait out the deadline first - which is a false green, not a test.
+        if os.path.exists(marker):
+            emit({{"type": "assistant", "message": {{"content": [
+                {{"type": "tool_use", "name": "Edit",
+                  "input": {{"file_path": "after-the-marker.py"}}}}]}}}})
+
+    tail = os.environ.get("FAKE_STREAM_QUOTA_TAIL")
+    if tail:
+        # The wording placed PAST the renderer's clip width, which is what a
+        # real long explanation from claude looks like. The raw JSON line
+        # carries it; the rendered line cannot. That is what makes the [QUOTA]
+        # test discriminate between scanning the raw line and the rendered
+        # one - with a short message both scans find it, and the test is a
+        # false green.
+        emit({{"type": "assistant", "message": {{"content": [
+            {{"type": "text", "text": ("padding " * 40) + tail}}]}}}})
+
+    emit({{"type": "result", "subtype": "success", "is_error": False,
+           "num_turns": 2, "duration_ms": 1234,
+           "result": os.environ.get("FAKE_STREAM_RESULT", "done")}})
+else:
+    print("fake claude call %d" % n)
+    out = os.environ.get("FAKE_OUT")
+    if out:
+        print(out)
 
 sf = os.environ.get("FAKE_STATE_FILE")
 if sf:

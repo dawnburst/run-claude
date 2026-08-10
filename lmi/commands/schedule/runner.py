@@ -15,9 +15,18 @@ from ...core.lock import LockBusy, LockUnusable, single_instance_lock
 from ...core.log import Logger
 from . import paths, prompt, state
 from .config import AT_FORMAT, build_config
+from .stream import Renderer
 from .exit_codes import EXIT_CALL_FAILED, EXIT_INTERNAL, EXIT_LOCKED
 
 DEFAULT_FLAGS = ["--allowed-tools=Edit,Write"]
+
+# What -v adds. --output-format stream-json is what makes claude emit an event
+# per step instead of one block of text at the end, which is the whole of how a
+# running iteration becomes watchable; --verbose is passed alongside it because
+# stream-json in -p mode has historically required it, and a duplicate boolean
+# costs nothing if it turns out not to. config._reject_output_format refuses a
+# user --output-format in -f, because -f is appended last and would win.
+VERBOSE_FLAGS = ["--output-format", "stream-json", "--verbose"]
 
 # The rule that opens and closes the header and the summary block.
 RULE = "=" * 75
@@ -77,6 +86,79 @@ def run(args):
         return EXIT_INTERNAL
 
 
+class PromptLog:
+    """Logs the prompt under -v: in full the first time, the state after.
+
+    The four parts of the composed document are the header, the state
+    protocol, the inlined state file and the task. Only the state file changes
+    between iterations - the task is read once before the loop and the
+    protocol is a constant in prompt.py - so logging all four every time
+    repeats the same forty-odd lines for every iteration of the run.
+
+    `full_done` is "has the whole document been logged yet", NOT "is this
+    iteration 1". An iteration can die before prompt.compose - a vanished temp
+    workspace - and the loop deliberately survives that, so keying off the
+    iteration number would make iteration 2 claim the rest is "unchanged from
+    iteration 1" about text nobody ever wrote. Do not simplify this flag back
+    into `if n == 1`.
+    """
+
+    def __init__(self, verbose):
+        self.verbose = verbose
+        self.full_done = False
+
+    def emit(self, log, composed, state_body):
+        if not self.verbose:
+            return
+        if not self.full_done:
+            log.line("--- prompt sent to claude (full, %d lines) ---"
+                     % len(composed.splitlines()))
+            for line in composed.splitlines():
+                log.line(line)
+            log.line("--- end of prompt ---")
+            self.full_done = True
+            return
+        log.line("--- state sent to claude (header, protocol and task "
+                 "unchanged from the first logged prompt) ---")
+        for line in state_body.splitlines():
+            log.line(line)
+        log.line("--- end of state ---")
+
+
+def _pump(log, lines, render=None):
+    """Log every line as it arrives. True if any smells like a quota problem.
+
+    The one place output reaches the log, so the two invocation paths - a
+    finished file's splitlines(), and a live pipe - cannot drift apart in how
+    they log or in what they scan.
+
+    The quota scan reads the RAW line, never the rendered one. Under
+    stream-json the wording lives inside a JSON error or result event, and a
+    renderer that summarised such an event without carrying its message
+    through would silently disable the [QUOTA] tag. Scanning before rendering
+    makes that impossible however the renderer later changes.
+    """
+    quota = False
+    for raw in lines:
+        if QUOTA_RE.search(raw):
+            quota = True
+        log.line(render(raw) if render else raw)
+    return quota
+
+
+def _decoded_lines(pipe):
+    """The child's stdout, one decoded line at a time, as they arrive.
+
+    Bytes decoded here rather than through a text-mode Popen: text mode
+    decodes with the locale codepage, which on the site's Windows machines is
+    not UTF-8, so the streaming path would disagree with the captured path
+    about the same bytes. errors="replace" matches what the captured path's
+    read_text does - a half-written line must never end an iteration.
+    """
+    for chunk in pipe:
+        yield chunk.decode("utf-8", "replace").rstrip("\r\n")
+
+
 def _log_traceback(log):
     """Indent the current traceback into the log, one [ERROR] line each."""
     for line in traceback.format_exc().rstrip().splitlines():
@@ -84,7 +166,8 @@ def _log_traceback(log):
 
 
 def _claude_argv(cfg, state_path, claude):
-    return [claude, "-p"] + DEFAULT_FLAGS + \
+    verbose = VERBOSE_FLAGS if cfg.verbose else []
+    return [claude, "-p"] + DEFAULT_FLAGS + verbose + \
         ["--add-dir", str(state_path.parent)] + cfg.user_flags
 
 
@@ -109,6 +192,11 @@ def _log_header(cfg, log, state_path, argv):
     log.line("Interval  : %d minute/s" % cfg.interval_min)
     if cfg.at is not None:
         log.line("Start time: " + cfg.at.strftime(AT_FORMAT))
+    if cfg.verbose:
+        # The two claude flags -v adds are already visible on the Flags line
+        # above. This says what lmi itself is doing differently, which argv
+        # cannot show.
+        log.line("Verbose   : on - prompt logged, claude activity rendered live")
     log.line(RULE)
 
 
@@ -167,6 +255,7 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
     _wait_until(cfg.at, log)
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="lmi-schedule-"))
+    prompt_log = PromptLog(cfg.verbose)
     runs = fails = 0
     try:
         for iteration in range(1, cfg.max_runs + 1):
@@ -178,7 +267,7 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
 
             rc = _iteration_rc(
                 cfg, log, state_path, argv, task, tmp_dir, iteration,
-                label, started
+                label, started, prompt_log
             )
             runs += 1
             if not _log_iteration_result(
@@ -203,11 +292,13 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
     return EXIT_CALL_FAILED if fails else EXIT_OK
 
 
-def _iteration_rc(cfg, log, state_path, argv, task, tmp_dir, n, label, started):
+def _iteration_rc(cfg, log, state_path, argv, task, tmp_dir, n, label, started,
+                  prompt_log):
     """One iteration's exit code, with invariant 2 enforced around it."""
     try:
         return _one_iteration(
-            cfg, log, state_path, argv, task, tmp_dir, n, label, started
+            cfg, log, state_path, argv, task, tmp_dir, n, label, started,
+            prompt_log
         )
     except LmiError:
         # A usage error is deterministic - a prompt file that is not UTF-8
@@ -236,9 +327,11 @@ def _sleep_between(cfg, log):
     time.sleep(secs)
 
 
-def _one_iteration(cfg, log, state_path, argv, task, tmp_dir, n, label, started):
+def _one_iteration(cfg, log, state_path, argv, task, tmp_dir, n, label, started,
+                   prompt_log):
     body = state.read_body(state_path)
     composed = prompt.compose(cfg, state_path, label, started, body, task)
+    prompt_log.emit(log, composed, body)
 
     prompt_path = tmp_dir / ("prompt-%d.txt" % n)
     # open(), not Path.write_text(..., newline=...): that keyword arrived in
@@ -248,21 +341,12 @@ def _one_iteration(cfg, log, state_path, argv, task, tmp_dir, n, label, started)
         fh.write(composed)
     out_path = tmp_dir / ("out-%d.txt" % n)
 
-    log.line("--- claude output ---")
-    with open(prompt_path, "rb") as stdin_fh, \
-            open(out_path, "wb") as out_fh:
-        # check=False by default: a non-zero exit must be returned, never
-        # raised. That is invariant 2 - a failing call must not end the run.
-        completed = subprocess.run(
-            argv, stdin=stdin_fh, stdout=out_fh,
-            stderr=subprocess.STDOUT, cwd=str(cfg.work_dir),
-        )
-    output = out_path.read_text(encoding="utf-8", errors="replace")
-    for line in output.splitlines():
-        log.line(line)
-    log.line("--- end of claude output ---")
+    if cfg.verbose:
+        rc, quota = _stream_claude(cfg, log, argv, prompt_path)
+    else:
+        rc, quota = _capture_claude(cfg, log, argv, prompt_path, out_path)
 
-    if QUOTA_RE.search(output):
+    if quota:
         # Tagged inline: [QUOTA] is this command's vocabulary, not something
         # the shared Logger should know about.
         log.line(
@@ -273,7 +357,45 @@ def _one_iteration(cfg, log, state_path, argv, task, tmp_dir, n, label, started)
             "[QUOTA] *** Check your usage before trusting the result of this "
             "iteration."
         )
-    return completed.returncode
+    return rc
+
+
+def _capture_claude(cfg, log, argv, prompt_path, out_path):
+    """Run claude to a file and replay it afterwards. (exit code, quota?)"""
+    log.line("--- claude output ---")
+    with open(prompt_path, "rb") as stdin_fh, \
+            open(out_path, "wb") as out_fh:
+        # check=False by default: a non-zero exit must be returned, never
+        # raised. That is invariant 2 - a failing call must not end the run.
+        completed = subprocess.run(
+            argv, stdin=stdin_fh, stdout=out_fh,
+            stderr=subprocess.STDOUT, cwd=str(cfg.work_dir),
+        )
+    output = out_path.read_text(encoding="utf-8", errors="replace")
+    quota = _pump(log, output.splitlines())
+    log.line("--- end of claude output ---")
+    return completed.returncode, quota
+
+
+def _stream_claude(cfg, log, argv, prompt_path):
+    """Run claude on a pipe, rendering events as they arrive.
+
+    No out-N.txt here: there is nothing to capture to a file when the lines
+    are consumed as they are produced. Popen is used as a context manager so
+    the pipe is closed and the child waited on even if the loop raises -
+    without that, an exception mid-stream leaves claude running while
+    _iteration_rc records a skip and the loop moves on.
+    """
+    log.line("--- claude activity ---")
+    renderer = Renderer(log)
+    with open(prompt_path, "rb") as stdin_fh, \
+            subprocess.Popen(
+                argv, stdin=stdin_fh, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, cwd=str(cfg.work_dir),
+            ) as proc:
+        quota = _pump(log, _decoded_lines(proc.stdout), renderer.render)
+    log.line("--- end of claude activity ---")
+    return proc.returncode, quota
 
 
 def _wait_until(target, log):

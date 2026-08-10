@@ -177,3 +177,32 @@ def test_the_example_config_is_accepted_by_the_upgrade_validator(tmp_path):
     cfg = upgrade_config.build_config(Args(str(staged)))
     assert cfg.index
     assert cfg.cafile == pem
+
+
+def test_the_readme_documents_verbose_mode():
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    for needle in ("Verbose mode", "-v", "--output-format stream-json"):
+        assert needle in readme, "README.md must document %s" % needle
+
+
+def test_the_readme_says_verbose_costs_no_tokens():
+    """MANDATORY. The first thing anyone asks about -v is whether a bigger log
+    grows the next iteration's context. It does not - the log is written by
+    lmi and read back by nothing - but that is not deducible from the flag, so
+    the answer has to be written down or it gets asked again."""
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    start = readme.index("### Verbose mode")
+    window = readme[start:start + 3000]
+    assert "costs no tokens" in window or "no tokens" in window
+
+
+def test_claude_md_records_why_the_full_prompt_flag_is_not_an_iteration_number():
+    """MANDATORY. Item 27 is one boolean, and inverting it produces a log that
+    looks complete. Like item 22 it exists nowhere but CLAUDE.md: no symptom,
+    no failing command, and only someone who knows what the header should have
+    said would ever notice."""
+    text = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "full_done" in text
+    start = text.index("full_done")
+    window = text[start:start + 900]
+    assert "iteration 1" in window

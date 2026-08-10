@@ -11,7 +11,8 @@ def _args(**kw):
     """A Namespace shaped like argparse produces, with defaults."""
     import argparse
     base = dict(prompt="do a thing", at=None, interval=None, count=None,
-                workdir=None, flags="", log=None, state=None, resume=False)
+                workdir=None, flags="", log=None, state=None, resume=False,
+                verbose=False)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -163,3 +164,43 @@ def test_unquoted_two_token_at_is_rejected():
     with pytest.raises(SystemExit) as exc:
         main(["schedule", "x", "-t", "2026-08-05", "22:00"])
     assert exc.value.code == 2
+
+
+def test_verbose_is_off_unless_asked_for():
+    assert build_config(_args()).verbose is False
+
+
+def test_v_turns_verbose_on():
+    assert build_config(_args(verbose=True)).verbose is True
+
+
+def test_verbose_with_an_output_format_in_f_is_a_usage_error():
+    """MANDATORY. -f is appended after lmi's own flags and claude takes the
+    last occurrence of a repeated option, so -f "--output-format json"
+    overrides the stream-json that -v relies on. The renderer is then handed
+    something it cannot parse. Silent: the activity block goes quiet and the
+    iteration still reports exit 0, so nothing distinguishes "claude did
+    nothing worth showing" from "lmi could not read what claude said"."""
+    for flags in ('--output-format json',
+                  '--output-format=json',
+                  '--model opus --output-format text'):
+        with pytest.raises(LmiError) as exc:
+            build_config(_args(verbose=True, flags=flags))
+        assert exc.value.code == 2
+        assert "--output-format" in str(exc.value)
+        assert "-v" in str(exc.value)
+
+
+def test_an_output_format_in_f_is_fine_without_verbose():
+    """Without -v lmi sets no output format, so there is nothing to collide
+    with and the flag is the user's business."""
+    cfg = build_config(_args(flags="--output-format json"))
+    assert cfg.user_flags == ["--output-format", "json"]
+
+
+def test_a_duplicate_verbose_in_f_is_allowed():
+    """--verbose is a boolean, so a second occurrence is idempotent - unlike
+    --output-format, which is last-wins. Deduplicating it would mean lmi
+    learning claude's flag grammar, and risk silently dropping a user flag."""
+    cfg = build_config(_args(verbose=True, flags="--verbose"))
+    assert cfg.verbose is True and cfg.user_flags == ["--verbose"]
