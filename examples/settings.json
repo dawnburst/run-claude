@@ -1,0 +1,32 @@
+{
+  "autoUpdatesChannel": "latest",
+  "enabledPlugins": {},
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "<Token from the user input>",
+    "ANTHROPIC_BASE_URL": "https://api.XXX.com",
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "256000",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "204800",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000",
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "0",
+    "DISABLE_TELEMETRY": "1",
+    "DISABLE_ERROR_REPORTING": "1",
+    "DISABLE_AUTOUPDATER": "0"
+  },
+
+  "extraKnownMarketplaces": {
+    "my-marketplace": {
+      "source": {
+        "source": "url",
+        "url": "https://XXX@XXX.XXX.XXX:marketplace/my-marketplace.git"
+      }
+    }
+  },
+
+  "statusLine": {
+    "type": "command",
+    "command": "node ~/.claude/statusline.js"
+  },
+  
+  "theme": "dark"
+ 
+}
