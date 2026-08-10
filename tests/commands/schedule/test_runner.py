@@ -393,3 +393,111 @@ def test_without_verbose_the_command_line_is_untouched(tmp_path, fake_claude):
     argv = (fake_claude.dir / "argv-1.txt").read_text().splitlines()
     assert "--output-format" not in argv
     assert "--verbose" not in argv
+
+
+def test_verbose_renders_claude_events_into_the_log(tmp_path, fake_claude,
+                                                    monkeypatch):
+    monkeypatch.setenv("FAKE_STREAM", "1")
+    assert main(["schedule", "x", "-d", str(tmp_path), "-v"]) == 0
+    body = _log_body(tmp_path)
+    assert "--- claude activity ---" in body
+    assert "[claude] init" in body
+    assert "fake claude call 1" in body
+    assert "[claude] done" in body
+    # The raw JSON must not reach the log - that is what rendering is for.
+    assert '{"type"' not in body
+
+
+def test_verbose_never_uses_the_capture_path(tmp_path, fake_claude,
+                                             monkeypatch):
+    """There is nothing to capture to a file when the lines are consumed as
+    they arrive, so -v must not reach _capture_claude at all. Asserting on the
+    absence of out-*.txt cannot work - the temp workspace is deleted when the
+    run ends - so the seam is the function itself."""
+    from lmi.commands.schedule import runner as runner_mod
+
+    def forbidden(*a, **kw):
+        raise AssertionError("-v took the capture path")
+
+    monkeypatch.setattr(runner_mod, "_capture_claude", forbidden)
+    monkeypatch.setenv("FAKE_STREAM", "1")
+    assert main(["schedule", "x", "-d", str(tmp_path), "-v"]) == 0
+
+
+def test_without_verbose_the_capture_path_is_still_used(tmp_path, fake_claude,
+                                                       monkeypatch):
+    """The mirror of the above: the existing path must stay the default."""
+    from lmi.commands.schedule import runner as runner_mod
+
+    def forbidden(*a, **kw):
+        raise AssertionError("a run without -v took the streaming path")
+
+    monkeypatch.setattr(runner_mod, "_stream_claude", forbidden)
+    assert main(["schedule", "x", "-d", str(tmp_path)]) == 0
+
+
+def test_a_clipped_message_inside_a_json_event_is_still_flagged(
+        tmp_path, fake_claude, monkeypatch):
+    """MANDATORY.
+
+    The name of this test avoids every word in QUOTA_RE on purpose. pytest
+    names its temp directory after the test function, the fake reports that
+    directory as the session cwd, and the renderer puts the cwd in the init
+    line - so a test called test_quota_... matches on its own directory name
+    and passes whichever line the scan reads. That is how this test first
+    went green with the guard inverted. Under stream-json the usage-limit wording lives inside a
+    JSON event, and the renderer clips a long message. Scanning the RENDERED
+    line rather than the raw one silently disables [QUOTA] - the one tag that
+    tells an unattended run its result is not to be trusted.
+
+    The wording is deliberately placed past the clip width. With a short
+    message both scans find it and this test is a false green: it passed with
+    the guard inverted before that was fixed."""
+    monkeypatch.setenv("FAKE_STREAM", "1")
+    monkeypatch.setenv("FAKE_STREAM_QUOTA_TAIL", "Claude usage limit reached")
+    main(["schedule", "x", "-d", str(tmp_path), "-v"])
+    body = _log_body(tmp_path)
+    assert "[QUOTA]" in body
+    # And the premise: the rendered line really did lose the wording, so the
+    # tag can only have come from scanning the raw line.
+    activity = [ln for ln in body.splitlines() if ln.startswith("[claude]")]
+    assert not any("usage limit" in ln for ln in activity)
+
+
+def test_a_failing_verbose_iteration_does_not_stop_the_loop(
+        tmp_path, fake_claude, monkeypatch):
+    monkeypatch.setenv("FAKE_STREAM", "1")
+    monkeypatch.setenv("FAKE_RC", "1")
+    rc = main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "3", "-v"])
+    assert rc == 1
+    assert _count(fake_claude) == 3
+    assert "3 run/s, 0 succeeded, 3 failed." in _log_body(tmp_path)
+
+
+def test_claude_output_is_logged_while_the_iteration_is_still_running(
+        tmp_path, fake_claude, monkeypatch):
+    """MANDATORY. The whole point of -v: output must reach the log as claude
+    produces it, not after it exits. The fake blocks until the runner has
+    logged its first event, then emits a second one. Under capture-then-replay
+    nothing is logged until the process exits, so the fake times out and the
+    second event never appears.
+
+    This is the only test that can tell live from buffered, and the only one
+    with a timing element - the fake's wait is bounded, so a regression fails
+    cleanly rather than hanging the suite."""
+    from lmi.core.log import Logger
+
+    marker = tmp_path / "logged-the-first-line"
+    real_line = Logger.line
+
+    def line(self, msg=""):
+        real_line(self, msg)
+        if "fake claude call 1" in msg:
+            marker.touch()
+
+    monkeypatch.setattr(Logger, "line", line)
+    monkeypatch.setenv("FAKE_STREAM", "1")
+    monkeypatch.setenv("FAKE_LIVE_MARKER", str(marker))
+
+    assert main(["schedule", "x", "-d", str(tmp_path), "-v"]) == 0
+    assert "after-the-marker.py" in _log_body(tmp_path)

@@ -15,6 +15,7 @@ from ...core.lock import LockBusy, LockUnusable, single_instance_lock
 from ...core.log import Logger
 from . import paths, prompt, state
 from .config import AT_FORMAT, build_config
+from .stream import Renderer
 from .exit_codes import EXIT_CALL_FAILED, EXIT_INTERNAL, EXIT_LOCKED
 
 DEFAULT_FLAGS = ["--allowed-tools=Edit,Write"]
@@ -83,6 +84,40 @@ def run(args):
         log.error("the runner itself failed - this is a bug in lmi:")
         _log_traceback(log)
         return EXIT_INTERNAL
+
+
+def _pump(log, lines, render=None):
+    """Log every line as it arrives. True if any smells like a quota problem.
+
+    The one place output reaches the log, so the two invocation paths - a
+    finished file's splitlines(), and a live pipe - cannot drift apart in how
+    they log or in what they scan.
+
+    The quota scan reads the RAW line, never the rendered one. Under
+    stream-json the wording lives inside a JSON error or result event, and a
+    renderer that summarised such an event without carrying its message
+    through would silently disable the [QUOTA] tag. Scanning before rendering
+    makes that impossible however the renderer later changes.
+    """
+    quota = False
+    for raw in lines:
+        if QUOTA_RE.search(raw):
+            quota = True
+        log.line(render(raw) if render else raw)
+    return quota
+
+
+def _decoded_lines(pipe):
+    """The child's stdout, one decoded line at a time, as they arrive.
+
+    Bytes decoded here rather than through a text-mode Popen: text mode
+    decodes with the locale codepage, which on the site's Windows machines is
+    not UTF-8, so the streaming path would disagree with the captured path
+    about the same bytes. errors="replace" matches what the captured path's
+    read_text does - a half-written line must never end an iteration.
+    """
+    for chunk in pipe:
+        yield chunk.decode("utf-8", "replace").rstrip("\r\n")
 
 
 def _log_traceback(log):
@@ -257,21 +292,12 @@ def _one_iteration(cfg, log, state_path, argv, task, tmp_dir, n, label, started)
         fh.write(composed)
     out_path = tmp_dir / ("out-%d.txt" % n)
 
-    log.line("--- claude output ---")
-    with open(prompt_path, "rb") as stdin_fh, \
-            open(out_path, "wb") as out_fh:
-        # check=False by default: a non-zero exit must be returned, never
-        # raised. That is invariant 2 - a failing call must not end the run.
-        completed = subprocess.run(
-            argv, stdin=stdin_fh, stdout=out_fh,
-            stderr=subprocess.STDOUT, cwd=str(cfg.work_dir),
-        )
-    output = out_path.read_text(encoding="utf-8", errors="replace")
-    for line in output.splitlines():
-        log.line(line)
-    log.line("--- end of claude output ---")
+    if cfg.verbose:
+        rc, quota = _stream_claude(cfg, log, argv, prompt_path)
+    else:
+        rc, quota = _capture_claude(cfg, log, argv, prompt_path, out_path)
 
-    if QUOTA_RE.search(output):
+    if quota:
         # Tagged inline: [QUOTA] is this command's vocabulary, not something
         # the shared Logger should know about.
         log.line(
@@ -282,7 +308,45 @@ def _one_iteration(cfg, log, state_path, argv, task, tmp_dir, n, label, started)
             "[QUOTA] *** Check your usage before trusting the result of this "
             "iteration."
         )
-    return completed.returncode
+    return rc
+
+
+def _capture_claude(cfg, log, argv, prompt_path, out_path):
+    """Run claude to a file and replay it afterwards. (exit code, quota?)"""
+    log.line("--- claude output ---")
+    with open(prompt_path, "rb") as stdin_fh, \
+            open(out_path, "wb") as out_fh:
+        # check=False by default: a non-zero exit must be returned, never
+        # raised. That is invariant 2 - a failing call must not end the run.
+        completed = subprocess.run(
+            argv, stdin=stdin_fh, stdout=out_fh,
+            stderr=subprocess.STDOUT, cwd=str(cfg.work_dir),
+        )
+    output = out_path.read_text(encoding="utf-8", errors="replace")
+    quota = _pump(log, output.splitlines())
+    log.line("--- end of claude output ---")
+    return completed.returncode, quota
+
+
+def _stream_claude(cfg, log, argv, prompt_path):
+    """Run claude on a pipe, rendering events as they arrive.
+
+    No out-N.txt here: there is nothing to capture to a file when the lines
+    are consumed as they are produced. Popen is used as a context manager so
+    the pipe is closed and the child waited on even if the loop raises -
+    without that, an exception mid-stream leaves claude running while
+    _iteration_rc records a skip and the loop moves on.
+    """
+    log.line("--- claude activity ---")
+    renderer = Renderer(log)
+    with open(prompt_path, "rb") as stdin_fh, \
+            subprocess.Popen(
+                argv, stdin=stdin_fh, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, cwd=str(cfg.work_dir),
+            ) as proc:
+        quota = _pump(log, _decoded_lines(proc.stdout), renderer.render)
+    log.line("--- end of claude activity ---")
+    return proc.returncode, quota
 
 
 def _wait_until(target, log):
