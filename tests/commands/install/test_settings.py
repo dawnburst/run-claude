@@ -1,8 +1,11 @@
 """What goes into ~/.claude/settings.json."""
 
+import copy
 from pathlib import Path
 
-from lmi.commands.install import settings
+from lmi.commands.install import gitbash, settings
+
+PLACEHOLDER = "<Token from the user input>"
 
 
 def test_path_is_under_home(home):
@@ -13,7 +16,10 @@ def test_the_marketplaces_key_is_spelled_exactly():
     """MANDATORY. Silent failure: marketplaces never register.
 
     Verified against the Claude Code 2.1.222 settings schema. Any other spelling
-    writes cleanly, parses cleanly, and is ignored.
+    writes cleanly, parses cleanly, and is ignored. Nothing merges through this
+    constant any more - the operator writes the key by hand in the template -
+    which makes the README spelling it correctly matter more, not less. It is
+    what tests/test_docs.py pins the README against.
     """
     assert settings.MARKETPLACES_KEY == "extraKnownMarketplaces"
 
@@ -22,65 +28,74 @@ def test_the_token_key_is_spelled_exactly():
     assert settings.TOKEN_KEY == "ANTHROPIC_AUTH_TOKEN"
 
 
-def test_unrelated_keys_survive():
-    doc = {"model": "opus[1m]", "theme": "dark", "enabledPlugins": {"a": True}}
-    merged = settings.merge(doc, {"X": "1"}, {})
-    assert merged["model"] == "opus[1m]"
-    assert merged["theme"] == "dark"
-    assert merged["enabledPlugins"] == {"a": True}
+def test_the_token_lands_in_the_env_block():
+    doc = settings.compose({"env": {"ANTHROPIC_BASE_URL": "https://gw/"}},
+                           "sk-real", None)
+    assert doc["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-real"
+    assert doc["env"]["ANTHROPIC_BASE_URL"] == "https://gw/"
 
 
-def test_an_unmanaged_env_key_survives():
-    doc = {"env": {"SOMETHING_ELSE": "keep me"}}
-    merged = settings.merge(doc, {"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "256000"}, {})
-    assert merged["env"]["SOMETHING_ELSE"] == "keep me"
-    assert merged["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "256000"
+def test_the_placeholder_token_is_replaced():
+    """MANDATORY. Silent failure: every Claude Code call 401s.
+
+    The shipped and example templates carry a placeholder where the token goes.
+    Written through verbatim it looks configured at a glance, the install
+    reports success, and the error the user eventually sees points at the
+    gateway rather than at lmi.
+    """
+    doc = settings.compose({"env": {"ANTHROPIC_AUTH_TOKEN": PLACEHOLDER}},
+                           "sk-real", None)
+    assert doc["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-real"
+    assert PLACEHOLDER not in str(doc)
 
 
-def test_a_managed_env_key_is_overwritten_not_duplicated():
-    doc = {"env": {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "8000"}}
-    merged = settings.merge(doc, {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000"}, {})
-    assert merged["env"] == {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000"}
+def test_a_template_with_no_env_block_gets_one():
+    doc = settings.compose({"theme": "dark"}, "sk-real", None)
+    assert doc["env"] == {"ANTHROPIC_AUTH_TOKEN": "sk-real"}
+    assert doc["theme"] == "dark"
 
 
-def test_marketplaces_under_other_names_survive():
-    doc = {"extraKnownMarketplaces": {"existing": {"source": {"source": "github",
-                                                              "repo": "a/b"}}}}
-    merged = settings.merge(doc, {}, {"corp": {"source": {"source": "git",
-                                                          "url": "https://g/"}}})
-    assert set(merged["extraKnownMarketplaces"]) == {"existing", "corp"}
+def test_every_other_key_is_installed_verbatim():
+    """The whole point of the template: lmi does not model the schema."""
+    template = {
+        "autoUpdatesChannel": "latest",
+        "extraKnownMarketplaces": {
+            "corp": {"source": {"source": "url", "url": "https://g/m.git"}}
+        },
+        "statusLine": {"type": "command", "command": "node ~/.claude/s.js"},
+        "somethingAddedIn2027": [1, {"a": None}],
+    }
+    doc = settings.compose(template, "sk-real", None)
+    for key, value in template.items():
+        assert doc[key] == value
 
 
-def test_a_same_named_marketplace_is_replaced():
-    doc = {"extraKnownMarketplaces": {"corp": {"source": {"source": "github",
-                                                          "repo": "old/old"}}}}
-    new = {"corp": {"source": {"source": "git", "url": "https://new/"}}}
-    merged = settings.merge(doc, {}, new)
-    assert merged["extraKnownMarketplaces"]["corp"] == new["corp"]
+def test_the_template_is_not_mutated():
+    """The Config owns it, and a frozen dataclass does not freeze a dict."""
+    template = {"env": {"ANTHROPIC_AUTH_TOKEN": PLACEHOLDER}}
+    before = copy.deepcopy(template)
+    settings.compose(template, "sk-real", "C:\\Git\\bin\\bash.exe")
+    assert template == before
 
 
-def test_marketplaces_are_passed_through_unaltered():
-    """lmi does not model source types; upstream may add one tomorrow."""
-    exotic = {"m": {"source": {"source": "something-new-in-2027", "x": [1, {"y": 2}]}}}
-    merged = settings.merge({}, {}, exotic)
-    assert merged["extraKnownMarketplaces"] == exotic
+def test_nested_values_are_copied_not_shared():
+    """A shallow copy would let a later edit reach back into the Config."""
+    template = {"extraKnownMarketplaces": {"corp": {"source": {"url": "https://g/"}}}}
+    doc = settings.compose(template, "sk-real", None)
+    doc["extraKnownMarketplaces"]["corp"]["source"]["url"] = "https://changed/"
+    assert template["extraKnownMarketplaces"]["corp"]["source"]["url"] == "https://g/"
 
 
-def test_a_corrupt_env_value_of_the_wrong_type_is_replaced_not_merged():
-    """If env is somehow a list, merging into it would raise. Replace it."""
-    merged = settings.merge({"env": ["not", "a", "dict"]}, {"A": "1"}, {})
-    assert merged["env"] == {"A": "1"}
+def test_the_git_bash_path_lands_when_there_is_one():
+    doc = settings.compose({}, "sk-real", "C:\\Program Files\\Git\\bin\\bash.exe")
+    assert doc["env"][gitbash.VAR] == "C:\\Program Files\\Git\\bin\\bash.exe"
 
 
-def test_empty_inputs_add_no_keys():
-    assert settings.merge({}, {}, {}) == {}
+def test_no_git_bash_key_when_there_is_no_path():
+    """Off Windows nothing is probed, so the key must not appear at all.
 
-
-def test_token_of_reads_the_env_block():
-    assert settings.token_of({"env": {"ANTHROPIC_AUTH_TOKEN": "sk-x"}}) == "sk-x"
-
-
-def test_token_of_missing_is_none():
-    assert settings.token_of({}) is None
-    assert settings.token_of({"env": {}}) is None
-    assert settings.token_of({"env": "corrupt"}) is None
+    An empty or null value there is not the same as an absent one: Claude Code
+    would read it and fail to run a shell rather than falling back.
+    """
+    doc = settings.compose({}, "sk-real", None)
+    assert gitbash.VAR not in doc["env"]

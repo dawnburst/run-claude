@@ -16,10 +16,23 @@ class Args:
         self.target = target
 
 
-def write(path, doc):
+TEMPLATE = {"env": {"ANTHROPIC_BASE_URL": "https://gw.corp/"}}
+
+
+def write(path, doc, template=TEMPLATE):
+    """An lmi.json, plus the settings.json every valid config folder now has.
+
+    build_config loads the template as part of the Config, so a config file with
+    no neighbour is exit 2 - which is its own test below, not a trap for the
+    twenty tests here that are about something else.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(str(path), "w", encoding="utf-8", newline="\n") as fh:
         json.dump(doc, fh)
+    if template is not None:
+        with open(str(path.parent / "settings.json"), "w", encoding="utf-8",
+                  newline="\n") as fh:
+            json.dump(template, fh)
     return path
 
 
@@ -143,8 +156,6 @@ def test_no_config_anywhere_is_usage_with_an_example(tmp_path, monkeypatch):
     {"claude": {}},                                   # no registry
     {"claude": {"registry": ""}},                     # empty registry
     {"claude": {"registry": 5}},                      # registry not a string
-    {"claude": {"registry": "u", "marketplaces": []}},
-    {"claude": {"registry": "u", "env": []}},
 ])
 def test_rejected_shapes_are_usage_errors(tmp_path, monkeypatch, doc):
     path = write(tmp_path / "lmi.json", doc)
@@ -169,52 +180,52 @@ def test_a_utf8_bom_is_tolerated(tmp_path):
     path = tmp_path / "lmi.json"
     with open(str(path), "wb") as fh:
         fh.write(b"\xef\xbb\xbf" + json.dumps(MINIMAL).encode("utf-8"))
+    write(tmp_path / "other.json", MINIMAL)     # for the settings.json beside it
     assert config.build_config(Args(config=str(path))).registry.startswith("https://")
 
 
-def test_non_string_env_value_is_rejected(tmp_path):
-    """MANDATORY. Silent failure: the 256K profile does not apply.
+# --- the settings template ------------------------------------------------
 
-    Claude Code types settings.json `env` as a map of string to string. A JSON
-    number writes cleanly, parses cleanly, and the setting does nothing.
+def test_the_template_is_loaded_as_part_of_the_config(tmp_path):
+    path = write(tmp_path / "lmi.json", MINIMAL)
+    cfg = config.build_config(Args(config=str(path)))
+    assert cfg.settings == TEMPLATE
+    assert cfg.settings_source == tmp_path / "settings.json"
+
+
+def test_the_template_is_taken_from_the_config_file_that_won(tmp_path, monkeypatch):
+    """MANDATORY. Silent failure: a machine configured from another site.
+
+    --config names one site's lmi.json. Pairing it with the working directory's
+    template instead would install a different site's gateway and marketplaces
+    and report success.
     """
-    path = write(tmp_path / "lmi.json", {"claude": {
-        "registry": "https://r/",
-        "env": {"CLAUDE_CODE_MAX_CONTEXT_TOKENS": 256000},
-    }})
+    chosen = write(tmp_path / "site" / "lmi.json", MINIMAL,
+                   template={"env": {"ANTHROPIC_BASE_URL": "https://right/"}})
+    write(tmp_path.joinpath(*CWD), MINIMAL,
+          template={"env": {"ANTHROPIC_BASE_URL": "https://WRONG/"}})
+    monkeypatch.chdir(tmp_path)
+    cfg = config.build_config(Args(config=str(chosen)))
+    assert cfg.settings["env"]["ANTHROPIC_BASE_URL"] == "https://right/"
+
+
+def test_a_config_folder_with_no_template_is_a_usage_error(tmp_path):
+    """MANDATORY. Silent failure: a binary with no configuration at all."""
+    path = write(tmp_path / "lmi.json", MINIMAL, template=None)
+    with pytest.raises(LmiError) as exc:
+        config.build_config(Args(config=str(path)))
+    assert exc.value.code == 2
+    assert "settings.json" in str(exc.value)
+
+
+def test_a_broken_template_fails_the_whole_config(tmp_path):
+    """Never a partial Config: every config error surfaces before npm runs."""
+    path = write(tmp_path / "lmi.json", MINIMAL,
+                 template={"env": {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": 64000}})
     with pytest.raises(LmiError) as exc:
         config.build_config(Args(config=str(path)))
     assert exc.value.code == 2
     assert "string" in str(exc.value)
-
-
-def test_the_256k_profile_is_the_default():
-    assert config.DEFAULT_ENV == {
-        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "256000",
-        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "204800",
-        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000",
-    }
-
-
-def test_config_env_overrides_one_key_and_keeps_the_others(tmp_path):
-    path = write(tmp_path / "lmi.json", {"claude": {
-        "registry": "https://r/",
-        "env": {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "32000",
-                "ANTHROPIC_BASE_URL": "https://gw.corp/"},
-    }})
-    env = config.build_config(Args(config=str(path))).env
-    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "32000"
-    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "256000"
-    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "204800"
-    assert env["ANTHROPIC_BASE_URL"] == "https://gw.corp/"
-
-
-def test_default_env_is_not_mutated_by_a_config(tmp_path):
-    """A shared module-level dict updated in place would leak between runs."""
-    path = write(tmp_path / "lmi.json", {"claude": {
-        "registry": "https://r/", "env": {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "1"}}})
-    config.build_config(Args(config=str(path)))
-    assert config.DEFAULT_ENV["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "64000"
 
 
 def test_cafile_must_exist(tmp_path):
@@ -239,9 +250,19 @@ def test_tilde_user_that_cannot_resolve_is_usage_not_a_traceback():
     assert exc.value.code == 2
 
 
-def test_marketplaces_pass_through_unaltered(tmp_path):
-    markets = {"corp": {"source": {"source": "git", "url": "https://g/c.git"},
-                        "whateverUpstreamAddsNext": True}}
+def test_the_claude_section_carries_nothing_but_registry_and_cafile(tmp_path):
+    """The keys that duplicated the template are gone, and stay gone.
+
+    `marketplaces` and `env` were copied verbatim into settings.json, which is
+    two spellings for one thing and the reason the two drifted. Re-adding either
+    here would give a site somewhere to write a setting that the template then
+    silently overwrites.
+    """
     path = write(tmp_path / "lmi.json", {"claude": {
-        "registry": "https://r/", "marketplaces": markets}})
-    assert config.build_config(Args(config=str(path))).marketplaces == markets
+        "registry": "https://r/", "marketplaces": {"corp": {}},
+        "env": {"A": "1"}}})
+    cfg = config.build_config(Args(config=str(path)))
+    assert not hasattr(cfg, "marketplaces")
+    assert not hasattr(cfg, "env")
+    assert "marketplaces" not in config.EXAMPLE
+    assert '"env"' not in config.EXAMPLE

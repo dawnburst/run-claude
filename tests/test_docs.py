@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from lmi.commands.install import claude_json, config, gitbash, settings
+from lmi.commands.install import claude_json, config, gitbash, settings, template
 from lmi.commands.upgrade import config as upgrade_config
 from lmi.core.errors import LmiError
 
@@ -34,15 +34,63 @@ def test_the_example_config_is_accepted_by_the_validator(tmp_path):
     staged = tmp_path / "lmi.json"
     with open(str(staged), "w", encoding="utf-8", newline="\n") as fh:
         json.dump(doc, fh)
+    # The template is half of what a site copies, and build_config now loads it.
+    (tmp_path / template.NAME).write_bytes(
+        (REPO / "examples" / "settings.json").read_bytes())
 
     cfg = config.build_config(Args(str(staged)))
     assert cfg.registry
-    assert cfg.marketplaces
+    assert cfg.settings
 
 
 def test_the_example_documents_every_supported_key():
     doc = json.loads((REPO / "examples" / "lmi.json").read_text(encoding="utf-8"))
-    assert set(doc["claude"]) == {"registry", "cafile", "marketplaces", "env"}
+    assert set(doc["claude"]) == {"registry", "cafile"}
+
+
+def test_the_example_config_does_not_duplicate_the_template():
+    """MANDATORY. Silent failure: a setting written where nothing reads it.
+
+    `marketplaces` and `env` used to live in lmi.json and be copied into
+    settings.json. Re-adding either gives an operator somewhere plausible to
+    write a setting that lmi no longer reads - it is in the config file, it
+    parses, and it never reaches ~/.claude/settings.json.
+    """
+    doc = json.loads((REPO / "examples" / "lmi.json").read_text(encoding="utf-8"))
+    assert "marketplaces" not in doc["claude"]
+    assert "env" not in doc["claude"]
+
+
+# --- the settings.json template -------------------------------------------
+
+@pytest.mark.parametrize("where", ["examples", "config"])
+def test_the_shipped_settings_templates_are_accepted(tmp_path, where):
+    """Both are copied and edited, so a rejected shape is a broken first day.
+
+    config/settings.json is the stronger case: it is not copied first, so a
+    shape the validator rejects is `lmi install claude` failing in a checkout
+    where it is supposed to work.
+    """
+    src = REPO / where / template.NAME
+    assert src.is_file(), "%s/%s must exist" % (where, template.NAME)
+    (tmp_path / template.NAME).write_bytes(src.read_bytes())
+    doc, _ = template.load(tmp_path / "lmi.json")
+    assert doc
+
+
+@pytest.mark.parametrize("where", ["examples", "config"])
+def test_no_shipped_template_carries_a_real_looking_token(where):
+    """MANDATORY. A committed token is a leaked token.
+
+    The templates are the one place in the repo with an ANTHROPIC_AUTH_TOKEN
+    key in it, and they are edited by hand at every site. A placeholder that
+    looks like a token is also how one gets installed unnoticed - so the value
+    must stay obviously not-a-token.
+    """
+    doc = json.loads((REPO / where / template.NAME).read_text(encoding="utf-8"))
+    value = doc.get("env", {}).get(settings.TOKEN_KEY, "")
+    assert value.startswith("<") and value.endswith(">"), \
+        "the token placeholder must be an obvious placeholder, not %r" % value
 
 
 def test_the_printed_example_matches_the_shipped_one():
@@ -79,6 +127,7 @@ def test_the_shipped_default_config_is_accepted_by_the_validator():
     assert shipped.is_file(), "%s must exist" % config.CWD_CONFIG
     cfg = config.build_config(Args(str(shipped)))
     assert cfg.registry
+    assert cfg.settings, "and the template beside it, which build_config loads"
     assert "cafile" not in json.loads(shipped.read_text(encoding="utf-8"))["claude"]
 
 

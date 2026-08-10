@@ -17,16 +17,39 @@ class Args:
         self.target = target
 
 
+PLACEHOLDER = "<Token from the user input>"
+
+# What a site's config folder holds beside its lmi.json. Shaped like the shipped
+# one: the 256K profile, a marketplace, and the token placeholder that
+# _ask_for_token's refusal of a blank answer exists to keep out of ~/.claude.
+TEMPLATE = {
+    "env": {
+        "ANTHROPIC_AUTH_TOKEN": PLACEHOLDER,
+        "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "256000",
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "204800",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000",
+    },
+    "extraKnownMarketplaces": {
+        "corp": {"source": {"source": "git", "url": "https://g/c.git"}}
+    },
+    "theme": "dark",
+}
+
+
+def write_json(path, doc):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(str(path), "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(doc, fh)
+    return path
+
+
 @pytest.fixture
 def cfg_file(tmp_path):
-    path = tmp_path / "lmi.json"
-    with open(str(path), "w", encoding="utf-8", newline="\n") as fh:
-        json.dump({"claude": {
-            "registry": "https://artifactory.corp.local/api/npm/npm/",
-            "marketplaces": {"corp": {"source": {"source": "git",
-                                                 "url": "https://g/c.git"}}},
-        }}, fh)
-    return path
+    """A config folder: the lmi.json, and the settings.json beside it."""
+    write_json(tmp_path / "settings.json", TEMPLATE)
+    return write_json(tmp_path / "lmi.json", {"claude": {
+        "registry": "https://artifactory.corp.local/api/npm/npm/",
+    }})
 
 
 @pytest.fixture
@@ -43,7 +66,9 @@ def answers(monkeypatch):
 
     monkeypatch.setattr(prompts, "confirm",
                         lambda q, default=False: take("confirm", q))
-    monkeypatch.setattr(prompts, "secret", lambda q: take("secret", q))
+    # .strip(), because the real prompts.secret strips: a scripted "  " has to
+    # reach the runner the way a spacebar-and-enter answer would.
+    monkeypatch.setattr(prompts, "secret", lambda q: take("secret", q).strip())
     monkeypatch.setattr(prompts, "text",
                         lambda q, default=None: take("text", q))
     # Off Windows by default: Git Bash is Windows-only.
@@ -103,20 +128,39 @@ def test_a_fresh_install_runs_npm_then_writes_both_files(
     assert doc["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "204800"
     assert doc["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "64000"
     assert "corp" in doc["extraKnownMarketplaces"]
+    assert doc["theme"] == "dark", "the template is installed whole"
     assert gitbash.VAR not in doc["env"], "Git Bash is Windows-only"
 
     marker = json.loads((home / ".claude.json").read_text(encoding="utf-8"))
     assert marker["hasCompletedOnboarding"] is True
 
 
+def test_the_placeholder_token_never_reaches_the_settings_file(
+        fake_npm, home, cfg_file, answers, no_claude):
+    """MANDATORY. Silent failure: every Claude Code call 401s.
+
+    The template ships with a placeholder where the token goes. If it were
+    installed verbatim - which is what a blank answer accepted at the prompt
+    would produce - ~/.claude/settings.json would look fully configured, the
+    install would report success, and the error the user eventually hit would
+    point at the gateway rather than at lmi.
+    """
+    answers["secret"] = ["sk-corp-token"]
+    assert runner.run(Args(str(cfg_file))) == 0
+
+    written = (home / ".claude" / "settings.json").read_text(encoding="utf-8")
+    assert PLACEHOLDER not in written
+    assert "sk-corp-token" in written
+
+
 def test_a_cafile_replaces_strict_ssl_false(
         tmp_path, fake_npm, home, answers, no_claude):
     pem = tmp_path / "ca.pem"
     pem.write_bytes(b"-----BEGIN CERTIFICATE-----\n")
-    path = tmp_path / "lmi.json"
-    with open(str(path), "w", encoding="utf-8", newline="\n") as fh:
-        json.dump({"claude": {"registry": "https://r/", "cafile": str(pem)}}, fh)
-    answers["secret"] = [""]
+    write_json(tmp_path / "settings.json", TEMPLATE)
+    path = write_json(tmp_path / "lmi.json", {"claude": {
+        "registry": "https://r/", "cafile": str(pem)}})
+    answers["secret"] = ["sk-x"]
 
     assert runner.run(Args(str(path))) == 0
     flat = [" ".join(call) for call in fake_npm.calls()]
@@ -126,7 +170,7 @@ def test_a_cafile_replaces_strict_ssl_false(
 
 def test_no_cafile_warns_about_tls(
         fake_npm, home, cfg_file, answers, no_claude, capsys):
-    answers["secret"] = [""]
+    answers["secret"] = ["sk-x"]
     runner.run(Args(str(cfg_file)))
     out = capsys.readouterr().out
     assert "[WARN]" in out and "verification" in out
@@ -173,21 +217,74 @@ def test_accepting_repair_backs_up_and_reports_both_files(
     assert ".claude.json.bk_" in out
 
     doc = read_settings(home)
-    assert doc["model"] == "opus[1m]", "unrelated keys must survive a repair"
-    assert doc["theme"] == "dark"
+    assert doc == settings.compose(TEMPLATE, "sk-new", None), \
+        "the template replaces what was there; it is not merged into it"
+    assert "model" not in doc
 
 
-def test_a_blank_token_leaves_an_existing_one_alone(
+def test_the_previous_settings_survive_only_in_the_backup(
         fake_npm, home, cfg_file, answers, have_claude):
+    """Replacing wholesale makes the backup the sole record of the old file.
+
+    Under the old merge the user's own keys survived in the merged document, so
+    a lost backup cost little. It is now the entire safety net, which is why
+    jsonfile.backup stays before the write and stays fatal on failure.
+    """
     (home / ".claude").mkdir()
-    with open(str(home / ".claude" / "settings.json"), "w",
-              encoding="utf-8", newline="\n") as fh:
-        json.dump({"env": {"ANTHROPIC_AUTH_TOKEN": "sk-old"}}, fh)
+    write_json(home / ".claude" / "settings.json", {"model": "opus[1m]"})
     answers["confirm"] = [True]
-    answers["secret"] = [""]
+    answers["secret"] = ["sk-new"]
 
     assert runner.run(Args(str(cfg_file))) == 0
-    assert read_settings(home)["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-old"
+    backup = next(p for p in (home / ".claude").iterdir() if ".bk_" in p.name)
+    assert json.loads(backup.read_text(encoding="utf-8")) == {"model": "opus[1m]"}
+
+
+def test_an_unparseable_previous_settings_file_is_replaced_not_refused(
+        fake_npm, home, cfg_file, answers, have_claude):
+    """The narrowed half of CLAUDE.md item 19.
+
+    Hand-corrupted JSON used to be exit 3 with nothing written, because the file
+    had to be parsed before it could be merged into. Nothing parses it now, and
+    the backup preserves it byte for byte, so the install proceeds. The rule
+    stands unchanged for ~/.claude.json, which is still read.
+    """
+    (home / ".claude").mkdir()
+    (home / ".claude" / "settings.json").write_text('{"env": }', encoding="utf-8")
+    answers["confirm"] = [True]
+    answers["secret"] = ["sk-new"]
+
+    assert runner.run(Args(str(cfg_file))) == 0
+    assert read_settings(home)["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-new"
+    backup = next(p for p in (home / ".claude").iterdir() if ".bk_" in p.name)
+    assert backup.read_text(encoding="utf-8") == '{"env": }'
+
+
+def test_a_blank_token_is_re_asked_and_then_refused(
+        fake_npm, home, cfg_file, answers, no_claude):
+    """MANDATORY. Silent failure: the placeholder token installed verbatim.
+
+    There is nothing for a blank answer to mean any more. The template is
+    installed whole, so "keep the one that is there" is not on offer, and the
+    only document a blank could produce is one carrying the placeholder. It is
+    re-asked first, because a half-pasted token is the common case.
+    """
+    answers["secret"] = ["", "  ", ""]
+
+    with pytest.raises(LmiError) as exc:
+        runner.run(Args(str(cfg_file)))
+    assert exc.value.code == 2
+    assert not answers["secret"], "every attempt must be used before refusing"
+    assert not (home / ".claude" / "settings.json").exists()
+    assert fake_npm.count() == 0, "the refusal comes before anything changes"
+
+
+def test_a_re_typed_token_after_a_blank_one_is_accepted(
+        fake_npm, home, cfg_file, answers, no_claude):
+    answers["secret"] = ["", "sk-second-try"]
+
+    assert runner.run(Args(str(cfg_file))) == 0
+    assert read_settings(home)["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-second-try"
 
 
 def test_an_already_onboarded_file_is_not_rewritten(
@@ -196,7 +293,7 @@ def test_an_already_onboarded_file_is_not_rewritten(
               encoding="utf-8", newline="\n") as fh:
         json.dump({"hasCompletedOnboarding": True, "projects": {}}, fh)
     before = (home / ".claude.json").read_bytes()
-    answers["secret"] = [""]
+    answers["secret"] = ["sk-x"]
 
     assert runner.run(Args(str(cfg_file))) == 0
     assert (home / ".claude.json").read_bytes() == before
@@ -209,7 +306,7 @@ def test_onboarding_false_is_corrected(
     with open(str(home / ".claude.json"), "w",
               encoding="utf-8", newline="\n") as fh:
         json.dump({"hasCompletedOnboarding": False}, fh)
-    answers["secret"] = [""]
+    answers["secret"] = ["sk-x"]
 
     assert runner.run(Args(str(cfg_file))) == 0
     doc = json.loads((home / ".claude.json").read_text(encoding="utf-8"))
@@ -269,10 +366,11 @@ def test_a_written_token_forces_mode_600(
 
     jsonfile.write preserves an existing file's mode and, with nothing to
     preserve, creates the file 0600 anyway. Against a fresh HOME this test
-    therefore passes with runner._write_settings' token rule deleted outright -
-    the mode it asserts is the birth mode, not the mode the token forced. An
-    existing 0644 settings.json is the only state in which those two differ.
-    Identical trap to CLAUDE.md item 20's
+    therefore passes with the `mode=0o600` dropped from _write_settings
+    outright - the mode it asserts is then the birth mode, not the mode lmi
+    asked for, and a settings.json the user had left at 0644 would keep its
+    token world-readable. An existing 0644 file is the only state in which
+    those two differ. Identical trap to CLAUDE.md item 20's
     test_the_mode_is_set_before_the_file_becomes_visible; do not drop the chmod.
     """
     (home / ".claude").mkdir()
@@ -294,7 +392,7 @@ def test_a_missing_claude_afterwards_warns_but_exits_0(
 
     Exiting non-zero here would fail runs that in fact succeeded.
     """
-    answers["secret"] = [""]
+    answers["secret"] = ["sk-x"]
     assert runner.run(Args(str(cfg_file))) == 0
     # The specific warning, not just "[WARN]": this config has no cafile, so
     # _configure_npm prints TLS_WARNING, which also starts "[WARN]" and would
@@ -312,7 +410,7 @@ def test_windows_writes_the_git_bash_path_into_settings(
     persisted = []
     monkeypatch.setattr(gitbash, "persist",
                         lambda p, say: persisted.append(p) or True)
-    answers["secret"] = [""]
+    answers["secret"] = ["sk-x"]
 
     assert runner.run(Args(str(cfg_file))) == 0
     assert read_settings(home)["env"][gitbash.VAR] == str(bash)
@@ -332,7 +430,7 @@ def test_windows_without_git_bash_asks_then_warns(
     """
     monkeypatch.setattr(gitbash, "on_windows", lambda: True)
     monkeypatch.setattr(gitbash, "find", lambda: None)
-    answers["secret"] = [""]
+    answers["secret"] = ["sk-x"]
     answers["text"] = [""]          # user declines to supply one
 
     assert runner.run(Args(str(cfg_file))) == 0

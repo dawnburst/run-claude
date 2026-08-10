@@ -18,7 +18,20 @@ from . import claude_json, gitbash, npm, prompts, settings
 from .config import build_config
 from .exit_codes import EXIT_CONFIG_WRITE, EXIT_INTERNAL
 from ...core import jsonfile
-from ...core.errors import EXIT_OK, LmiError
+from ...core.errors import EXIT_OK, EXIT_USAGE, LmiError
+
+# A mistyped or half-pasted token is the common case, so the question is put
+# again rather than refused outright. Bounded because an unbounded retry is only
+# safe for as long as prompts.secret turns a missing terminal into EOFError.
+TOKEN_ATTEMPTS = 3
+
+NO_TOKEN = (
+    "no auth token was given, so there is nothing to install.\n"
+    "    The settings template is installed whole, and the ANTHROPIC_AUTH_TOKEN\n"
+    "    in it is a placeholder - writing it through would leave a settings file\n"
+    "    that looks configured and fails every call.\n"
+    "    Nothing was changed. Run this again with the token to hand."
+)
 
 TLS_WARNING = (
     "[WARN] certificate verification is now OFF for every npm install by this\n"
@@ -59,19 +72,18 @@ def run(args):
 
 def _run(args):
     cfg = build_config(args)
-    say("Config: %s" % cfg.source)
+    say("Config:   %s" % cfg.source)
+    say("Settings: %s" % cfg.settings_source)
 
     npm_exe = npm.find()
-    say("npm:    %s" % npm_exe)
+    say("npm:      %s" % npm_exe)
 
     # --- ask everything, change nothing ---------------------------------
     if not _agreed_to_proceed():
         say("Nothing was changed.")
         return EXIT_OK
 
-    settings_path = settings.path()
-    current = jsonfile.read(settings_path, "Claude Code settings", EXIT_CONFIG_WRITE)
-    token = _ask_for_token(current)
+    token = _ask_for_token()
     bash_path = _resolve_git_bash()
 
     # --- from here on the machine changes -------------------------------
@@ -83,7 +95,7 @@ def _run(args):
 
     stamp = jsonfile.timestamp()
     backups = []
-    _write_settings(cfg, current, token, bash_path, settings_path, stamp, backups)
+    _write_settings(cfg, token, bash_path, settings.path(), stamp, backups)
     _write_onboarding_flag(stamp, backups)
 
     _report(backups)
@@ -101,18 +113,23 @@ def _agreed_to_proceed():
     return prompts.confirm("Repair the installation?", default=False)
 
 
-def _ask_for_token(current):
-    """The token to write, or None to leave whatever is there."""
-    if settings.token_of(current):
-        say("An auth token is already configured.")
-        answer = prompts.secret(
-            "Claude Code auth token (blank to keep the existing one)"
-        )
-    else:
-        answer = prompts.secret(
-            "Claude Code auth token (blank to skip and sign in later)"
-        )
-    return answer or None
+def _ask_for_token():
+    """The token to write. Never blank, never None.
+
+    A blank answer used to mean "keep whatever is in the file" or "sign in
+    later". Neither survives installing the template whole: there is nothing
+    left to keep, and the only document a blank could produce is one carrying
+    the template's ANTHROPIC_AUTH_TOKEN placeholder verbatim - which reads as
+    configured and fails every call.
+    """
+    for remaining in range(TOKEN_ATTEMPTS - 1, -1, -1):
+        answer = prompts.secret("Claude Code auth token")
+        if answer:
+            return answer
+        if remaining:
+            say("The token cannot be blank. %d attempt%s left."
+                % (remaining, "" if remaining == 1 else "s"))
+    raise LmiError(NO_TOKEN, EXIT_USAGE)
 
 
 def _resolve_git_bash():
@@ -145,21 +162,27 @@ def _configure_npm(cfg, npm_exe):
     npm.config_set(npm_exe, "registry", cfg.registry, say)
 
 
-def _write_settings(cfg, current, token, bash_path, path, stamp, backups):
-    env = dict(cfg.env)
-    if token:
-        env[settings.TOKEN_KEY] = token
-    if bash_path:
-        env[gitbash.VAR] = bash_path
+def _write_settings(cfg, token, bash_path, path, stamp, backups):
+    """Install the template over ~/.claude/settings.json.
 
+    The file is replaced, not merged into, so the backup taken first is the only
+    surviving copy of what the machine had. It must stay before the write and
+    must stay fatal - jsonfile.backup refuses to go on when the copy fails, and
+    downgrading that to a warning would make a failed copy unrecoverable rather
+    than merely noisy.
+
+    Nothing reads the existing file. That is deliberate: parsing it was only
+    ever needed to merge into it, and a settings.json a user hand-edited into
+    invalid JSON would otherwise block an install that is about to replace it
+    anyway.
+    """
     _back_up(path, stamp, "Claude Code settings", backups)
-    merged = settings.merge(current, env, cfg.marketplaces)
-    # 0600 whenever the file ends up holding a credential. On Windows os.chmod
-    # only toggles the read-only bit and grants no protection - lmi does not
-    # claim otherwise there.
-    mode = 0o600 if settings.token_of(merged) else None
-    jsonfile.write(path, merged, "Claude Code settings", EXIT_CONFIG_WRITE, mode=mode)
-    say("Wrote %s" % path)
+    doc = settings.compose(cfg.settings, token, bash_path)
+    # 0600 unconditionally: the token is mandatory, so the file always holds a
+    # credential. On Windows os.chmod only toggles the read-only bit and grants
+    # no protection - lmi does not claim otherwise there.
+    jsonfile.write(path, doc, "Claude Code settings", EXIT_CONFIG_WRITE, mode=0o600)
+    say("Wrote %s (from %s)" % (path, cfg.settings_source))
 
 
 def _write_onboarding_flag(stamp, backups):
