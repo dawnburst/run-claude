@@ -56,6 +56,7 @@ lmi/commands/schedule/      the command, as a self-contained package
   paths.py                  where the log, state file and lock go
   prompt.py                 composing one iteration's prompt
   state.py                  template, backup-or-resume, completion check
+  stream.py                 `-v` only: claude's stream-json events to log lines
   runner.py                 the loop and the claude invocation
   exit_codes.py             this command's own codes (1, 3, 4)
 lmi/commands/install/       `lmi install claude`, as a self-contained package
@@ -338,6 +339,46 @@ And one for `lmi config switch`, which is the whole of what `origin` means:
     distinguishes the two, except that the user's real settings stopped being
     recoverable at the second switch. The `if not exists()` is the entire
     mechanism; do not simplify it into an unconditional write.
+
+And four for `lmi schedule -v`. They are numbered after the rest rather than
+beside item 12 on purpose: these numbers are referenced by name elsewhere —
+`tests/test_docs.py` pins item 22 — so the list is appended to, never
+renumbered.
+
+26. **`-v` must not be combinable with an `--output-format` in `-f`, and the
+    renderer must degrade out loud.** `-f` is appended last and claude takes
+    the last occurrence of a repeated option, so `-f "--output-format json"`
+    overrides the `stream-json` the renderer depends on.
+    `config._reject_output_format` refuses the pair with exit 2; independently
+    `stream.Renderer` warns once and passes everything through verbatim when a
+    line is not a JSON object, which is the half that covers a future claude
+    version changing the format on its own. **Silent** without both: the
+    activity block goes quiet, the iteration still exits 0, and nothing
+    distinguishes "claude did nothing worth showing" from "lmi could not read
+    what claude said". A duplicate `--verbose` is deliberately still allowed —
+    it is a boolean and idempotent, where `--output-format` is last-wins.
+    Generalising the check into flag deduplication would mean lmi learning
+    claude's flag grammar, and risk dropping a user's flag silently.
+27. **`PromptLog.full_done` means "has the full prompt been logged yet", not
+    "is this iteration 1".** An iteration can die before `prompt.compose` — a
+    vanished temp workspace — and item 12 means the loop deliberately survives
+    that. Keyed off the iteration number instead, iteration 2 logs only the
+    state under a header claiming the rest is "unchanged from the first logged
+    prompt" when no prompt was ever logged. **Silent:** the log looks complete
+    and the run exits 0, and the forty missing lines are only noticeable to
+    someone who already knows what they should have said.
+28. **`_pump` scans the raw line for quota wording, never the rendered one.**
+    Under stream-json the usage-limit text lives inside a JSON result or error
+    event. Scanning after rendering means any future renderer change that
+    summarises such an event without carrying its message through silently
+    disables `[QUOTA]` — the one tag that tells an unattended run its result
+    is not to be trusted. Scanning first makes that impossible however
+    `stream.py` evolves.
+29. **The renderer never emits a tool input's `content` field.** `ARG_KEYS` is
+    an allowlist for exactly this reason: `content` carries the whole new file
+    on a `Write`, so rendering it puts the state file into the log on every
+    save and buries the tool calls either side of it. Not silent, but it
+    destroys the readability the feature exists for.
 
 ---
 

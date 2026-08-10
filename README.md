@@ -177,7 +177,7 @@ You do not need to install anything to run the test suite — see
 ```
 lmi schedule "<prompt or prompt-file>" [-t "YYYY-MM-DD HH:MM"] [-i minutes]
              [-c count] [-d workdir] [-f "flags"] [-l logfolder]
-             [-s statefile] [-r]
+             [-s statefile] [-r] [-v]
 ```
 
 Run `lmi --help` for the list of commands, and `lmi schedule --help` for the
@@ -196,6 +196,7 @@ authoritative flag list.
 | `-l <folder or file>` | Log destination. A folder receives `run-claude-<timestamp>.log`; a path with an extension is used as the log file itself. Omitted = `<workdir>/run-claude-<timestamp>.log`. |
 | `-s <file>` | State file. Omitted = `<workdir>/run-claude-state.md`. |
 | `-r` | Resume: keep the existing state file instead of backing it up and starting clean. |
+| `-v`, `--verbose` | Watch the run while it runs: log the prompt lmi sends, and render claude's activity live instead of after the iteration ends. See [Verbose mode](#verbose-mode). |
 
 `-i` and `-c` are **mutually required** — either both or neither. Each alone exits
 2, with a message explaining why. On its own, `-i` says how long to wait but never
@@ -321,6 +322,60 @@ traceback, not merely printed to a terminal nobody may be watching.
 A log file that cannot be written **degrades to console output** with one `[WARN]`
 — it never decides the exit code.
 
+### Verbose mode
+
+Without `-v`, a run is opaque while it works. `claude -p` prints nothing until it
+finishes, so the log stays silent for the whole of a twenty-minute iteration and
+then receives the final text in one block — and the prompt `lmi` composed is
+never recorded at all.
+
+`-v` fixes both halves:
+
+```
+lmi schedule task.md -i 30 -c 10 -v -l ~/lmi-logs
+```
+
+**It logs the prompt.** The first iteration writes the complete composed
+document — the header, the state protocol, the inlined state file and your task.
+Every iteration after it writes only the state file portion, because the other
+three parts are byte-identical every time: the task is read once before the loop
+and the protocol is a constant.
+
+**It renders claude's activity live.** `-v` passes
+`--output-format stream-json --verbose` to claude and turns each event into a
+line as it arrives:
+
+```
+--- claude activity ---
+[claude] init    model=claude-opus-5 session=a3f2b1c8 cwd=/home/you/repo
+[claude] text    I'll start by reading the runner, then annotate it.
+[claude] tool    Read   lmi/commands/schedule/runner.py
+[claude] result  292 lines
+[claude] tool    Bash   python3 -m pytest tests/ -q
+[claude] result  453 passed, 1 skipped in 2.39s
+[claude] tool    Write  run-claude-state.md
+[claude] done    success - 6 turns - 31.2s
+--- end of claude activity ---
+```
+
+Four things worth knowing:
+
+- **`-v` is one switch.** It passes `--verbose` to claude for you; you never
+  additionally need `-f "--verbose"`.
+- **It costs no tokens.** The log is written by `lmi` and read back by nothing.
+  It is not in the prompt, not referenced by the prompt, and no iteration is
+  told it exists. What claude receives under `-v` is byte-identical to what it
+  receives without it.
+- **Pair it with `-l`.** By default the log lands in the working directory,
+  where claude operates. It is never *fed* to claude, but a verbose log
+  contains claude's own earlier output, which is confusing material to stumble
+  across. `-l ~/lmi-logs` puts it out of reach.
+- **`-v` sets the output format**, so it cannot be combined with an
+  `--output-format` of your own in `-f` — that combination exits 2 rather than
+  silently blanking the activity block. Everything else in `-f` composes as
+  usual; `-f "--include-partial-messages"` streams claude's text token by
+  token if you want maximum liveness at the cost of readability afterwards.
+
 ### Exit codes
 
 `0` and `2` are **global to every `lmi` command**, not just `schedule`: no future
@@ -355,7 +410,20 @@ editor is inlined into the next prompt correctly rather than as mojibake.
   indefinitely. No test can surface this as a failure; it is a missing feature.
 - **A quota failure consumes an iteration.** There is no retry with backoff — the
   failure is flagged `[QUOTA]` and the loop moves on to the next iteration.
-- **No log rotation.** Each run writes a new timestamped log file.
+- **No log rotation.** Each run writes a new timestamped log file. `-v` makes
+  each one considerably larger.
+- **Two things about `-v` no test can settle**, both needing a real claude:
+  whether `--verbose` adds anything on top of `--output-format stream-json`
+  (it is passed because stream-json in `-p` mode has historically required it,
+  and a duplicate boolean costs nothing if it turns out not to); and whether
+  claude block-buffers its stdout when it is a pipe, which would make the
+  rendered lines arrive in bursts rather than smoothly. Neither changes what
+  `lmi` does — the non-verbose path writes to a file, equally not a terminal,
+  so streaming is never *worse* than before.
+- **`-v` couples `lmi` to claude's event schema.** A future version could
+  change it. That failure is visible rather than silent: an unrecognised event
+  renders as one dull line, and output that is not stream-json at all warns
+  once and is then passed through verbatim.
 - **The state file cannot live on a Windows network share**, so `lmi schedule`
   refuses a UNC working directory with exit 2 and an explanation. The lock file
   is created beside the state file, and Windows byte-range locking is
