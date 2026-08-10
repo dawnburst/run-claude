@@ -439,3 +439,171 @@ def test_windows_without_git_bash_asks_then_warns(
     assert not answers["text"], "and the scripted answer consumed"
     assert runner.GIT_BASH_MISSING % gitbash.VAR in capsys.readouterr().out
     assert gitbash.VAR not in read_settings(home).get("env", {})
+
+
+# --- the statusline script ------------------------------------------------
+
+STATUSLINE = b"#!/usr/bin/env node\nprocess.stdout.write('hi');\n"
+
+STATUSLINE_BLOCK = {"type": "command", "command": "node ~/.claude/statusline.js"}
+
+
+def with_statusline(cfg_file, script=STATUSLINE, declare=True):
+    """Complete the config folder: the script, the block in the template, or both.
+
+    The two halves are written in two different files by hand, so every test
+    below is a combination of "is the script there" and "does the template ask
+    for one".
+    """
+    if script is not None:
+        with open(str(cfg_file.parent / "statusline.js"), "wb") as fh:
+            fh.write(script)
+    doc = json.loads(json.dumps(TEMPLATE))
+    if declare:
+        doc["statusLine"] = STATUSLINE_BLOCK
+    write_json(cfg_file.parent / "settings.json", doc)
+    return cfg_file
+
+
+def test_the_statusline_script_is_installed_beside_the_settings(
+        fake_npm, home, cfg_file, answers, no_claude):
+    """The half a settings.json cannot carry.
+
+    The template's command runs ~/.claude/statusline.js; writing the block and
+    not the script it names gives Claude Code a command that is not there.
+    """
+    with_statusline(cfg_file)
+    answers["secret"] = ["sk-x"]
+
+    assert runner.run(Args(str(cfg_file))) == 0
+
+    script = home / ".claude" / "statusline.js"
+    assert script.read_bytes() == STATUSLINE
+    assert read_settings(home)["statusLine"] == STATUSLINE_BLOCK
+
+
+def test_a_config_folder_with_no_statusline_installs_as_before(
+        fake_npm, home, cfg_file, answers, no_claude, capsys):
+    """The script is optional, and an older config folder must not break.
+
+    cfg_file is exactly that folder: an lmi.json and a settings.json, written
+    before this feature existed and declaring no statusLine.
+    """
+    answers["secret"] = ["sk-x"]
+
+    assert runner.run(Args(str(cfg_file))) == 0
+
+    assert not (home / ".claude" / "statusline.js").exists()
+    assert read_settings(home)["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-x"
+    assert runner.NO_STATUSLINE % "statusline.js" in capsys.readouterr().out
+
+
+def test_a_declared_statusline_with_no_script_warns(
+        fake_npm, home, cfg_file, answers, no_claude, capsys):
+    """MANDATORY. Silent failure: half a statusline, and no sign of it.
+
+    The block installs cleanly, the run reports success, and Claude Code runs
+    `node ~/.claude/statusline.js` against a file nobody wrote - which shows
+    up as no statusline at all, with nothing on screen tying it to the install.
+    It is a warning rather than exit 2 because only the operator knows what
+    their command actually runs, and refusing would break a site whose
+    statusLine runs something else entirely.
+    """
+    with_statusline(cfg_file, script=None, declare=True)
+    answers["secret"] = ["sk-x"]
+
+    assert runner.run(Args(str(cfg_file))) == 0
+
+    assert not (home / ".claude" / "statusline.js").exists()
+    out = capsys.readouterr().out
+    assert runner.STATUSLINE_MISSING % (
+        "statusLine", "statusline.js", cfg_file.parent / "statusline.js") in out
+
+
+def test_a_script_the_template_never_asks_for_warns(
+        fake_npm, home, cfg_file, answers, no_claude, capsys):
+    """MANDATORY. Silent failure: the same one from the other side.
+
+    An operator who drops statusline.js into the config folder and forgets the
+    block gets a script correctly installed in ~/.claude and no statusline,
+    with the install reporting success. It is still copied - the file is where
+    it was asked to go - and said out loud.
+    """
+    with_statusline(cfg_file, declare=False)
+    answers["secret"] = ["sk-x"]
+
+    assert runner.run(Args(str(cfg_file))) == 0
+
+    dest = home / ".claude" / "statusline.js"
+    assert dest.read_bytes() == STATUSLINE
+    assert runner.STATUSLINE_UNUSED % (
+        "statusline.js", "statusLine", dest,
+        cfg_file.parent / "settings.json",
+    ) in capsys.readouterr().out
+
+
+def test_a_previous_statusline_is_backed_up_and_reported(
+        fake_npm, home, cfg_file, answers, have_claude, capsys):
+    """It may be one the operator wrote by hand, and it is replaced whole."""
+    with_statusline(cfg_file)
+    (home / ".claude").mkdir()
+    (home / ".claude" / "statusline.js").write_bytes(b"// mine\n")
+    answers["confirm"] = [True]
+    answers["secret"] = ["sk-x"]
+
+    assert runner.run(Args(str(cfg_file))) == 0
+
+    backup = next(p for p in (home / ".claude").iterdir()
+                  if p.name.startswith("statusline.js.bk_"))
+    assert backup.read_bytes() == b"// mine\n"
+    assert (home / ".claude" / "statusline.js").read_bytes() == STATUSLINE
+    assert backup.name in capsys.readouterr().out
+
+
+def test_the_script_is_written_before_the_settings_that_name_it(
+        fake_npm, home, cfg_file, answers, no_claude, monkeypatch):
+    """MANDATORY. Silent failure: settings naming a script that is not there.
+
+    If the copy fails, the machine must keep the settings it had rather than
+    end up with a fresh settings.json whose statusLine command points at
+    nothing. Ordering is the whole guard, so it is asserted directly.
+    """
+    with_statusline(cfg_file)
+    order = []
+    real_install = runner.statusline.install
+    real_write = runner.jsonfile.write
+
+    def install(*a, **kw):
+        order.append("statusline")
+        return real_install(*a, **kw)
+
+    def write(path, *a, **kw):
+        if path.name == "settings.json":
+            order.append("settings")
+        return real_write(path, *a, **kw)
+
+    monkeypatch.setattr(runner.statusline, "install", install)
+    monkeypatch.setattr(runner.jsonfile, "write", write)
+    answers["secret"] = ["sk-x"]
+
+    assert runner.run(Args(str(cfg_file))) == 0
+    assert order == ["statusline", "settings"]
+
+
+def test_a_statusline_copy_failure_leaves_the_settings_alone(
+        fake_npm, home, cfg_file, answers, have_claude, monkeypatch):
+    """The consequence of the order above, at the exit code."""
+    with_statusline(cfg_file)
+    (home / ".claude").mkdir()
+    write_json(home / ".claude" / "settings.json", {"model": "opus[1m]"})
+
+    def boom(*a, **kw):
+        raise LmiError("no", 4)
+
+    monkeypatch.setattr(runner.statusline, "install", boom)
+    answers["confirm"] = [True]
+    answers["secret"] = ["sk-x"]
+
+    with pytest.raises(LmiError):
+        runner.run(Args(str(cfg_file)))
+    assert read_settings(home) == {"model": "opus[1m]"}
