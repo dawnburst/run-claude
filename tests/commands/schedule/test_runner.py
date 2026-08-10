@@ -501,3 +501,79 @@ def test_claude_output_is_logged_while_the_iteration_is_still_running(
 
     assert main(["schedule", "x", "-d", str(tmp_path), "-v"]) == 0
     assert "after-the-marker.py" in _log_body(tmp_path)
+
+
+def test_verbose_logs_the_whole_prompt_on_the_first_iteration(
+        tmp_path, fake_claude):
+    main(["schedule", "write a haiku", "-d", str(tmp_path), "-v"])
+    body = _log_body(tmp_path)
+    assert "--- prompt sent to claude" in body
+    assert "# Unattended automated run" in body     # the header
+    assert "## State protocol - read this first" in body  # the protocol
+    assert "write a haiku" in body                  # the task
+
+
+def test_without_verbose_the_prompt_is_not_logged(tmp_path, fake_claude):
+    main(["schedule", "write a haiku", "-d", str(tmp_path)])
+    body = _log_body(tmp_path)
+    assert "--- prompt sent to claude" not in body
+    assert "## State protocol - read this first" not in body
+
+
+def test_later_iterations_log_only_the_state(tmp_path, fake_claude):
+    """Option A: the header, protocol and task are byte-identical every
+    iteration - the task is read once before the loop and the protocol is a
+    module constant - so repeating them is noise, not information."""
+    main(["schedule", "write a haiku", "-d", str(tmp_path), "-i", "0", "-c", "3"
+          , "-v"])
+    body = _log_body(tmp_path)
+    assert body.count("## State protocol - read this first") == 1
+    assert body.count("--- state sent to claude") == 2
+    assert body.count("--- prompt sent to claude") == 1
+
+
+def test_the_state_block_of_a_later_iteration_is_logged(tmp_path, fake_claude):
+    monkey = tmp_path / "run-claude-state.md"
+    main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2", "-v"])
+    body = _log_body(tmp_path)
+    assert monkey.exists()
+    # The state template's first line, inside the second iteration's block.
+    after = body.split("--- state sent to claude")[1]
+    assert "TASK_STATUS: IN_PROGRESS" in after
+
+
+def test_the_full_prompt_is_logged_by_whichever_iteration_reaches_it_first(
+        tmp_path, fake_claude, monkeypatch):
+    """MANDATORY. Keying "log it in full" off iteration number 1 is wrong: an
+    iteration can die before compose() and still leave the loop running, so
+    iteration 2 would print "unchanged from iteration 1" about text that was
+    never written. The claim in that header has to be true."""
+    from lmi.commands.schedule import prompt as prompt_mod
+    real = prompt_mod.compose
+    calls = []
+
+    def flaky(*a, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("the temp workspace vanished")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(prompt_mod, "compose", flaky)
+    main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2", "-v"])
+    body = _log_body(tmp_path)
+    # Iteration 1 never got a prompt at all; iteration 2 must log the full one.
+    assert body.count("--- prompt sent to claude") == 1
+    assert "## State protocol - read this first" in body
+    assert "--- state sent to claude" not in body
+
+
+def test_the_header_says_verbose_is_on(tmp_path, fake_claude, monkeypatch):
+    monkeypatch.setenv("FAKE_STREAM", "1")
+    main(["schedule", "x", "-d", str(tmp_path), "-v"])
+    assert "Verbose   : on" in _log_body(tmp_path)
+
+
+def test_the_header_says_nothing_about_verbose_when_it_is_off(
+        tmp_path, fake_claude):
+    main(["schedule", "x", "-d", str(tmp_path)])
+    assert "Verbose" not in _log_body(tmp_path)

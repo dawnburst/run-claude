@@ -86,6 +86,45 @@ def run(args):
         return EXIT_INTERNAL
 
 
+class PromptLog:
+    """Logs the prompt under -v: in full the first time, the state after.
+
+    The four parts of the composed document are the header, the state
+    protocol, the inlined state file and the task. Only the state file changes
+    between iterations - the task is read once before the loop and the
+    protocol is a constant in prompt.py - so logging all four every time
+    repeats the same forty-odd lines for every iteration of the run.
+
+    `full_done` is "has the whole document been logged yet", NOT "is this
+    iteration 1". An iteration can die before prompt.compose - a vanished temp
+    workspace - and the loop deliberately survives that, so keying off the
+    iteration number would make iteration 2 claim the rest is "unchanged from
+    iteration 1" about text nobody ever wrote. Do not simplify this flag back
+    into `if n == 1`.
+    """
+
+    def __init__(self, verbose):
+        self.verbose = verbose
+        self.full_done = False
+
+    def emit(self, log, composed, state_body):
+        if not self.verbose:
+            return
+        if not self.full_done:
+            log.line("--- prompt sent to claude (full, %d lines) ---"
+                     % len(composed.splitlines()))
+            for line in composed.splitlines():
+                log.line(line)
+            log.line("--- end of prompt ---")
+            self.full_done = True
+            return
+        log.line("--- state sent to claude (header, protocol and task "
+                 "unchanged from the first logged prompt) ---")
+        for line in state_body.splitlines():
+            log.line(line)
+        log.line("--- end of state ---")
+
+
 def _pump(log, lines, render=None):
     """Log every line as it arrives. True if any smells like a quota problem.
 
@@ -153,6 +192,11 @@ def _log_header(cfg, log, state_path, argv):
     log.line("Interval  : %d minute/s" % cfg.interval_min)
     if cfg.at is not None:
         log.line("Start time: " + cfg.at.strftime(AT_FORMAT))
+    if cfg.verbose:
+        # The two claude flags -v adds are already visible on the Flags line
+        # above. This says what lmi itself is doing differently, which argv
+        # cannot show.
+        log.line("Verbose   : on - prompt logged, claude activity rendered live")
     log.line(RULE)
 
 
@@ -211,6 +255,7 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
     _wait_until(cfg.at, log)
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="lmi-schedule-"))
+    prompt_log = PromptLog(cfg.verbose)
     runs = fails = 0
     try:
         for iteration in range(1, cfg.max_runs + 1):
@@ -222,7 +267,7 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
 
             rc = _iteration_rc(
                 cfg, log, state_path, argv, task, tmp_dir, iteration,
-                label, started
+                label, started, prompt_log
             )
             runs += 1
             if not _log_iteration_result(
@@ -247,11 +292,13 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
     return EXIT_CALL_FAILED if fails else EXIT_OK
 
 
-def _iteration_rc(cfg, log, state_path, argv, task, tmp_dir, n, label, started):
+def _iteration_rc(cfg, log, state_path, argv, task, tmp_dir, n, label, started,
+                  prompt_log):
     """One iteration's exit code, with invariant 2 enforced around it."""
     try:
         return _one_iteration(
-            cfg, log, state_path, argv, task, tmp_dir, n, label, started
+            cfg, log, state_path, argv, task, tmp_dir, n, label, started,
+            prompt_log
         )
     except LmiError:
         # A usage error is deterministic - a prompt file that is not UTF-8
@@ -280,9 +327,11 @@ def _sleep_between(cfg, log):
     time.sleep(secs)
 
 
-def _one_iteration(cfg, log, state_path, argv, task, tmp_dir, n, label, started):
+def _one_iteration(cfg, log, state_path, argv, task, tmp_dir, n, label, started,
+                   prompt_log):
     body = state.read_body(state_path)
     composed = prompt.compose(cfg, state_path, label, started, body, task)
+    prompt_log.emit(log, composed, body)
 
     prompt_path = tmp_dir / ("prompt-%d.txt" % n)
     # open(), not Path.write_text(..., newline=...): that keyword arrived in
