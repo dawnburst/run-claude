@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
-from . import template
+from . import statusline, template
 from ...core import config as core_config
 from ...core import fs
 from ...core.errors import EXIT_USAGE, LmiError
@@ -60,9 +60,10 @@ def add_arguments(parser):
 class Config:
     registry: str
     cafile: Optional[Path]
-    settings: Dict          # the settings.json template, parsed
-    settings_source: Path   # where it was read from
-    source: Path            # the lmi.json
+    settings: Dict                  # the settings.json template, parsed
+    settings_source: Path           # where it was read from
+    statusline: Optional[Path]      # the statusline.js beside it, if any
+    source: Path                    # the lmi.json
 
 
 def build_config(args):
@@ -70,6 +71,9 @@ def build_config(args):
 
     The template is loaded here rather than in the runner so that promise still
     holds, and so a template error surfaces before npm has installed anything.
+    The statusline script is resolved here for the second reason only: it is
+    optional, so there is nothing to refuse, but a path that cannot even be
+    classified should still stop the command before npm changes the machine.
     """
     path = core_config.find(getattr(args, "config", None), PURPOSE, EXAMPLE)
     section = core_config.section(core_config.load(path), SECTION, path, EXAMPLE)
@@ -79,6 +83,7 @@ def build_config(args):
         cafile=_cafile(section, path),
         settings=settings,
         settings_source=settings_source,
+        statusline=statusline.find(path),
         source=path,
     )
 

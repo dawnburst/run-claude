@@ -464,7 +464,9 @@ path added — and marks onboarding complete, so the first `claude` gets to work
 instead of asking questions.
 
 Two files in one folder, then: `lmi.json`, which says where to install *from*,
-and `settings.json`, which is what Claude Code ends up configured *with*.
+and `settings.json`, which is what Claude Code ends up configured *with* — plus
+an optional third, a `statusline.js` for the `statusLine` that settings file
+declares.
 
 ```
 lmi install claude [--config PATH]
@@ -596,6 +598,50 @@ to stay one — do not commit a real token to it. The prompt refuses a blank
 answer precisely so the placeholder can never be installed as though it were a
 token.
 
+### The statusline script
+
+A `settings.json` may carry a `statusLine` block, and the shipped template does:
+
+```json
+"statusLine": {
+  "type": "command",
+  "command": "node ~/.claude/statusline.js"
+}
+```
+
+That block names a script, and a settings document cannot put one there. So the
+third file in the config folder is a **`statusline.js`**, beside the `lmi.json`
+and the `settings.json`, and `lmi install claude` copies it to
+`~/.claude/statusline.js` — **byte for byte**, line endings, encoding and
+executable bit included. It is your script; `lmi` moves it and does not edit it.
+This repository ships a working one at
+[`config/statusline.js`](config/statusline.js), which is what the shipped
+template's command runs.
+
+Found beside whichever `lmi.json` won, for the same reason the template is:
+`--config /site/lmi.json` gets `/site/statusline.js`. One folder, one site.
+
+**Unlike `settings.json`, it is optional.** A config folder with no
+`statusline.js` installs exactly as it did before this file existed, and says so
+in one line. What `lmi` will not do is let the two halves disagree in silence,
+because either one alone is a statusline that simply does not appear:
+
+| Situation | What happens |
+|---|---|
+| Script beside the template, `statusLine` in it | copied to `~/.claude/statusline.js`, and the block installed with the rest of the template |
+| `statusLine` in the template, no script beside it | nothing copied, and a `[WARN]` naming the path it looked at. Claude Code will run a command pointing at a file nobody wrote |
+| Script beside the template, no `statusLine` in it | still copied — the file is where you asked for it — and a `[WARN]` saying nothing will run it |
+| Neither | a single line saying no statusline was installed |
+
+Both mismatches are warnings rather than exit 2 on purpose: only you know what
+your `statusLine` command actually runs, and a site whose command runs something
+else entirely has to keep installing.
+
+An existing `~/.claude/statusline.js` is backed up to
+`statusline.js.bk_<timestamp>` and then replaced, exactly like the settings file.
+The copy happens **before** the settings are written, so `~/.claude` never holds
+a `settings.json` naming a script that is not there yet.
+
 ### What it asks
 
 At most three questions, and all of them are asked **before anything on the
@@ -611,6 +657,9 @@ Declining the repair is not an error. You answered the question; the answer was
 no; exit 0.
 
 ### What it writes
+
+`~/.claude/statusline.js` — your script, byte for byte, when there is one beside
+the template. See [The statusline script](#the-statusline-script) above.
 
 `~/.claude/settings.json` — your template, whole. Any file already there is
 copied to `settings.json.bk_<timestamp>` beside itself and then **replaced**,
@@ -657,7 +706,8 @@ Any file about to be modified, that already exists, is copied first to:
 <name>.bk_<YYYYmmdd-HHMMSS>
 ```
 
-— `settings.json.bk_20260806-141530`, `.claude.json.bk_20260806-141530`. The copy
+— `settings.json.bk_20260806-141530`, `statusline.js.bk_20260806-141530`,
+`.claude.json.bk_20260806-141530`. The copy
 preserves the mode, because `~/.claude.json` is `600` and holds your per-project
 history; a backup at the default 644 would publish it. If a backup fails, **the
 file it was for is not modified** and the run stops there with exit 3: changing a
@@ -764,7 +814,7 @@ The exit code does not distinguish the two cases.
 ### Real-run checklist
 
 The suite drives a **fake npm** on an exclusive PATH, which proves the argv, the
-order and the exit codes and proves nothing whatever about the real one. Four
+order and the exit codes and proves nothing whatever about the real one. Five
 things need a real machine, and are worth doing once per site:
 
 1. **Artifactory really serves `@anthropic-ai/claude-code`** and its whole
@@ -778,6 +828,11 @@ things need a real machine, and are worth doing once per site:
 4. **A Windows box with Git in a non-default location ends up with a working Bash
    tool** — the case Claude Code's own two-path detection cannot see, and the
    whole reason the registry search exists.
+5. **The installed `statusLine` command actually runs.** `lmi` copies the script
+   and installs the block; whether `node` is on the PATH Claude Code launches
+   the command with, and whether that command's `~` expands there, is the
+   machine's business and not something a fake can answer. Start `claude` and
+   look at the bottom of the screen.
 
 ---
 
@@ -1182,7 +1237,7 @@ So: the **3.9 floor** is tested. **Linux** and **Windows** are tested. On
 
 Three measurements have not been taken. None blocks use of `lmi schedule` or
 `lmi upgrade`; all are named so nobody mistakes reasoning for evidence. `lmi
-install claude` has its own four, in [Real-run checklist](#real-run-checklist).
+install claude` has its own five, in [Real-run checklist](#real-run-checklist).
 
 1. **A real multi-iteration loop against the actual `claude` CLI.** The
    single-iteration half passes: a real run against `~/.local/bin/claude`

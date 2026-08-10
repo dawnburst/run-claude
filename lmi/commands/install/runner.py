@@ -14,7 +14,7 @@ provisioned and is not.
 
 import shutil
 
-from . import claude_json, gitbash, npm, prompts, settings
+from . import claude_json, gitbash, npm, prompts, settings, statusline
 from .config import build_config
 from .exit_codes import EXIT_CONFIG_WRITE, EXIT_INTERNAL
 from ...core import jsonfile
@@ -53,6 +53,31 @@ GIT_BASH_MISSING = (
     "       Claude Code needs it to run shell commands on Windows. Install Git\n"
     "       for Windows, or set the variable by hand, and it will pick it up."
 )
+
+# The two halves of a statusline are the template's "statusLine" block and the
+# script it runs, and they are written by hand in two different files. Either
+# one alone is a statusline that does not appear, with nothing on screen to say
+# why - so each is said out loud. Neither is an error: only the operator knows
+# what their command actually runs.
+STATUSLINE_MISSING = (
+    '[WARN] the settings template declares a "%s", but no %s was\n'
+    "       found beside it, so none was installed. If that block runs the\n"
+    "       script this would have written, Claude Code will show nothing.\n"
+    "       Expected it at: %s"
+)
+
+STATUSLINE_UNUSED = (
+    "[WARN] a %s was found beside the settings template, which declares no\n"
+    '       "%s" - so it was installed, but nothing will run it.\n'
+    "       Installed:        %s\n"
+    "       Add the block to: %s"
+)
+
+NO_STATUSLINE = (
+    "No %s beside the settings template, so no statusline was installed."
+)
+
+STATUSLINE_WHAT = "Claude Code statusline script"
 
 
 def run(args):
@@ -95,6 +120,7 @@ def _run(args):
 
     stamp = jsonfile.timestamp()
     backups = []
+    _write_statusline(cfg, stamp, backups)
     _write_settings(cfg, token, bash_path, settings.path(), stamp, backups)
     _write_onboarding_flag(stamp, backups)
 
@@ -160,6 +186,38 @@ def _configure_npm(cfg, npm_exe):
         npm.config_set(npm_exe, "strict-ssl", "false", say)
         say(TLS_WARNING)
     npm.config_set(npm_exe, "registry", cfg.registry, say)
+
+
+def _write_statusline(cfg, stamp, backups):
+    """Install the statusline script beside the template, if there is one.
+
+    Before the settings write, not after, so ~/.claude never holds a
+    settings.json naming a script that is not there yet. It also means a
+    failed copy stops the command with the machine's previous settings still
+    in place, rather than after they have been replaced.
+
+    The existing script is backed up like every other file this command
+    overwrites: it may be one the operator wrote by hand, and it is replaced
+    whole.
+    """
+    declared = statusline.declares(cfg.settings)
+    if cfg.statusline is None:
+        if declared:
+            say(STATUSLINE_MISSING % (
+                statusline.SETTINGS_KEY, statusline.NAME,
+                cfg.settings_source.parent / statusline.NAME,
+            ))
+        else:
+            say(NO_STATUSLINE % statusline.NAME)
+        return
+    dest = statusline.path()
+    _back_up(dest, stamp, STATUSLINE_WHAT, backups)
+    statusline.install(cfg.statusline, dest, STATUSLINE_WHAT, EXIT_CONFIG_WRITE)
+    say("Wrote %s (from %s)" % (dest, cfg.statusline))
+    if not declared:
+        say(STATUSLINE_UNUSED % (
+            statusline.NAME, statusline.SETTINGS_KEY, dest, cfg.settings_source,
+        ))
 
 
 def _write_settings(cfg, token, bash_path, path, stamp, backups):

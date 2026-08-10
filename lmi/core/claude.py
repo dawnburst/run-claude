@@ -8,6 +8,11 @@ one of them would silently configure a file nothing reads.
 from pathlib import Path
 
 
+def config_dir():
+    """~/.claude - the folder Claude Code reads its user-scope files from."""
+    return Path.home() / ".claude"
+
+
 def settings_path():
     """~/.claude/settings.json - the user-scope settings file."""
-    return Path.home() / ".claude" / "settings.json"
+    return config_dir() / "settings.json"

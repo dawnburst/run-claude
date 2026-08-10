@@ -62,6 +62,7 @@ lmi/commands/schedule/      the command, as a self-contained package
 lmi/commands/install/       `lmi install claude`, as a self-contained package
   config.py                 arguments, config-file discovery, the frozen Config
   template.py               finding and validating the settings.json template
+  statusline.py             finding and copying the statusline.js beside it
   prompts.py                every question, and the no-terminal guard
   npm.py                    locating npm, one npm command, the --global fallback
   settings.py               what goes into ~/.claude/settings.json
@@ -420,12 +421,43 @@ resolved, installed as `~/.claude/settings.json` verbatim but for the token.
     unwritable `~/.claude/` into silent, permanent loss of whatever the
     operator had hand-edited.
 
+And one for the statusline, which is a settings key and a script, written by
+hand in two different files in the same folder:
+
+32. **The two halves of a statusline are checked against each other, out
+    loud.** A `settings.json` `statusLine` block runs a command; the shipped
+    one runs `node ~/.claude/statusline.js`, and the file that puts a script
+    there is a `statusline.js` beside the `lmi.json` that discovery resolved —
+    optional, unlike the template, so that a config folder written before the
+    feature existed still installs cleanly. That optionality is the whole
+    danger. **Silent** in both directions: a template declaring `statusLine`
+    with no script beside it installs a command pointing at nothing, and a
+    script with no `statusLine` in the template lands in `~/.claude` and is
+    never run — each reporting success, each showing up only as a statusline
+    that is not there, with nothing tying it back to the install.
+    `runner._write_statusline` prints a `[WARN]` for each case and
+    `tests/test_docs.py` pins the shipped `config/` pair, because neither is an
+    error: only the operator knows what their command actually runs, and
+    refusing would break a site whose `statusLine` runs something else
+    entirely. `statusline.declares` deliberately lives outside
+    `template._validate`, whose contract is that every key but `env` passes
+    through unexamined — a warning is not validation, and nothing here can
+    reject a template.
+
+    Two smaller rules ride along. The copy is **bytes**, through the same
+    `O_BINARY` temp-file dance as `jsonfile.write` and preserving the source's
+    mode: it is somebody's script, and normalising its line endings or dropping
+    its executable bit is lmi editing a file it was only asked to move. And it
+    is written **before** `_write_settings`, so `~/.claude` never holds a
+    settings document naming a script that is not there yet, and a failed copy
+    stops the command with the machine's previous settings still in place.
+
 ---
 
 ## 4. Rules for editing
 
 1. **Run the suite after every change** and say in your report that you did:
-   `python3 -m pytest tests/ -q`. It is 480 tests in under three seconds and it
+   `python3 -m pytest tests/ -q`. It is 505 tests in under three seconds and it
    costs nothing — several bugs above only appear with awkward paths, or only
    when a claude call fails.
 2. **Preserve the five invariants in section 1** and everything in section 3.
@@ -463,7 +495,7 @@ resolved, installed as `~/.claude/settings.json` verbatim but for the token.
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 480 tests, 1 skipped, <3s, no install needed
+python3 -m pytest tests/ -q          # 505 tests, 1 skipped, <3s, no install needed
 ```
 
 Fixtures worth knowing, in `tests/conftest.py` and the four per-command
@@ -490,16 +522,19 @@ completion check must turn those tests red.
 What a fake CLI can **never** cover is how the real one behaves: regressions 1 and
 2 were both found by real runs, not by tests. `README.md` has the two real-run
 checks worth doing, names the two measurements still outstanding, and carries the
-four `lmi install claude` checks that only a real Artifactory and a real Windows
+five `lmi install claude` checks that only a real Artifactory and a real Windows
 box can settle.
 
 `tests/test_docs.py` is the one module that tests documentation rather than code:
 that `examples/lmi.json` still passes `config.build_config` and
 `examples/settings_switch.json` still passes `fragment.load`, that the README
 still spells the three silent keys and still documents `lmi config switch`, that
-invariant 3 above stays scoped to `schedule`, and that item 22 above is still in
-this file. Both examples are what a new site copies, so one going stale is a
-usage error on somebody's first day. The item-22 check is the odd one: it guards
+invariant 3 above stays scoped to `schedule`, that `config/` still holds the
+`statusline.js` its `settings.json` declares (item 32, which is only a `[WARN]`
+at run time and so needs pinning somewhere that fails), and that item 22 above
+is still in this file. Both examples are what a new site copies, so one going
+stale is a usage error on somebody's first day. The item-22 check is the odd
+one: it guards
 a paragraph rather than a file a user touches, because that rule exists nowhere
 else — one line of code, no symptom when inverted, and this file the only place
 that says why.

@@ -9,7 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from lmi.commands.install import claude_json, config, gitbash, settings, template
+from lmi.commands.install import (
+    claude_json, config, gitbash, settings, statusline, template,
+)
 from lmi.commands.upgrade import config as upgrade_config
 from lmi.core.errors import LmiError
 
@@ -151,6 +153,32 @@ def test_the_shipped_default_config_is_accepted_by_the_validator():
     assert cfg.registry
     assert cfg.settings, "and the template beside it, which build_config loads"
     assert "cafile" not in json.loads(shipped.read_text(encoding="utf-8"))["claude"]
+
+
+def test_the_shipped_config_folder_carries_the_statusline_it_declares():
+    """MANDATORY. Silent failure: a checkout that installs half a statusline.
+
+    config/settings.json runs `node ~/.claude/statusline.js`, and the file that
+    puts a script there is config/statusline.js beside it. Deleting or moving
+    the script - back into scripts/, say, which is not shipped in the wheel -
+    leaves an install that reports success and shows no statusline. It is a
+    warning at run time rather than an error, deliberately, which is exactly
+    why the shipped pair needs pinning here instead.
+    """
+    folder = REPO / config.CWD_CONFIG_DIR
+    doc = json.loads((folder / template.NAME).read_text(encoding="utf-8"))
+    assert statusline.declares(doc), \
+        "config/settings.json is expected to declare a statusline"
+    assert statusline.find(folder / config.CWD_CONFIG_NAME) is not None, \
+        "%s must exist beside it" % statusline.NAME
+
+
+def test_the_readme_documents_the_statusline_script():
+    """Both halves, by name: the file to write and the key that runs it."""
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    for needle in (statusline.NAME, statusline.SETTINGS_KEY,
+                   "config/statusline.js"):
+        assert needle in readme, "README.md must document %s" % needle
 
 
 def test_the_shipped_default_config_is_rejected_by_the_upgrade_validator():
