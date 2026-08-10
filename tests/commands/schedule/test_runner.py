@@ -369,3 +369,27 @@ def test_a_utf16_state_file_is_inlined_without_mojibake(tmp_path, fake_claude):
                  "-r"]) == 0
     got = (fake_claude.dir / "prompt-1.txt").read_text(encoding="utf-8")
     assert "שלום" in got
+
+
+def test_verbose_puts_stream_json_on_the_command_line(tmp_path, fake_claude):
+    main(["schedule", "hello", "-d", str(tmp_path), "-v"])
+    argv = (fake_claude.dir / "argv-1.txt").read_text().splitlines()
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in argv
+
+
+def test_verbose_flags_come_before_the_user_flags(tmp_path, fake_claude):
+    """-v is one switch: the user never also needs -f "--verbose". lmi's own
+    flags stay first so -f still composes after them, as README promises."""
+    main(["schedule", "hello", "-d", str(tmp_path), "-v", "-f", "--model x"])
+    argv = (fake_claude.dir / "argv-1.txt").read_text().splitlines()
+    assert argv[-2:] == ["--model", "x"]
+    assert argv.index("--output-format") < argv.index("--model")
+
+
+def test_without_verbose_the_command_line_is_untouched(tmp_path, fake_claude):
+    """The feature adds a path; it must not modify the existing one."""
+    main(["schedule", "hello", "-d", str(tmp_path)])
+    argv = (fake_claude.dir / "argv-1.txt").read_text().splitlines()
+    assert "--output-format" not in argv
+    assert "--verbose" not in argv

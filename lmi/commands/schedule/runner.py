@@ -19,6 +19,14 @@ from .exit_codes import EXIT_CALL_FAILED, EXIT_INTERNAL, EXIT_LOCKED
 
 DEFAULT_FLAGS = ["--allowed-tools=Edit,Write"]
 
+# What -v adds. --output-format stream-json is what makes claude emit an event
+# per step instead of one block of text at the end, which is the whole of how a
+# running iteration becomes watchable; --verbose is passed alongside it because
+# stream-json in -p mode has historically required it, and a duplicate boolean
+# costs nothing if it turns out not to. config._reject_output_format refuses a
+# user --output-format in -f, because -f is appended last and would win.
+VERBOSE_FLAGS = ["--output-format", "stream-json", "--verbose"]
+
 # The rule that opens and closes the header and the summary block.
 RULE = "=" * 75
 
@@ -84,7 +92,8 @@ def _log_traceback(log):
 
 
 def _claude_argv(cfg, state_path, claude):
-    return [claude, "-p"] + DEFAULT_FLAGS + \
+    verbose = VERBOSE_FLAGS if cfg.verbose else []
+    return [claude, "-p"] + DEFAULT_FLAGS + verbose + \
         ["--add-dir", str(state_path.parent)] + cfg.user_flags
 
 
