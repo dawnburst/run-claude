@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
+from . import template
 from ...core import config as core_config
 from ...core import fs
 from ...core.errors import EXIT_USAGE, LmiError
@@ -29,37 +30,20 @@ CWD_CONFIG_DIR = core_config.CWD_CONFIG_DIR
 CWD_CONFIG = core_config.CWD_CONFIG
 HOME_CONFIG = core_config.HOME_CONFIG
 
-# The 256K context profile, shipped as a default so a machine whose config
-# omits `env` still gets it. Values are STRINGS: Claude Code types settings.json
-# `env` as a map of string to string, and a JSON number there writes cleanly,
-# parses cleanly and does nothing.
-DEFAULT_ENV = {
-    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "256000",
-    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "204800",
-    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000",
-}
-
 # Printed when no config file is found, so it is what a first-time operator
 # pastes into their first lmi.json - with the command having just failed, and
-# nothing else on screen to copy from. It must therefore document EVERY key,
-# `env` included: leaving out the key the 256K profile rests on teaches the
-# operator the profile is not configurable. examples/lmi.json is the same
-# document with real-looking URLs, and tests/test_docs.py pins the two key sets
-# equal so they cannot drift apart again.
+# nothing else on screen to copy from. It must therefore document EVERY key.
+# examples/lmi.json is the same document with real-looking URLs, and
+# tests/test_docs.py pins the two key sets equal so they cannot drift apart.
+#
+# It is two keys, not four: `marketplaces` and `env` used to live here and be
+# copied into settings.json, which is two spellings for one thing. What goes
+# into settings.json is now the settings.json template beside this file - see
+# template.py.
 EXAMPLE = """{
   "claude": {
     "registry": "https://artifactory.example.com/api/npm/npm-virtual/",
-    "cafile": "/etc/ssl/certs/corp-ca.pem",
-    "marketplaces": {
-      "corp-tools": {
-        "source": {"source": "git", "url": "https://git.example.com/m.git"}
-      }
-    },
-    "env": {
-      "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "256000",
-      "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "204800",
-      "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000"
-    }
+    "cafile": "/etc/ssl/certs/corp-ca.pem"
   }
 }"""
 
@@ -76,20 +60,25 @@ def add_arguments(parser):
 class Config:
     registry: str
     cafile: Optional[Path]
-    marketplaces: Dict
-    env: Dict
-    source: Path
+    settings: Dict          # the settings.json template, parsed
+    settings_source: Path   # where it was read from
+    source: Path            # the lmi.json
 
 
 def build_config(args):
-    """Find, read and validate the config file. Never returns a partial Config."""
+    """Find, read and validate the config file. Never returns a partial Config.
+
+    The template is loaded here rather than in the runner so that promise still
+    holds, and so a template error surfaces before npm has installed anything.
+    """
     path = core_config.find(getattr(args, "config", None), PURPOSE, EXAMPLE)
     section = core_config.section(core_config.load(path), SECTION, path, EXAMPLE)
+    settings, settings_source = template.load(path)
     return Config(
         registry=_registry(section, path),
         cafile=_cafile(section, path),
-        marketplaces=_object(section, "marketplaces", path),
-        env=_env(section, path),
+        settings=settings,
+        settings_source=settings_source,
         source=path,
     )
 
@@ -120,30 +109,3 @@ def _cafile(section, path):
             EXIT_USAGE,
         )
     return resolved
-
-
-def _object(section, key, path):
-    value = section.get(key)
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise LmiError(
-            '"claude.%s" must be a JSON object: %s' % (key, path), EXIT_USAGE
-        )
-    return value
-
-
-def _env(section, path):
-    """The 256K defaults, overridden and extended by the config file."""
-    merged = dict(DEFAULT_ENV)          # a copy: DEFAULT_ENV is module state
-    for key, value in _object(section, "env", path).items():
-        if not isinstance(value, str):
-            raise LmiError(
-                '"claude.env.%s" must be a string, not %s: %s\n'
-                "    Claude Code types settings.json env as string-to-string; a "
-                "number is silently ignored."
-                % (key, type(value).__name__, path),
-                EXIT_USAGE,
-            )
-        merged[key] = value
-    return merged
