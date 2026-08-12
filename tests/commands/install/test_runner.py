@@ -6,7 +6,8 @@ import stat
 
 import pytest
 
-from lmi.commands.install import gitbash, prompts, runner, settings
+from lmi.commands.install import gitbash, prompts, runner, sdk, settings
+from lmi.commands.schedule import backend
 from lmi.core.errors import LmiError
 from tests.conftest import skip_as_root
 
@@ -50,6 +51,31 @@ def cfg_file(tmp_path):
     return write_json(tmp_path / "lmi.json", {"claude": {
         "registry": "https://artifactory.corp.local/api/npm/npm/",
     }})
+
+
+INDEX = "https://artifactory.corp.local/api/pypi/pypi/simple/"
+
+
+@pytest.fixture
+def cfg_with_index(tmp_path):
+    """The same config folder, with a "claude.index" - so the SDK is offered.
+
+    Separate from cfg_file rather than added to it, because an lmi.json with no
+    index is not a degenerate case: it is the shape a site that only wants the
+    `cli` backend writes, and the older shape every config folder written
+    before this feature existed still has.
+    """
+    write_json(tmp_path / "settings.json", TEMPLATE)
+    return write_json(tmp_path / "lmi.json", {"claude": {
+        "registry": "https://artifactory.corp.local/api/npm/npm/",
+        "index": INDEX,
+    }})
+
+
+def read_mode(cfg_file):
+    """`schedule.mode` as it was written into the lmi.json, or None."""
+    doc = json.loads(cfg_file.read_text(encoding="utf-8"))
+    return doc.get("schedule", {}).get("mode")
 
 
 @pytest.fixture
@@ -607,3 +633,265 @@ def test_a_statusline_copy_failure_leaves_the_settings_alone(
     with pytest.raises(LmiError):
         runner.run(Args(str(cfg_file)))
     assert read_settings(home) == {"model": "opus[1m]"}
+
+
+# --- the SDK, and the backend this machine ends up with -------------------
+#
+# The whole difficulty of this half is that pip exiting 0 does not mean the
+# backend will work, and every test below exists because treating it as if it
+# did produces the failure this project keeps paying for: a machine that looks
+# provisioned and is not. Nothing in the outcome reveals a wrong mode - both
+# backends exit 0 when they work - so the mode written into the lmi.json is
+# read back directly in almost every one of them.
+
+
+def test_the_sdk_is_offered_installed_and_the_mode_written_sdk(
+        fake_npm, sdk_pip, home, cfg_with_index, answers, no_claude,
+        monkeypatch):
+    """MANDATORY. Silent failure: `sdk` written on a machine without the SDK.
+
+    The happy path, and the third of task 22's three cases. It is MANDATORY
+    with the other two because the three only mean something together: a check
+    that always answered `cli` would pass both failure tests on its own.
+    """
+    monkeypatch.setenv("FAKE_IMPORTABLE", "1")
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [True]
+
+    assert runner.run(Args(str(cfg_with_index))) == 0
+
+    assert sdk_pip.calls()[0][-1] == sdk.REQUIREMENT
+    assert sdk_pip.probes() == ["import %s" % sdk.MODULE]
+    assert read_mode(cfg_with_index) == backend.SDK
+
+
+def test_a_failing_pip_writes_cli_warns_and_still_exits_0(
+        fake_npm, sdk_pip, home, cfg_with_index, answers, no_claude,
+        monkeypatch, capsys):
+    """MANDATORY. Silent failure: a degradation nobody is told about.
+
+    This inverts npm.install's rule deliberately. npm failing means there is no
+    Claude Code and the command has failed; pip failing means one of two
+    supported backends is unavailable and the other one - the one that drives
+    the binary npm just installed - works. So exit 0, mode `cli`, and every
+    other document still written. What it must never be is quiet: a silent
+    degradation is indistinguishable from success, and nothing afterwards
+    reveals which backend the machine got.
+    """
+    monkeypatch.setenv("FAKE_PIP_FAIL_PACKAGE", sdk.DISTRIBUTION)
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [True]
+
+    assert runner.run(Args(str(cfg_with_index))) == 0
+
+    assert read_mode(cfg_with_index) == backend.CLI
+    out = capsys.readouterr().out
+    assert runner.SDK_FAILED % (
+        backend.CLI, sdk.DISTRIBUTION, INDEX, backend.SDK) in out
+    # Everything else still happened: this is a degraded install, not a failed
+    # one, and a machine missing its settings would be a different bug wearing
+    # this one's exit code.
+    assert read_settings(home)["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-x"
+    assert json.loads(
+        (home / ".claude.json").read_text(encoding="utf-8")
+    )["hasCompletedOnboarding"] is True
+
+
+def test_a_pip_that_exits_0_without_an_importable_package_writes_cli(
+        fake_npm, sdk_pip, home, cfg_with_index, answers, no_claude,
+        monkeypatch, capsys):
+    """MANDATORY. Silent failure: the case pip's exit code cannot see.
+
+    pip can exit 0 having installed into a different interpreter from the one
+    that will run `lmi schedule` - which is precisely why the check is an
+    import in a subprocess of that interpreter and not `rc == 0`. Gate on the
+    exit code instead and this machine is written `sdk`, reports success, and
+    every scheduled run afterwards exits 2.
+    """
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [True]
+
+    assert runner.run(Args(str(cfg_with_index))) == 0
+
+    assert sdk_pip.count() == 1, "pip ran, and reported success"
+    assert read_mode(cfg_with_index) == backend.CLI
+    out = capsys.readouterr().out
+    assert runner.SDK_NOT_IMPORTABLE % (sdk.MODULE, sdk.DISTRIBUTION) in out
+
+
+def test_declining_the_sdk_installs_nothing_and_writes_cli(
+        fake_npm, sdk_pip, home, cfg_with_index, answers, no_claude, capsys):
+    """Declining is a decision about the mode, so it writes one.
+
+    Deliberately unlike declining the repair question, which changes nothing at
+    all: there, nothing had been asked for. Here the operator chose a backend,
+    and leaving the mode unset would leave the default pointing at the one they
+    just declined to install - `lmi schedule` exiting 2 on a machine this
+    command reported as provisioned.
+    """
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [False]
+
+    assert runner.run(Args(str(cfg_with_index))) == 0
+
+    assert sdk_pip.count() == 0 and sdk_pip.probes() == []
+    assert read_mode(cfg_with_index) == backend.CLI
+    assert runner.SDK_DECLINED % (backend.CLI, backend.CLI) \
+        in capsys.readouterr().out
+
+
+def test_the_sdk_question_is_asked_before_anything_changes(
+        fake_npm, sdk_pip, home, cfg_with_index, answers, no_claude,
+        monkeypatch):
+    """It belongs in the ask-everything block, with the token and Git Bash."""
+    seen = []
+    real_install = runner.npm.install
+
+    def spy(npm_exe, say):
+        seen.append(len(answers["asked"]))
+        return real_install(npm_exe, say)
+
+    monkeypatch.setattr(runner.npm, "install", spy)
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [True]
+
+    runner.run(Args(str(cfg_with_index)))
+
+    assert any("SDK" in q for q in answers["asked"]), \
+        "the question must actually be asked"
+    assert seen and seen[0] == len(answers["asked"]), \
+        "and asked before the first npm command, like every other question"
+
+
+def test_no_index_means_no_sdk_and_no_question(
+        fake_npm, sdk_pip, home, cfg_file, answers, no_claude, capsys):
+    """MANDATORY. Silent failure: an unvetted package from public PyPI.
+
+    An absent "claude.index" is an ANSWER, not an omission: it means the SDK is
+    not installed and the machine is set to `cli`. Defaulting it to pypi.org
+    would be a timeout on an air-gapped machine and, on one with egress, an
+    unvetted package from a different source than everything else here - at
+    exit 0, defeating the only reason this command exists.
+
+    There is also nothing to ask about, so nothing is asked: the outcome is
+    already decided, and a question whose answer changes nothing is worse than
+    no question.
+    """
+    answers["secret"] = ["sk-x"]
+
+    assert runner.run(Args(str(cfg_file))) == 0
+
+    assert sdk_pip.count() == 0 and sdk_pip.probes() == []
+    assert not any("SDK" in q for q in answers["asked"])
+    assert read_mode(cfg_file) == backend.CLI
+    out = capsys.readouterr().out
+    assert "pypi.org" not in out
+    assert runner.NO_INDEX % (
+        cfg_file, backend.CLI, backend.CLI, backend.SDK) in out
+
+
+def test_a_failed_npm_install_reaches_no_pip(
+        fake_npm, sdk_pip, home, cfg_with_index, answers, no_claude,
+        monkeypatch):
+    """MANDATORY. Silent failure: an SDK on a machine with no Claude Code.
+
+    Item 15's order, extended on the same logic. The SDK drives Claude Code; it
+    does not replace it. A machine carrying the Python package and no binary is
+    the same "looks provisioned, is not" that keeps the config writes after npm.
+
+    FAKE_NPM_FAIL_GLOBAL rather than FAKE_NPM_RC, for the reason spelled out in
+    test_a_failed_npm_install_touches_no_config_file: failing every npm call
+    dies at the first `npm config set` and never reaches `npm install` at all.
+    """
+    monkeypatch.setenv("FAKE_NPM_FAIL_GLOBAL", "1")
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [True]
+
+    with pytest.raises(LmiError) as exc:
+        runner.run(Args(str(cfg_with_index)))
+
+    assert exc.value.code == 1
+    assert sdk_pip.count() == 0 and sdk_pip.probes() == []
+    assert read_mode(cfg_with_index) is None
+
+
+def test_the_mode_is_written_after_every_claude_config_write(
+        fake_npm, sdk_pip, home, cfg_with_index, answers, no_claude,
+        monkeypatch):
+    """MANDATORY. Silent failure: `sdk` on a machine pip never finished on.
+
+    The key must only ever appear on a machine that got all the way through.
+    An earlier failure leaves the lmi.json untouched, which means the default -
+    `sdk` - on a machine where the install did not complete: that is
+    `lmi schedule`'s loud exit 2 rather than a silently wrong backend, and it
+    is the right side to fail on.
+    """
+    monkeypatch.setenv("FAKE_IMPORTABLE", "1")
+
+    def boom(*a, **kw):
+        raise LmiError("settings write failed", 4)
+
+    monkeypatch.setattr(runner.settings, "compose", boom)
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [True]
+
+    with pytest.raises(LmiError):
+        runner.run(Args(str(cfg_with_index)))
+
+    assert read_mode(cfg_with_index) is None, \
+        "the mode must not outlive the install that was writing it"
+
+
+def test_the_mode_write_leaves_the_rest_of_the_config_file_alone(
+        fake_npm, sdk_pip, home, cfg_with_index, answers, no_claude,
+        monkeypatch):
+    """The lmi.json carries two other commands' sections.
+
+    It is merged into, never replaced - writing only what this command knows
+    about would silently unprovision the machine for `lmi install` itself and
+    for `lmi upgrade`.
+    """
+    monkeypatch.setenv("FAKE_IMPORTABLE", "1")
+    doc = json.loads(cfg_with_index.read_text(encoding="utf-8"))
+    doc["lmi"] = {"index": "https://artifactory.corp.local/api/pypi/pypi/simple/"}
+    write_json(cfg_with_index, doc)
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [True]
+
+    assert runner.run(Args(str(cfg_with_index))) == 0
+
+    after = json.loads(cfg_with_index.read_text(encoding="utf-8"))
+    assert after["claude"]["index"] == INDEX
+    assert after["lmi"] == doc["lmi"]
+    assert after["schedule"] == {"mode": backend.SDK}
+
+
+def test_the_report_states_the_backend_and_why(
+        fake_npm, sdk_pip, home, cfg_with_index, answers, no_claude,
+        monkeypatch, capsys):
+    """The report is where an operator looks to see what happened.
+
+    By the time the command ends, the line that decided the backend has
+    scrolled past a pip install, so it is stated again here - and when it is
+    `cli`, why, and the one command that changes it.
+    """
+    monkeypatch.setenv("FAKE_IMPORTABLE", "1")
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [True]
+
+    runner.run(Args(str(cfg_with_index)))
+    out = capsys.readouterr().out
+    assert runner.MODE_REPORT % (backend.SDK, cfg_with_index) in out
+
+
+def test_the_report_explains_a_cli_machine(
+        fake_npm, sdk_pip, home, cfg_with_index, answers, no_claude,
+        monkeypatch, capsys):
+    monkeypatch.setenv("FAKE_PIP_FAIL_PACKAGE", sdk.DISTRIBUTION)
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [True]
+
+    runner.run(Args(str(cfg_with_index)))
+    out = capsys.readouterr().out
+    assert runner.MODE_REPORT_CLI % (
+        backend.CLI, cfg_with_index, backend.CLI, backend.SDK) in out

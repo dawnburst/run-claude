@@ -5,6 +5,10 @@
   },
   "claude": {
     "registry": "https://artifactory.example.com/api/npm/npm-virtual/",
+    "index": "https://artifactory.example.com/api/pypi/pypi-virtual/simple/",
     "cafile": "/etc/ssl/certs/corp-ca.pem"
+  },
+  "schedule": {
+    "mode": "sdk"
   }
 }
