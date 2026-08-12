@@ -5,30 +5,27 @@ second level is built here, inside that call, so cli.py keeps its single
 subparser level and learns nothing about this command - the architecture rule
 in CLAUDE.md section 2.
 
-`origin` is a bare positional with choices=["origin"]; a path only ever arrives
-behind --file. That is what removes the collision between the keyword and a file
-of the same name: the two never occupy the same argument, so no precedence rule
-is needed.
+There is no subcommand-specific branching in this file. Each subcommand
+describes its own arguments; this loop only knows the four-name contract and
+the marker that records which one was chosen.
 """
+
+from .subcommands import SUBCOMMANDS
 
 NAME = "config"
 HELP = "Switch Claude Code between configurations"
 
-SWITCH_HELP = "apply a settings.json fragment, or restore the pristine settings"
+# The marker runner.py dispatches on. argparse leaves it unset when no
+# subcommand was given, which is what makes bare `lmi config` a usage error
+# rather than a silent no-op.
+RUN_MARKER = "_config_run"
 
 
 def add_arguments(parser):
     sub = parser.add_subparsers(dest="config_command", metavar="<subcommand>")
-    switch = sub.add_parser("switch", help=SWITCH_HELP, description=SWITCH_HELP)
-    switch.add_argument(
-        # metavar without brackets: argparse adds its own for nargs="?", so
-        # "[origin]" renders as "[[origin]]" in usage and as "argument [origin]:"
-        # in an error.
-        "target", nargs="?", choices=["origin"], metavar="origin",
-        help="restore the settings.json this machine had before the first switch",
-    )
-    switch.add_argument(
-        "-f", "--file", dest="file", metavar="PATH",
-        help="the settings.json fragment to apply. Default: config/settings_switch.json",
-    )
-    switch.set_defaults(_config_run="switch")
+    for command in SUBCOMMANDS:
+        child = sub.add_parser(
+            command.NAME, help=command.HELP, description=command.HELP
+        )
+        command.add_arguments(child)
+        child.set_defaults(**{RUN_MARKER: command.NAME})
