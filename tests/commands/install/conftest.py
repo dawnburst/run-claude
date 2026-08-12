@@ -12,6 +12,8 @@ import sys
 
 import pytest
 
+from lmi.commands.install.config import Config
+
 FAKE_NPM = """\
 #!{python}
 import os, sys
@@ -93,3 +95,33 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(h))
     monkeypatch.setenv("USERPROFILE", str(h))
     return h
+
+
+@pytest.fixture
+def sdk_pip(fake_pip, monkeypatch):
+    """`fake_pip`, with install/sdk.py's interpreter pointed at it.
+
+    sys.executable itself is the thing patched, not a parameter on sdk.py,
+    because sys.executable IS the seam the command uses: pip is run as
+    `<interpreter> -m pip` and the import probe as `<interpreter> -c ...`,
+    both so that what gets installed and what gets imported are the same
+    interpreter. Giving sdk.py an interpreter argument that only tests ever
+    pass would fake a seam next to the real one rather than the real one.
+    """
+    monkeypatch.setattr(sys, "executable", str(fake_pip.exe))
+    return fake_pip
+
+
+def make_install_config(tmp_path, index=None, cafile=None, **kw):
+    """An install Config, so its seven fields are spelled in one place."""
+    fields = dict(
+        registry="https://artifactory.corp.local/api/npm/npm/",
+        index=index,
+        cafile=cafile,
+        settings={"env": {}},
+        settings_source=tmp_path / "settings.json",
+        statusline=None,
+        source=tmp_path / "lmi.json",
+    )
+    fields.update(kw)
+    return Config(**fields)

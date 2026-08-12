@@ -35,9 +35,23 @@ These come from the user and are invariants, not preferences:
    `--yes`, and both guard only against *hanging*: with no terminal each exits
    2 rather than waiting forever. `lmi upgrade` is the more dangerous of the
    two, since it replaces the binary currently running it.
-4. **Python 3.9 floor, standard library only at runtime.** No `match`, no
-   `X | Y` runtime unions, no builtin generics in evaluated annotations. `pytest`
-   is a dev extra and must never be imported by `lmi/`.
+4. **Python 3.9 floor, standard library only at runtime — with one bounded
+   exception.** No `match`, no `X | Y` runtime unions, no builtin generics in
+   evaluated annotations. `pytest` is a dev extra and must never be imported by
+   `lmi/`.
+
+   The exception is the `lmi schedule` SDK backend. `lmi/core/`, `lmi/cli.py`,
+   `lmi/commands/__init__.py` and the `install`, `config` and `upgrade`
+   commands are standard-library only and must stay importable on 3.9 with no
+   extra installed; **`lmi/commands/schedule/` may import `claude_agent_sdk`,
+   lazily, in one module** (`schedule/sdk.py`), and nowhere else. The package
+   is an optional extra, so `dependencies = []` stays true and every bootstrap
+   script keeps its `--no-index`. `tests/test_packaging.py` enforces both
+   halves — the extra exists, and no module outside `commands/schedule/`
+   imports it. The import is lazy because `commands/__init__.py` imports every
+   command at startup, and a missing or broken SDK must not break
+   `lmi install claude` and `lmi upgrade`, the two commands whose job is fixing
+   a machine in that state.
 5. **`-i` and `-c` are mutually required.** Either both or neither; each alone
    exits 2. There is deliberately no unlimited-loop mode — an unattended runner
    with no stop condition was judged not worth having.
@@ -52,12 +66,15 @@ Do not add features that were not asked for.
 lmi/cli.py                  parse and dispatch, nothing else
 lmi/commands/__init__.py    the command registry: one import, one list entry
 lmi/commands/schedule/      the command, as a self-contained package
+  backend.py                the mode vocabulary, and everything both backends
+                            must agree on. Imported by `config` and `install`
   config.py                 arguments, validation, the frozen Config
   paths.py                  where the log, state file and lock go
   prompt.py                 composing one iteration's prompt
   state.py                  template, backup-or-resume, completion check
-  stream.py                 `-v` only: claude's stream-json events to log lines
-  runner.py                 the loop and the claude invocation
+  stream.py                 `-v` only: two front ends onto one set of rows
+  sdk.py                    the SDK backend; the ONLY importer of the SDK
+  runner.py                 the loop, the seam, and the CLI backend
   exit_codes.py             this command's own codes (1, 3, 4)
 lmi/commands/install/       `lmi install claude`, as a self-contained package
   config.py                 arguments, config-file discovery, the frozen Config
@@ -65,18 +82,24 @@ lmi/commands/install/       `lmi install claude`, as a self-contained package
   statusline.py             finding and copying the statusline.js beside it
   prompts.py                every question, and the no-terminal guard
   npm.py                    locating npm, one npm command, the --global fallback
+  sdk.py                    the SDK's pip install, and the import that decides
+                            the mode. The only file naming the SDK package
   settings.py               what goes into ~/.claude/settings.json
   claude_json.py            what goes into ~/.claude.json
   gitbash.py                Windows Git Bash discovery and the env var
   runner.py                 the flow
   exit_codes.py             this command's codes (1, 3, 4)
-lmi/commands/config/        `lmi config switch`, as a self-contained package
-  args.py                   the nested subparser
+lmi/commands/config/        `lmi config`, as a self-contained package
+  subcommands.py            the nested registry: one import, one list entry
+  args.py                   the nested subparser, built from that registry
+  runner.py                 the dispatcher, and nothing else
+  output.py                 `say`, so the dispatcher can import subcommands
+  switch.py                 `lmi config switch`: the flow
   fragment.py               finding, reading and validating the switch file
   merge.py                  the recursive merge
   origin.py                 the write-once snapshot
-  runner.py                 the flow
-  exit_codes.py             this command's codes (3, 4)
+  schedule.py               `lmi config schedule`: show and set the backend
+  exit_codes.py             this command's codes (3, 4), shared by both verbs
 lmi/commands/upgrade/       `lmi upgrade`, as a self-contained package
   config.py                 arguments, the "lmi" config section, the frozen Config
   installation.py           detects the venv/--user install and refuses the rest
@@ -95,6 +118,7 @@ lmi/core/                   only genuinely command-agnostic code
   prompts.py                asking a question, and the no-terminal guard
   jsonfile.py               read / back up / atomically write a JSON document
   claude.py                 where Claude Code keeps its files
+  pip.py                    `<interpreter> -m pip`: build an argv, run it
 ```
 
 Three rules hold this shape together:
@@ -130,7 +154,25 @@ Three rules hold this shape together:
   no-terminal message is the caller's, so neither command's error text
   mentions the other.
 
-The claude invocation, in `runner.py`, is the delicate part:
+Three commands now import `commands/schedule/backend.py`, which is the one
+exception to "commands import only from `core/`". It is deliberate, and it is
+the same reasoning that moved `settings_path()` into `core/claude.py`: three
+copies of the valid-mode list is three chances for one command to write a value
+another refuses. It stays in `schedule/` rather than moving to `core/` because
+`schedule` owns what the value *means*, and `core/` has no opinion about
+backends. It must never import the SDK — `lmi config` and `lmi install` both
+import it, and both have to work on a machine whose SDK is missing.
+
+`lmi schedule` has two backends behind one seam, chosen by `schedule.mode` in
+the resolved `lmi.json` and defaulting to `sdk`. `runner._select_backend` is
+the only place the mode decides anything; `_CliBackend` and `_SdkBackend` each
+expose `prepare` / `describe` / `call`, and `call` returns the same
+`(exit code, quota?)` pair whichever one it is. **There is deliberately no
+fallback between them at run time** — see item 34.
+
+The claude invocation, in `runner.py`, is the **CLI backend's** and is the
+delicate part. It survives unchanged; it is now one of two paths rather than
+the only one:
 
 ```python
 subprocess.run(argv, stdin=prompt_fh, stdout=out_fh,
@@ -452,14 +494,211 @@ hand in two different files in the same folder:
     settings document naming a script that is not there yet, and a failed copy
     stops the command with the machine's previous settings still in place.
 
+And ten for the two backends. Appended, never renumbered: `tests/test_docs.py`
+pins item 22 by name.
+
+33. **The `schedule` log header must name the backend and what chose it.**
+    Both backends exit 0 on success and neither marks the state file, so
+    without `Backend   : <mode> (from <source>)` **nothing** in an unattended
+    run's only record distinguishes a run that used the intended backend from
+    one that did not. **Silent** by construction: the entire point of a switch
+    is that you cannot tell from the outcome — the difference shows up only in
+    cost, latency and which settings file was read. The source is half the
+    line; `sdk` alone does not say whether a config file chose it or nothing
+    did.
+34. **Neither backend ever falls back to the other at run time.** An
+    unimportable SDK under `sdk` mode is exit 2 naming all three fixes
+    (`lmi install claude`, `pip install "lmi[sdk]"`,
+    `lmi config schedule --mode cli`), raised before the lock and before the
+    header. The fallback is the *installer's*, once, out loud, written into a
+    file a human can read. **Silent** the other way: a runner that quietly
+    changed backend produces a log that looks exactly like a correct run.
+35. **`lmi install` decides the mode by importing, never from pip's exit
+    code.** `install/sdk.importable()` runs `sys.executable -c "import
+    claude_agent_sdk"` in a **subprocess**. pip's `rc` answers "did a package
+    get installed somewhere", which is not the question — it can exit 0 having
+    installed into a different interpreter from the one that will run
+    `lmi schedule`, which is why the install is `core/pip.prefix(sys.executable)`
+    and never a `pip` from `PATH`. An in-process import inside the process that
+    just ran pip can be misled by a populated `sys.path` cache, so a check that
+    looks stricter than `rc` while sharing this process is not. **Silent:** the
+    machine is written `sdk`, reports success, and every scheduled run
+    afterwards exits 2.
+36. **A failing pip warns and writes `cli`; it must not fail the install, and
+    must not be quiet.** This inverts `npm.install`'s rule deliberately: npm
+    failing means there is no Claude Code and the command has failed, whereas
+    pip failing means one of two supported backends is unavailable and the
+    other one — the one driving the binary npm just installed — works. So
+    `[WARN]`, mode `cli`, carry on, exit 0, and the settings, statusline and
+    onboarding documents are still written. **Silent** if the warning is
+    dropped: a degradation nobody is told about is indistinguishable from
+    success.
+37. **The mode is written last, after every Claude config write has
+    succeeded.** `schedule.mode` then only ever appears on a machine that got
+    all the way through. An earlier failure leaves `lmi.json` untouched, which
+    means the default — `sdk` — on a machine where pip may never have run;
+    that is item 34's loud exit 2 rather than a silent wrong backend, and it is
+    the right side to fail on.
+38. **An absent `claude.index` means "do not install the SDK", never "use
+    public PyPI".** It writes `cli` and says so, and is not an error: a site
+    that only wants the CLI backend should not have to configure a mirror it
+    will never use. **Silent** if defaulted to pypi.org: on an air-gapped
+    machine that is a timeout, and on one with egress it installs an unvetted
+    package from a different source than every other package on the box, at
+    exit 0 — defeating the only reason this command exists.
+39. **A mode write must land in the file discovery then resolves.**
+    `config/schedule._confirm_it_wins` re-runs discovery after creating a
+    config file from nothing and exits 2 if something else now wins. **Silent:**
+    writing `~/.lmi/config.json` while a higher-priority `./config/lmi.json`
+    exists reports success, leaves a file with exactly the right contents in
+    it, and `lmi schedule` keeps the old backend for ever. Only item 33's
+    header line would ever reveal it.
+40. **`setting_sources` must include the user source.** The sharpest asymmetry
+    between the backends: the CLI read `~/.claude/settings.json` by virtue of
+    *being* the CLI, while the SDK loads settings only from the sources it is
+    told to. **Silent:** omit it and SDK mode runs against the wrong endpoint
+    with no credentials — while `lmi config switch`, whose entire purpose is
+    changing that file, quietly stops affecting `lmi schedule` at all. Do not
+    simplify `SETTING_SOURCES` back to omitting the argument, and do not trim
+    it to `["user"]`: project and local are what the CLI reads too.
+41. **A message stream that ends with no `ResultMessage` is a failure, not a
+    zero.** `sdk._Sink.rc` therefore *starts* at a non-zero code and only a
+    `subtype == "success"` result lowers it to 0. **Silent** if mapped to 0:
+    that is regression 1 with a new front end — the iteration is counted as a
+    success, the run exits 0, and nothing was done. The failure code is
+    deliberately not `ITERATION_ERROR_RC` (90), which means "never reached
+    Claude at all"; a call that came back wrong is a different fact.
+42. **`permission_mode` must be a non-interactive one, and `can_use_tool` must
+    never be set.** Invariant 3 is that nothing in the unattended runner may
+    ever wait for a keypress, and the SDK's default permission mode is not
+    that — it asks. `acceptEdits` is the narrowest mode that still lets the
+    state file be written. Not silent but worse: the run **hangs** instead of
+    failing, and a `can_use_tool` callback that awaits anything is a keypress
+    wait wearing a library's clothes.
+
+    Two smaller facts ride along, both established rather than guessed:
+    `lmi upgrade` **cannot** remove or shadow the `sdk` extra — `upgrade/pip.py`
+    always passes `--no-deps` and never `--force-reinstall` or a fresh venv, so
+    it installs `lmi` and touches nothing else. Establish it again with
+    `python3 -m pip show claude-agent-sdk` either side of an `lmi upgrade`. And
+    the SDK front end in `stream.py` matches messages by **class name and
+    `getattr`**, never `isinstance`, which is what keeps `claude_agent_sdk`
+    imported in exactly one module and lets the renderer be tested with fakes.
+
+And two found by running the suite for the first time, against a real installed
+SDK, after the two-backend work was written. Both were written *because* the
+code was correct in the obvious places and wrong in one that is not obvious.
+
+43. **The quota scan must read `rate_limit_info`, which is the whole payload of
+    the SDK's `RateLimitEvent`.** `sdk._TEXT_ATTRS` is an allowlist of the
+    attributes scanned before anything renders them, and it began as
+    `result`/`content`/`data` — the three obvious ones. `RateLimitEvent` carries
+    its wording in none of them, so **the SDK's own name for the thing
+    `[QUOTA]` exists to catch was the one event that could not raise the tag**,
+    while the CLI backend caught the equivalent for free by scanning whole raw
+    lines. **Silent, and asymmetric between the backends** in the one signal
+    that says "do not trust this iteration": the iteration exits 0, the log
+    reads clean, and the two modes disagree about a rate limit neither operator
+    nor test would think to check. `RateLimitEvent` is also matched explicitly
+    in `stream.py` rather than left to `_give_up`, so it does not spend the one
+    degrade warning an iteration gets on a type lmi does know — which would let
+    a genuinely unknown type arriving later pass in silence.
+
+    The lesson generalises past this field: a scan whose input is an allowlist
+    of attribute names is only as complete as the last time somebody compared it
+    against the installed package. `tests/test_sdk_fake_shapes.py` is where that
+    comparison happens, and it must keep skipping rather than passing when the
+    extra is absent.
+44. **The `sdk` extra's version floor and the floor `lmi install claude` asks
+    pip for must be one string.** The extra's constraint governs only
+    `pip install "lmi[sdk]"`; `install/sdk.py` names the distribution to pip
+    directly, so a bare `claude-agent-sdk` there accepted whatever the index
+    offered. **Silent:** an index mirroring a version too old for
+    `ClaudeAgentOptions.setting_sources` installs cleanly, imports cleanly, is
+    written `sdk` — and then raises a `TypeError` on every iteration
+    afterwards. `install/sdk.importable()` cannot see it, because importing the
+    package is not the same as being able to build its options. Hence
+    `install/sdk.REQUIREMENT`, and `tests/test_packaging.py` pinning it equal to
+    the extra's. Keeping the floor high is safe on an air-gapped site: a pip
+    that cannot satisfy it fails, and item 36 then writes `cli` and exits 0.
+
+And one more, from the first `lmi schedule` run that ever reached a real SDK.
+Both halves are about the same three seconds of output and neither was
+guessable: **a failed SDK call does not look like anything the design expected.**
+With no valid credential, `claude_agent_sdk` 0.2.136 emits an
+`AssistantMessage` saying "Not logged in", then a `ResultMessage` carrying
+**`subtype == "success"` and `is_error == True` at the same time**, and *then*
+raises `Exception("Claude Code returned an error result: success")` on the error
+envelope behind it.
+
+45. **`sdk._rc_of` consults `is_error` AND `subtype`, and `sdk.call` keeps what
+    the sink already computed when the SDK raises after a result.** Three
+    versions of this were wrong in three different ways, each silent:
+    - **`subtype` alone** counts a failed call as a success, because the subtype
+      of a real failure is `"success"`. Exit 0, "1 succeeded", nothing done —
+      regression 1 with a new front end. A zero now requires both fields to
+      agree, and either one may fail the call.
+    - **letting the exception propagate** discards `rc` and `quota`, both
+      already correct on the sink. The iteration is then recorded as *skipped*
+      (`ITERATION_ERROR_RC`, "never reached Claude at all") for a call Claude
+      answered — item 41's distinction collapsed — and, worse, **`[QUOTA]` can
+      never fire**, because `_one_iteration` reads the flag from `call`'s return
+      value and never gets one. An exhausted quota is reported this way, so this
+      made the tag unreachable in SDK mode in exactly the case it exists for.
+    - **catching the exception unconditionally** loses item 12: a stream that
+      dies before any result must still be a skipped iteration with a traceback,
+      because nothing is known about it. Hence the split on
+      `_Sink.saw_result` — which cannot be derived from `rc`, since
+      `NO_RESULT_RC` and `CALL_FAILED_RC` are the same number by design.
+
+    The general lesson is worth more than the fix: **every one of these was
+    invisible to a green suite and to a code review, and all three fell out of a
+    single two-iteration run with no credential at all.** That run costs
+    nothing, needs no API key, and is described in README's testing section —
+    do it before trusting any change to this backend.
+46. **`-f` is forwarded in both backends, and exactly four flags are refused.**
+    The operator asked for parity with CLI mode, and the SDK's own
+    `extra_args` gives it without lmi learning claude's flag grammar: the SDK
+    renders `{"model": "opus"}` onto the argv of the `claude` it spawns, so `-f`
+    reaches the same command line either way. `sdk.parse_flags` therefore
+    converts *token shape* only, and knows four names — and only to refuse them:
+    `output-format` and `input-format` (the SDK and the CLI speak stream-json to
+    each other), `print` (the SDK owns the non-interactive mode), and
+    `permission-mode` (invariant 3).
+
+    The reason refusal is mandatory rather than fastidious: **`extra_args` is
+    appended *after* the flags the SDK builds for itself, and the CLI takes the
+    last occurrence of a repeated option.** So forwarding one of those four does
+    not add a flag, it overrides the SDK's own — and an overridden
+    `--output-format` breaks the protocol the SDK uses to parse its own child
+    process, which surfaces as a run that produces no activity and no result.
+    That is item 26's failure with the roles reversed. Refused, never dropped:
+    `-f` is where a site puts what it cannot say any other way, so silently
+    ignoring one is worse than either. Long options only — the mapping cannot
+    spell a single-dash option, and mangling `-p` into `---p` is not an
+    improvement on saying so.
+
 ---
 
 ## 4. Rules for editing
 
 1. **Run the suite after every change** and say in your report that you did:
-   `python3 -m pytest tests/ -q`. It is 505 tests in under three seconds and it
-   costs nothing — several bugs above only appear with awkward paths, or only
-   when a claude call fails.
+   `python3 -m pytest tests/ -q`. It ran in under three seconds and it costs
+   nothing — several bugs above only appear with awkward paths, or only when a
+   claude call fails.
+
+   **664 passed, 19 skipped, in under four seconds** — measured, not estimated.
+   It was 505 (1 skipped) before the two-backend work.
+
+   The 19 skips are the point of the number, not noise. Eighteen are
+   `test_sdk_fake_shapes.py`, which is the only module that validates the SDK
+   fake against the real dataclasses and which skips rather than fails when the
+   `sdk` extra is absent; the nineteenth is a Windows-only clause. So the
+   default run leaves the SDK backend's shapes unchecked, and
+   `pip install -e ".[sdk]"` then `python3 -m pytest tests/ -q` is the run that
+   checks them: **682 passed, 1 skipped**. Both numbers are worth knowing,
+   because a green default run is not evidence that the SDK backend matches the
+   SDK it will meet.
 2. **Preserve the five invariants in section 1** and everything in section 3.
    Where a comment in the code says "do not simplify this back to X", X is the
    bug.
@@ -495,8 +734,14 @@ hand in two different files in the same folder:
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 505 tests, 1 skipped, <3s, no install needed
+python3 -m pytest tests/ -q          # 664 passed, 19 skipped - no install needed
+pip install -e ".[sdk]"              # then 682 passed, 1 skipped: the 18 skips
+python3 -m pytest tests/ -q          # are the SDK shape checks. See 4.1
 ```
+
+The SDK backend's tests need `pip install -e ".[sdk]"` for the one module that
+validates the fake's message shapes against the real dataclasses; every other
+test runs without it and that one skips rather than errors.
 
 Fixtures worth knowing, in `tests/conftest.py` and the four per-command
 `conftest.py` files under `tests/commands/`:

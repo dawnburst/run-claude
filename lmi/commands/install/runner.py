@@ -14,9 +14,10 @@ provisioned and is not.
 
 import shutil
 
-from . import claude_json, gitbash, npm, prompts, settings, statusline
+from . import claude_json, gitbash, npm, prompts, sdk, settings, statusline
 from .config import build_config
 from .exit_codes import EXIT_CONFIG_WRITE, EXIT_INTERNAL
+from ..schedule import backend
 from ...core import jsonfile
 from ...core.errors import EXIT_OK, EXIT_USAGE, LmiError
 
@@ -79,6 +80,63 @@ NO_STATUSLINE = (
 
 STATUSLINE_WHAT = "Claude Code statusline script"
 
+# --- the SDK backend ------------------------------------------------------
+#
+# Every one of these is printed on a path that still exits 0. A degradation
+# nobody is told about is indistinguishable from success, and the thing being
+# degraded - which backend `lmi schedule` uses - is invisible in the result,
+# because both backends exit 0 when they work.
+
+SDK_QUESTION = (
+    "Install the Claude Agent SDK, so `lmi schedule` can use the %s backend?\n"
+    "  Declining is not a no-op: it sets this machine to the %s backend, which\n"
+    "  drives the `claude` command instead and needs no Python package.\n"
+    "  Install it"
+)
+
+SDK_DECLINED = (
+    "The SDK will not be installed, so `lmi schedule` is being set to the %s\n"
+    "backend. Change it later with: lmi config schedule --mode %s"
+)
+
+NO_INDEX = (
+    'No "claude.index" in %s, so the Claude Agent SDK was not installed and\n'
+    "`lmi schedule` is being set to the %s backend.\n"
+    "    That is a configuration, not a failure - a site that only wants the\n"
+    "    `%s` backend needs no PyPI mirror. To use the %s backend instead, add\n"
+    "    the key and run this again:\n\n"
+    '        "index": "https://artifactory.example.com/api/pypi/pypi-virtual/simple/"'
+)
+
+SDK_FAILED = (
+    "[WARN] the Claude Agent SDK was not installed, so `lmi schedule` is being\n"
+    "       set to the %s backend. Everything else on this machine is\n"
+    "       configured and working - this is one of two backends being\n"
+    "       unavailable, not a failed install.\n"
+    "       Package: %s\n"
+    "       Index:   %s\n"
+    "       lmi does not populate that index, and cannot tell you when it will\n"
+    "       carry the package. Once it does:\n\n"
+    "           lmi config schedule --mode %s"
+)
+
+SDK_NOT_IMPORTABLE = (
+    "[WARN] pip reported success, but %s still cannot be imported by the\n"
+    "       interpreter that will run `lmi schedule`:\n"
+    "           %s\n"
+    "       That is the case pip's exit code cannot see, which is why it is\n"
+    "       not what this command trusts."
+)
+
+MODE_REPORT = "`lmi schedule` backend: %s (written to %s)"
+
+MODE_REPORT_CLI = (
+    "`lmi schedule` backend: %s (written to %s)\n"
+    "  The SDK is not available on this machine; the %s backend drives the\n"
+    "  `claude` command that was just installed. Switch with:\n"
+    "      lmi config schedule --mode %s"
+)
+
 
 def run(args):
     try:
@@ -109,11 +167,19 @@ def _run(args):
         return EXIT_OK
 
     token = _ask_for_token()
+    wants_sdk = _agreed_to_install_sdk(cfg)
     bash_path = _resolve_git_bash()
 
     # --- from here on the machine changes -------------------------------
     _configure_npm(cfg, npm_exe)
     npm.install(npm_exe, say)
+
+    # After npm and before any Claude config file, extending the order that
+    # already holds between those two. An SDK installed onto a machine with no
+    # `claude` binary is the same "looks provisioned, is not": the SDK drives
+    # Claude Code, it does not replace it. A failing npm therefore reaches
+    # neither pip nor a config file.
+    mode = _install_sdk(cfg, wants_sdk)
 
     if bash_path:
         gitbash.persist(bash_path, say)
@@ -123,8 +189,15 @@ def _run(args):
     _write_statusline(cfg, stamp, backups)
     _write_settings(cfg, token, bash_path, settings.path(), stamp, backups)
     _write_onboarding_flag(stamp, backups)
+    # Last, after every Claude config write has SUCCEEDED. The schedule.mode
+    # key then only ever appears on a machine that got all the way through.
+    # A failure earlier leaves lmi.json untouched, which means the default -
+    # `sdk` - on a machine where pip may never have run; that is `lmi
+    # schedule`'s loud exit 2, not a silent wrong backend, and it is the right
+    # side to fail on.
+    _write_mode(cfg, mode)
 
-    _report(backups)
+    _report(backups, cfg, mode)
     return EXIT_OK
 
 
@@ -158,6 +231,27 @@ def _ask_for_token():
     raise LmiError(NO_TOKEN, EXIT_USAGE)
 
 
+def _agreed_to_install_sdk(cfg):
+    """Ask, in the ask-everything block, before the machine changes.
+
+    Deliberately unlike the repair question, where declining changes nothing at
+    all: there, nothing had been asked for. Here a decision was made, and the
+    decision is about which backend this machine uses - so declining WRITES
+    `cli`. Leaving the mode unset instead would leave the default pointing at
+    a backend the operator has just declined to install, and `lmi schedule`
+    would exit 2 on a machine this command reported as provisioned.
+
+    Not asked at all when there is no index to install from: there is nothing
+    to consent to, and the outcome is already decided. That line is printed
+    later, beside the rest of the SDK reporting.
+    """
+    if not cfg.index:
+        return False
+    return prompts.confirm(
+        SDK_QUESTION % (backend.SDK, backend.CLI), default=True
+    )
+
+
 def _resolve_git_bash():
     """The Git Bash path to record, or None. Always None off Windows."""
     if not gitbash.on_windows():
@@ -186,6 +280,53 @@ def _configure_npm(cfg, npm_exe):
         npm.config_set(npm_exe, "strict-ssl", "false", say)
         say(TLS_WARNING)
     npm.config_set(npm_exe, "registry", cfg.registry, say)
+
+
+def _install_sdk(cfg, wants_sdk):
+    """Install the SDK if asked to, and return the mode this machine gets.
+
+    A failing pip must NOT fail the install, and that inverts npm.install's
+    rule on purpose: npm failing means there is no Claude Code at all, whereas
+    pip failing means one of two supported backends is unavailable and the
+    other one - the one that drives the binary npm just installed - works
+    fine. So: warn, write `cli`, carry on, exit 0.
+
+    What it must never be is quiet. Every path out of here says which backend
+    the machine ended up with and why, because a degradation nobody is told
+    about is indistinguishable from success, and nothing afterwards reveals it:
+    both backends exit 0 when they work.
+    """
+    if not cfg.index:
+        say(NO_INDEX % (cfg.source, backend.CLI, backend.CLI, backend.SDK))
+        return backend.CLI
+    if not wants_sdk:
+        say(SDK_DECLINED % (backend.CLI, backend.CLI))
+        return backend.CLI
+
+    code = sdk.install(cfg, say)
+    # The exit code is not the check, and is not treated as one. It is only
+    # used to tell the two failure stories apart in the output - see
+    # SDK_NOT_IMPORTABLE, which is the case pip's rc cannot see at all.
+    if sdk.importable():
+        return backend.SDK
+    if code == 0:
+        say(SDK_NOT_IMPORTABLE % (sdk.MODULE, sdk.DISTRIBUTION))
+    say(SDK_FAILED % (backend.CLI, sdk.DISTRIBUTION, cfg.index, backend.SDK))
+    return backend.CLI
+
+
+def _write_mode(cfg, mode):
+    """Record the backend in the lmi.json this command read.
+
+    Through backend.write, which is the ONLY writer of this key - `lmi config
+    schedule` comes through the same function. Two implementations would be two
+    chances to get the merge or the atomic write wrong in only one of them.
+
+    The file is the one discovery resolved, so it exists and is the one
+    `lmi schedule` will read back: there is no shadowing case here, unlike
+    `lmi config schedule`, which may have to create a file from nothing.
+    """
+    backend.write(cfg.source, mode, EXIT_CONFIG_WRITE)
 
 
 def _write_statusline(cfg, stamp, backups):
@@ -264,7 +405,7 @@ def _back_up(path, stamp, what, backups):
 
 # --- reporting ------------------------------------------------------------
 
-def _report(backups):
+def _report(backups, cfg, mode):
     say("")
     if backups:
         say("Your previous configuration was saved:")
@@ -276,6 +417,13 @@ def _report(backups):
         say("Claude Code is installed: %s" % found)
     else:
         say(NO_CLAUDE_ON_PATH)
+    # This is where an operator looks to see what happened, so the backend is
+    # stated here as well as at the moment it was decided - by the time the
+    # command ends, the line that decided it has scrolled past a pip install.
+    if mode == backend.SDK:
+        say(MODE_REPORT % (mode, cfg.source))
+    else:
+        say(MODE_REPORT_CLI % (mode, cfg.source, mode, backend.SDK))
 
 
 def say(message=""):

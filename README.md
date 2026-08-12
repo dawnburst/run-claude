@@ -193,7 +193,7 @@ authoritative flag list.
 | `-i <minutes>` | Minutes to wait between iterations. **Requires `-c`.** `-i 0` runs them back to back. The wait starts only after an iteration has *ended*. |
 | `-c <count>` | Total number of iterations, must be > 0. **Requires `-i`.** Omit both for a single run. |
 | `-d <dir>` | Working directory for claude. Omitted = the current directory. |
-| `-f "<flags>"` | Extra claude CLI flags, appended after the always-on defaults. |
+| `-f "<flags>"` | Extra claude flags, in **both** backends. `cli` appends them to the argv; `sdk` forwards them to the `claude` it spawns. Long options only. |
 | `-l <folder or file>` | Log destination. A folder receives `run-claude-<timestamp>.log`; a path with an extension is used as the log file itself. Omitted = `<workdir>/run-claude-<timestamp>.log`. |
 | `-s <file>` | State file. Omitted = `<workdir>/run-claude-state.md`. |
 | `-r` | Resume: keep the existing state file instead of backing it up and starting clean. |
@@ -205,9 +205,121 @@ when to stop; `-c` says how many iterations but never how long to wait between
 them. There is deliberately no unlimited-loop mode: an unattended runner with no
 stop condition is a liability.
 
-Every invocation always passes `--allowed-tools=Edit,Write` and
-`--add-dir <state file directory>`. Anything you give with `-f` is appended after
-those, so `-f "--model opus"` composes rather than replaces.
+Every invocation always grants exactly `Edit,Write` and the state file's
+directory, in both backends. Under the `cli` backend that is
+`--allowed-tools=Edit,Write` and `--add-dir <state file directory>` on the
+command line, and anything you give with `-f` is appended after those, so
+`-f "--model opus"` composes rather than replaces.
+
+**`-f` works in both backends**, and means the same thing in both: your flags end
+up on a `claude` command line. Under `cli` lmi appends them to the argv it builds.
+Under `sdk` they are handed to the SDK as `extra_args`, which the SDK renders onto
+the argv of the `claude` it spawns — so `-f "--model claude-haiku-4-5"` changes the
+model in either mode, and the log header records what was forwarded:
+
+```
+Flags     : --model claude-haiku-4-5 --max-turns 2
+```
+
+lmi does not interpret your flags in either mode. Under `sdk` it converts token
+shape into the name/value mapping the SDK wants — `--flag value`, `--flag=value`
+and a bare `--flag` all work — and knows only two things beyond that:
+
+- **Long options only.** The SDK forwards flags as a mapping, which cannot spell
+  a single-dash option, so `-f "-p"` is exit 2 rather than a mangled `---p`.
+  Write `--flag=-value` when a *value* begins with a dash.
+- **Four flags are refused**, with exit 2 naming the reason:
+  `--output-format` and `--input-format` (the SDK and the CLI speak stream-json
+  to each other, and `extra_args` is appended *after* the SDK's own flags, so a
+  duplicate overrides rather than adds), `--print` (the SDK owns the
+  non-interactive mode), and `--permission-mode` (lmi sets a non-interactive one
+  — see [Guarantees](#guarantees)). Refused, never dropped: `-f` is where a site
+  puts what it cannot say any other way, so silently ignoring one would be the
+  worst outcome available.
+
+### Backends
+
+`lmi schedule` can reach Claude two ways, and the choice is configuration
+rather than a flag:
+
+| Mode | What it does | Needs |
+|---|---|---|
+| `sdk` | **The default.** Calls the Claude Agent SDK as a Python library and consumes typed messages. | `claude-agent-sdk`, Python 3.10+ |
+| `cli` | Runs `claude -p`, feeds the prompt on stdin and parses stdout. | nothing beyond the `claude` command |
+
+**SDK mode still runs a Claude Code binary.** The SDK is Claude Code as a
+library, not a replacement for it — the wheels bundle a binary and spawn it,
+and where pip installs the source distribution instead, the SDK looks for
+`claude` on `PATH`. So `lmi install claude`'s npm half is necessary either way.
+
+`cli` mode needs no pip install at all and keeps lmi on its Python 3.9 floor,
+standard library only. The SDK is an optional extra (`pip install "lmi[sdk]"`),
+which is what lets every bootstrap script install lmi with `--no-index`.
+
+Read or change the mode with:
+
+```bash
+lmi config schedule                    # show it, and say which file chose it
+lmi config schedule --mode cli         # set it
+```
+
+and see it in every run's log header:
+
+```
+Backend   : sdk (from /home/you/.lmi/config.json)
+```
+
+That line matters more than it looks. **Both backends exit 0 on success**, so
+nothing in the result of a run tells you which one produced it — the header is
+the only record.
+
+There is deliberately **no fallback between them at run time**. If the mode
+says `sdk` and the SDK cannot be imported, the run stops with exit 2 naming
+every way to fix it, rather than quietly running the other backend. Choosing a
+backend is the installer's job, done once and written into a file you can read.
+
+#### Smoke-testing SDK mode without any credential
+
+You do not need an API key, a token or a login to check that SDK mode is wired
+up. Point it at a throwaway home and working directory, with every
+`ANTHROPIC_*` variable unset:
+
+```bash
+mkdir -p /tmp/nokey/home /tmp/nokey/work
+printf '{ "schedule": { "mode": "sdk" } }\n' > /tmp/nokey/lmi.json
+
+env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL \
+    HOME=/tmp/nokey/home \
+    lmi schedule 'say hello and stop' -d /tmp/nokey/work \
+        -i 0 -c 2 -v --config /tmp/nokey/lmi.json
+```
+
+Every call fails, which is the point: what you are checking is everything
+*around* the call. Expect exit 1, and in the log
+
+```
+Backend   : sdk (from /tmp/nokey/lmi.json)
+SDK       : claude_agent_sdk 0.2.136
+Tools     : Edit,Write
+Permission: acceptEdits
+Settings  : user,project,local
+[claude] text    Not logged in · Please run /login
+[claude] done    error - 1 turns - 0.1s - Not logged in · Please run /login
+[ERROR] the SDK reported the call failed - Exception: ...
+[ERROR] === Iteration 1 of 2 FAILED at ... - claude exit code 91 - 0s ===
+2 run/s, 0 succeeded, 2 failed.
+```
+
+That confirms the mode resolved and was logged, the options carry the tools,
+permission mode and settings sources, the prompt was composed, the state file
+was created, the renderer works, a failed call is recorded as **exit code 91 —
+a failed call, not a skipped iteration** — and the loop survives to iteration 2
+rather than the run ending. `-c 2` is not incidental: one iteration cannot show
+that the loop survives.
+
+Costs nothing and spends no quota, because there is no credential to spend it
+with. `CLAUDE.md` item 45 is three separate silent bugs this run found and a
+green test suite did not — run it before trusting any change to this backend.
 
 `-l` and `-s` expand a leading `~` themselves, so a quoted `-s "~/notes/state.md"`
 — which the shell leaves untouched — still lands in your home directory instead of
@@ -517,6 +629,7 @@ registry without anybody finding out.
 {
   "claude": {
     "registry": "https://artifactory.example.com/api/npm/npm-virtual/",
+    "index": "https://artifactory.example.com/api/pypi/pypi-virtual/simple/",
     "cafile": "/etc/ssl/certs/corp-ca.pem"
   }
 }
@@ -525,13 +638,25 @@ registry without anybody finding out.
 | Key | Required | Meaning |
 |---|---|---|
 | `registry` | **yes** | The npm registry URL to install from — your internal Artifactory. |
-| `cafile` | no | PEM file for the internal CA. Present: TLS verification stays on. Absent: `npm config set strict-ssl false`, with a warning every run. |
+| `index` | no | The **Python** package index the Claude Agent SDK is installed from. Absent: the SDK is not installed and the machine is set to the `cli` backend. See [Backends](#backends). |
+| `cafile` | no | PEM file for the internal CA. Covers both npm and pip. Present: TLS verification stays on. Absent: `npm config set strict-ssl false` plus a per-invocation `--trusted-host` for pip, with a warning every run. |
 
-Two keys, and no more. Anything else in the file is ignored, and the whole
+Three keys, and no more. Anything else in the file is ignored, and the whole
 `claude` section is validated before a single npm command runs. `cafile` in
 particular is checked for existence up front, because `npm config set cafile
 /typo` succeeds and the mistake resurfaces much later as an unrelated TLS error
 from the install step.
+
+An absent `index` means **"do not install the SDK"** — it never means public
+PyPI. On an air-gapped machine reaching for pypi.org is a timeout; on a machine
+with egress it would install an unvetted package from a different source than
+everything else on the box, and exit 0, which defeats the only reason this
+command exists. A site that wants only the CLI backend simply leaves the key
+out.
+
+The **`schedule`** section of the same file carries `mode`, which chooses the
+backend. `lmi install claude` writes it and `lmi config schedule` changes it;
+you rarely write it by hand. See [Backends](#backends).
 
 Everything that ends up in `~/.claude/settings.json` — the marketplaces, the
 256K context profile, the gateway URL — lives in the settings template below,
@@ -651,10 +776,41 @@ machine changes**. Abandon the command at a prompt and nothing has been touched.
 |---|---|---|
 | `Repair the installation?` | only when `claude` is already on PATH — the resolved path is printed first | keeps the default, **no**: exit 0, no npm command, no backup, no write |
 | `Claude Code auth token` | on every run that is going to do anything — i.e. once the repair question, if it was asked at all, has been answered yes. Read with `getpass`, so it is never echoed into your scrollback | **is refused.** Asked again, up to three times, then exit 2 with nothing changed |
+| `Install the Claude Agent SDK…?` | only when `claude.index` is set — with no index there is nothing to consent to | keeps the default, **yes** |
 | `Full path to bash.exe` | Windows only, and only when no Git Bash was found | skips it, with a `[WARN]` naming `CLAUDE_CODE_GIT_BASH_PATH` |
 
 Declining the repair is not an error. You answered the question; the answer was
 no; exit 0.
+
+Declining the **SDK** question, on the other hand, is not a no-op — and the
+question says so. It sets this machine to the `cli` backend, because leaving
+the mode unset would leave the default pointing at a backend you have just
+declined to install, and every `lmi schedule` afterwards would exit 2 on a
+machine this command reported as provisioned.
+
+### What it installs, besides Claude Code
+
+When `claude.index` is set and you agreed, `lmi install claude` also runs one
+pip command to install **`claude-agent-sdk`** — into `sys.executable`, the very
+interpreter that will run `lmi schedule`, never a `pip` found on `PATH`.
+
+Then it decides the backend by **importing the package in a subprocess**, not
+by looking at pip's exit code. pip exiting 0 answers "did something get
+installed somewhere", which is not the question: it can succeed into a
+different interpreter entirely, and the machine would be written `sdk` while
+every scheduled run afterwards exits 2.
+
+Import works → mode `sdk`. Anything else → mode `cli`, with a `[WARN]` naming
+the package, the index it was sought from, and `lmi config schedule --mode sdk`
+as the way back once your Artifactory carries it. **A failing pip does not fail
+the install**: it means one of two backends is unavailable and the other one —
+driving the binary npm just installed — works fine. Everything else is still
+written and the command exits 0.
+
+There is deliberately no retry against public PyPI, and no `--user`,
+`--break-system-packages` or `--target` retry. Each would either install from a
+source your site has not vetted, or put the package somewhere `sys.executable`
+cannot import it from, and both exit 0 while looking like a fix.
 
 ### What it writes
 
@@ -681,6 +837,12 @@ tidier-looking order — write the token, then `chmod` — would leave it readab
 every user on the box for the length of the write, and leave nothing behind to
 show it had. On Windows `os.chmod` only toggles the read-only bit and grants no
 protection — `lmi` does not pretend otherwise there.
+
+The `lmi.json` it read — `schedule.mode`, set to `sdk` or `cli`. This is written
+**last**, after every Claude configuration file has been written successfully,
+so the key only ever appears on a machine that got all the way through. The
+rest of the document is merged into, never replaced: the `claude` and `lmi`
+sections other commands depend on survive untouched.
 
 `~/.claude.json`, one key: `hasCompletedOnboarding` set to `true`. **Lowercase
 `b`.** `hasCompletedOnBoarding` is the natural way to write it, and it writes
@@ -986,6 +1148,53 @@ perfectly valid fragment can mean nothing at all. Worth doing once:
 
 ---
 
+## lmi config schedule
+
+Shows or sets which backend `lmi schedule` runs Claude through. See
+[Backends](#backends) for what the two are.
+
+```bash
+lmi config schedule                    # show
+lmi config schedule --mode cli         # set
+lmi config schedule --mode sdk --config ./config/lmi.json
+```
+
+With no `--mode` it prints three things, and the third is the one you cannot
+deduce from the other two:
+
+```
+Backend    : sdk
+Chosen by  : default
+--mode goes to: /home/you/.lmi/config.json
+             (no config file exists yet; it would be created)
+```
+
+`Chosen by` is the file the value came from, or `default` when no config file
+said anything — an absent `mode` key falls back without naming a file at all,
+which is why "where would a change go?" is a separate line.
+
+The write goes to whichever config file [the usual search
+order](#the-config-file) resolves. When nothing is found it creates
+`~/.lmi/config.json` — the machine-level file, since a backend is a property of
+the machine, and a config file created inside a checkout gets committed by
+accident — and then **re-runs discovery to confirm the file it just wrote is
+the one that wins**. If it is not, that is exit 2 naming both paths. Writing
+`~/.lmi/config.json` while a higher-priority `./config/lmi.json` exists would
+otherwise report success while `lmi schedule` kept the old backend for ever.
+
+An invalid `--mode` is exit 2 **before any file is touched**, with the same
+message `lmi schedule` produces for the same bad value in a config file — one
+list of valid names, in one place.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Shown, or written. |
+| 2 | A mode that is not `sdk` or `cli`; a `--config` that does not exist; a config file that is not valid JSON; or the shadowed-write case above. |
+| 3 | The config file could not be read or written. |
+| 4 | A bug in lmi. |
+
 ## lmi upgrade
 
 The third command. It installs a newer `lmi` from the package index named in the
@@ -1115,17 +1324,24 @@ lmi/                  the package
                       (fcntl / msvcrt), logging, config file discovery,
                       asking a yes/no question, reading and atomically
                       writing a JSON document, where Claude Code keeps its
-                      files
+                      files, and building/running one
+                      <interpreter> -m pip command
   commands/
-    config/           the lmi config switch command: the fragment, the
-                      recursive merge, the pristine snapshot
+    config/           the lmi config command, as a registry of subcommands:
+                      switch (the fragment, the recursive merge, the pristine
+                      snapshot) and schedule (showing and setting the backend)
     install/          the lmi install claude command: the "claude" config
-                      section, the prompts, npm, the two Claude config
-                      documents, Windows Git Bash
-    schedule/         the lmi schedule command: config/validation, paths,
-                      prompt composition, the state file, the iteration loop
+                      section, the prompts, npm, the pip install of the
+                      Claude Agent SDK, the two Claude config documents, the
+                      statusline script, Windows Git Bash
+    schedule/         the lmi schedule command: the backend vocabulary both
+                      backends agree on, config/validation, paths, prompt
+                      composition, the state file, the iteration loop, and
+                      the two backends - the CLI one in runner.py, the SDK
+                      one in sdk.py, which is the only module in the package
+                      that imports claude_agent_sdk
     upgrade/          the lmi upgrade command: the "lmi" config section,
-                      detecting the installation, the one pip command,
+                      detecting the installation, the version probe,
                       verifying by running the installed script
 tests/                pytest suite, mirrors the lmi/ tree
 config/lmi.json       the config lmi install claude reads by default, when run
@@ -1174,14 +1390,23 @@ python3 -m pytest tests/ -v
 No install is required first — pytest puts the repository root on `sys.path`,
 so the suite runs against a clean checkout. A virtual environment is only
 needed to exercise the installed `lmi` console script itself, not to run the
-tests. Currently **420 tests, 1 skipped, the rest passing**, in under two
-seconds.
+tests. It ran in under two seconds.
 
-The suite never reaches a real `claude`, a real `npm`, or a real `pip`: the
-`fake_claude`, `fake_npm` and `fake_pip` fixtures replace `PATH` (or, for pip,
-the interpreter) entirely with a temporary one, so no test can spend quota,
-rewrite your `~/.npmrc`, or install a real package over the developer's own
-`lmi`. The fakes are real subprocesses, deliberately, because the argv, the
+**The count that used to be quoted here has been removed rather than updated.**
+The two-backend work changed and added tests in an environment where the suite
+could not be executed at all, so any number here would be a guess. Run the
+command and see. The SDK backend's shape-validation module additionally needs
+`pip install -e ".[sdk]"`; without it that one module skips rather than errors,
+and everything else runs regardless.
+
+The suite never reaches a real `claude`, a real `npm`, a real `pip` or the real
+SDK: the `fake_claude`, `fake_npm` and `fake_pip` fixtures replace `PATH` (or,
+for pip, the interpreter) entirely with a temporary one, so no test can spend
+quota, rewrite your `~/.npmrc`, or install a real package over the developer's
+own `lmi`. The SDK needs a different guarantee, because `PATH` replacement
+protects nothing once the call is a Python import — the SDK spawns a bundled
+binary of its own. So an SDK-mode test that forgets its fake **fails loudly**
+rather than reaching the real service. The fakes are real subprocesses, deliberately, because the argv, the
 stdin redirection and the exit code are the parts most worth
 covering.
 
@@ -1235,9 +1460,14 @@ So: the **3.9 floor** is tested. **Linux** and **Windows** are tested. On
 
 ### Still to verify
 
-Three measurements have not been taken. None blocks use of `lmi schedule` or
-`lmi upgrade`; all are named so nobody mistakes reasoning for evidence. `lmi
-install claude` has its own five, in [Real-run checklist](#real-run-checklist).
+Nine measurements have not been taken. All are named so nobody mistakes
+reasoning for evidence. `lmi install claude` has its own five, in
+[Real-run checklist](#real-run-checklist).
+
+Items 4 to 9 are the two-backend work, **none of which has been run at all** —
+it was written in an environment where neither the test suite nor a real
+`claude` could be executed. Treat everything about the `sdk` backend as
+unverified code, not as a working feature.
 
 1. **A real multi-iteration loop against the actual `claude` CLI.** The
    single-iteration half passes: a real run against `~/.local/bin/claude`
@@ -1260,6 +1490,30 @@ install claude` has its own five, in [Real-run checklist](#real-run-checklist).
    same volume, so this is expected to work — but only a real Windows run
    settles it. If it fails, the exit-1 message already carries the
    `python -m pip …` line to run from a shell where no `lmi` is live.
+4. **The test suite itself, against the two-backend changes.**
+   `python3 -m pytest tests/ -q` was never run while they were written. Run it
+   first; expect to fix fallout before anything below is meaningful.
+5. **One real `lmi install claude` per outcome**, against a throwaway `HOME`:
+   one against an index that carries `claude-agent-sdk`, ending in mode `sdk`,
+   and one against an index that does not, ending in mode `cli` with the
+   `[WARN]` — both exiting 0.
+6. **Which distribution form the site's Artifactory actually serves.** A
+   platform wheel bundles a Claude Code binary; the source distribution does
+   not, and an SDK-mode run then needs `claude` on `PATH` **in the shell the
+   scheduler uses** — a different and easier thing to get wrong than a `PATH`
+   in an interactive terminal. `pip download --no-deps claude-agent-sdk`
+   against the index shows what the mirror offers. Until this is settled, the
+   `sdk` extra's version floor in `pyproject.toml` is a placeholder too.
+7. **One real single-iteration `lmi schedule` run per mode**, and a diff of the
+   two logs. The claim that both backends render identical rows for equivalent
+   events is only ever tested by two real logs; regressions in this project
+   have twice been found by real runs and not by tests.
+8. **`lmi config schedule` against a read-only config file.**
+9. **Whether `lmi upgrade` disturbs the SDK.** Reasoning says no —
+   `upgrade`'s pip call always passes `--no-deps` and never `--force-reinstall`,
+   and the SDK is an extra rather than a dependency — but that is reasoning.
+   `python3 -m pip show claude-agent-sdk` either side of an `lmi upgrade`
+   settles it.
 
 ---
 

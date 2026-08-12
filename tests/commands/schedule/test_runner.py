@@ -24,14 +24,14 @@ def _default_state(tmp_path):
     return str(tmp_path / paths.STATE_NAME)
 
 
-def test_single_run_invokes_claude_once(tmp_path, fake_claude, capsys):
+def test_single_run_invokes_claude_once(tmp_path, fake_claude, cli_mode, capsys):
     rc = main(["schedule", "hello", "-d", str(tmp_path)])
     assert rc == 0
     assert _count(fake_claude) == 1
     assert "fake claude call 1" in capsys.readouterr().out
 
 
-def test_default_flags_and_add_dir_reach_the_cli(tmp_path, fake_claude):
+def test_default_flags_and_add_dir_reach_the_cli(tmp_path, fake_claude, cli_mode):
     main(["schedule", "hello", "-d", str(tmp_path)])
     argv = (fake_claude.dir / "argv-1.txt").read_text().splitlines()
     assert argv[0] == "-p"
@@ -39,7 +39,8 @@ def test_default_flags_and_add_dir_reach_the_cli(tmp_path, fake_claude):
     assert "--add-dir" in argv
 
 
-def test_user_flags_are_appended_after_the_defaults(tmp_path, fake_claude):
+def test_user_flags_are_appended_after_the_defaults(tmp_path, fake_claude,
+                                                    cli_mode):
     main(["schedule", "hello", "-d", str(tmp_path), "-f", "--verbose --model x"])
     argv = (fake_claude.dir / "argv-1.txt").read_text().splitlines()
     # Order matters: defaults, then --add-dir, then the user's flags last.
@@ -47,7 +48,8 @@ def test_user_flags_are_appended_after_the_defaults(tmp_path, fake_claude):
     assert argv.index("--allowed-tools=Edit,Write") < argv.index("--verbose")
 
 
-def test_the_composed_prompt_reaches_claude_on_stdin(tmp_path, fake_claude):
+def test_the_composed_prompt_reaches_claude_on_stdin(tmp_path, fake_claude,
+                                                     cli_mode):
     main(["schedule", "write a haiku", "-d", str(tmp_path)])
     body = (fake_claude.dir / "prompt-1.txt").read_text(encoding="utf-8")
     assert "# Unattended automated run" in body
@@ -55,19 +57,21 @@ def test_the_composed_prompt_reaches_claude_on_stdin(tmp_path, fake_claude):
     assert "write a haiku" in body
 
 
-def test_back_to_back_loop_runs_count_times(tmp_path, fake_claude):
+def test_back_to_back_loop_runs_count_times(tmp_path, fake_claude, cli_mode):
     assert main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "3"]) == 0
     assert _count(fake_claude) == 3
 
 
-def test_early_stop_when_line_one_becomes_complete(tmp_path, fake_claude, monkeypatch):
+def test_early_stop_when_line_one_becomes_complete(tmp_path, fake_claude,
+                                                   cli_mode, monkeypatch):
     monkeypatch.setenv("FAKE_STATE_FILE", _default_state(tmp_path))
     monkeypatch.setenv("FAKE_COMPLETE_AT", "2")
     assert main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "5"]) == 0
     assert _count(fake_claude) == 2
 
 
-def test_prose_complete_does_not_stop_the_loop(tmp_path, fake_claude, monkeypatch):
+def test_prose_complete_does_not_stop_the_loop(tmp_path, fake_claude, cli_mode,
+                                               monkeypatch):
     """MANDATORY. The prose false positive: widening check_complete to search
     the whole file must turn this red."""
     monkeypatch.setenv("FAKE_STATE_FILE", _default_state(tmp_path))
@@ -76,25 +80,28 @@ def test_prose_complete_does_not_stop_the_loop(tmp_path, fake_claude, monkeypatc
     assert _count(fake_claude) == 3
 
 
-def test_failing_claude_call_never_kills_the_runner(tmp_path, fake_claude, monkeypatch):
+def test_failing_claude_call_never_kills_the_runner(tmp_path, fake_claude,
+                                                    cli_mode, monkeypatch):
     monkeypatch.setenv("FAKE_RC", "7")
     rc = main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2"])
     assert rc == 1                      # at least one call failed
     assert _count(fake_claude) == 2      # but the loop kept going
 
 
-def test_quota_wording_is_flagged(tmp_path, fake_claude, monkeypatch, capsys):
+def test_quota_wording_is_flagged(tmp_path, fake_claude, cli_mode, monkeypatch,
+                                  capsys):
     monkeypatch.setenv("FAKE_OUT", "Error: you have exceeded your usage limit")
     main(["schedule", "x", "-d", str(tmp_path)])
     assert "[QUOTA]" in capsys.readouterr().out
 
 
-def test_claude_output_reaches_the_log(tmp_path, fake_claude):
+def test_claude_output_reaches_the_log(tmp_path, fake_claude, cli_mode):
     main(["schedule", "x", "-d", str(tmp_path)])
     assert "fake claude call 1" in _log_body(tmp_path)
 
 
-def test_per_iteration_completion_is_logged_with_a_duration(tmp_path, fake_claude):
+def test_per_iteration_completion_is_logged_with_a_duration(
+        tmp_path, fake_claude, cli_mode):
     """Every iteration gets a finish line - iteration, exit code, duration -
     whether it succeeded or failed. That information must reach the log and not
     just the terminal, since the log is the only record of an unattended run
@@ -110,12 +117,13 @@ def test_per_iteration_completion_is_logged_with_a_duration(tmp_path, fake_claud
     assert matches2, "second iteration's completion line is missing"
 
 
-def test_at_in_the_past_starts_immediately(tmp_path, fake_claude):
+def test_at_in_the_past_starts_immediately(tmp_path, fake_claude, cli_mode):
     rc = main(["schedule", "x", "-d", str(tmp_path), "-t", "2020-01-01 00:00"])
     assert rc == 0 and _count(fake_claude) == 1
 
 
-def test_second_run_is_refused_while_the_lock_is_held(tmp_path, fake_claude):
+def test_second_run_is_refused_while_the_lock_is_held(tmp_path, fake_claude,
+                                                      cli_mode):
     from lmi.core.lock import single_instance_lock
     lock = tmp_path / paths.LOCK_NAME
     with single_instance_lock(lock):
@@ -124,12 +132,13 @@ def test_second_run_is_refused_while_the_lock_is_held(tmp_path, fake_claude):
     assert _count(fake_claude) == 0      # claude was never started
 
 
-def test_the_lock_is_free_again_afterwards(tmp_path, fake_claude):
+def test_the_lock_is_free_again_afterwards(tmp_path, fake_claude, cli_mode):
     assert main(["schedule", "x", "-d", str(tmp_path)]) == 0
     assert main(["schedule", "x", "-d", str(tmp_path)]) == 0
 
 
-def test_semantic_validation_reaches_the_cli_as_exit_2(tmp_path, fake_claude):
+def test_semantic_validation_reaches_the_cli_as_exit_2(tmp_path, fake_claude,
+                                                       cli_mode):
     """Until this task, run() was a placeholder, so build_config was only ever
     called directly by unit tests and no test proved an LmiError raised inside
     it becomes an exit status. Cover the wiring end to end."""
@@ -139,7 +148,8 @@ def test_semantic_validation_reaches_the_cli_as_exit_2(tmp_path, fake_claude):
     assert main(["schedule", "x", "-d", str(tmp_path), "-t", "nonsense"]) == 2
 
 
-def test_an_internal_failure_is_written_to_the_log(tmp_path, fake_claude, monkeypatch):
+def test_an_internal_failure_is_written_to_the_log(tmp_path, fake_claude,
+                                                   cli_mode, monkeypatch):
     """A crash in the runner must land in the log, not only on the terminal -
     otherwise an unattended run that died is undiagnosable afterwards.
 
@@ -160,7 +170,7 @@ def test_an_internal_failure_is_written_to_the_log(tmp_path, fake_claude, monkey
 
 # --- Critical 1: a long inline prompt, end to end -------------------------
 
-def test_a_long_hebrew_inline_prompt_runs(tmp_path, fake_claude):
+def test_a_long_hebrew_inline_prompt_runs(tmp_path, fake_claude, cli_mode):
     """143 Hebrew characters are 286 bytes, which made the path classifier
     raise ENAMETOOLONG before the lock and before any logging."""
     long_prompt = "א" * 143
@@ -170,14 +180,14 @@ def test_a_long_hebrew_inline_prompt_runs(tmp_path, fake_claude):
     assert long_prompt in got
 
 
-def test_an_over_long_log_path_exits_2_not_1(tmp_path, fake_claude):
+def test_an_over_long_log_path_exits_2_not_1(tmp_path, fake_claude, cli_mode):
     rc = main(["schedule", "x", "-d", str(tmp_path), "-l",
                str(tmp_path / ("L" * 300))])
     assert rc == 2
     assert _count(fake_claude) == 0
 
 
-def test_an_over_long_state_path_exits_2_not_1(tmp_path, fake_claude):
+def test_an_over_long_state_path_exits_2_not_1(tmp_path, fake_claude, cli_mode):
     rc = main(["schedule", "x", "-d", str(tmp_path), "-s",
                str(tmp_path / ("S" * 300))])
     assert rc == 2
@@ -187,7 +197,7 @@ def test_an_over_long_state_path_exits_2_not_1(tmp_path, fake_claude):
 # --- the prose false positive, in the shape the old fixtures missed -------
 
 def test_complete_on_line_two_does_not_stop_the_loop(tmp_path, fake_claude,
-                                                     monkeypatch):
+                                                     cli_mode, monkeypatch):
     """MANDATORY, end to end. The state file's line 1 is blank
     and line 2 says COMPLETE: a whole-file search matches (^\\s* spans the
     newline) and would stop the loop after iteration 1, while the line-1-only
@@ -201,7 +211,7 @@ def test_complete_on_line_two_does_not_stop_the_loop(tmp_path, fake_claude,
 # --- Important 4: an exception mid-iteration must not abort the loop ------
 
 def test_a_wrecked_temp_workspace_skips_the_iteration_and_keeps_looping(
-    tmp_path, fake_claude, monkeypatch
+    tmp_path, fake_claude, cli_mode, monkeypatch
 ):
     """MANDATORY. Invariant 2's exception half. The stub deletes the runner's
     whole temp workspace after each call, so every iteration after the first
@@ -233,7 +243,7 @@ def test_a_wrecked_temp_workspace_skips_the_iteration_and_keeps_looping(
 
 
 def test_a_transient_oserror_from_subprocess_is_survived(
-    tmp_path, fake_claude, monkeypatch
+    tmp_path, fake_claude, cli_mode, monkeypatch
 ):
     """The same guard, on the other realistic source: subprocess.run itself
     failing (EAGAIN, a vanished executable) rather than claude exiting."""
@@ -254,7 +264,8 @@ def test_a_transient_oserror_from_subprocess_is_survived(
     assert _count(fake_claude) == 2
 
 
-def test_a_bad_prompt_file_ends_the_run_as_a_usage_error(tmp_path, fake_claude):
+def test_a_bad_prompt_file_ends_the_run_as_a_usage_error(
+        tmp_path, fake_claude, cli_mode):
     """The other side of the guard: a deterministic usage error must NOT be
     retried for every remaining iteration. It ends the run with exit 2, and
     the reason is in the log."""
@@ -269,7 +280,7 @@ def test_a_bad_prompt_file_ends_the_run_as_a_usage_error(tmp_path, fake_claude):
 # --- Important 5: errors inside the locked region reach the log -----------
 
 def test_a_state_write_failure_reaches_the_log_file(tmp_path, fake_claude,
-                                                    monkeypatch):
+                                                    cli_mode, monkeypatch):
     """MANDATORY. Design 8.2: nothing the runner reports is lost from the log.
     cli.py prints an LmiError on stderr, which for a Task Scheduler or cron
     run goes nowhere - the log would end at "State file : created new" with no
@@ -291,7 +302,7 @@ def test_a_state_write_failure_reaches_the_log_file(tmp_path, fake_claude,
 @skip_as_root
 @pytest.mark.skipif(os.name == "nt", reason="needs POSIX symlinks")
 def test_a_really_unwritable_state_path_reaches_the_log_file(
-    tmp_path, fake_claude, readonly_dir
+    tmp_path, fake_claude, cli_mode, readonly_dir
 ):
     """The same thing without a monkeypatch: the state file is a symlink into
     a read-only directory, so its directory (and therefore the lock and the
@@ -308,7 +319,7 @@ def test_a_really_unwritable_state_path_reaches_the_log_file(
 
 @skip_as_root
 def test_an_unwritable_state_directory_is_a_usage_error_not_a_bug(
-    tmp_path, fake_claude, readonly_dir
+    tmp_path, fake_claude, cli_mode, readonly_dir
 ):
     """The lock file lives beside the state file, so an unwritable state
     directory fails at the lock - which reported exit 4, "a bug in lmi", for
@@ -322,7 +333,7 @@ def test_an_unwritable_state_directory_is_a_usage_error_not_a_bug(
 
 @skip_as_root
 def test_an_unwritable_log_still_lets_the_run_succeed(
-    tmp_path, fake_claude, readonly_dir, capsys
+    tmp_path, fake_claude, cli_mode, readonly_dir, capsys
 ):
     """MANDATORY. -l pointing at a read-only directory used to double-fault:
     Logger.line raised, the handler called log.error, which raised the same
@@ -339,7 +350,8 @@ def test_an_unwritable_log_still_lets_the_run_succeed(
 
 # --- the resolved configuration in the header ----------------------------
 
-def test_the_header_records_the_resolved_configuration(tmp_path, fake_claude):
+def test_the_header_records_the_resolved_configuration(tmp_path, fake_claude,
+                                                       cli_mode):
     """README's Logging section promises the resolved configuration: the prompt
     source, the claude executable and the full flag list. Without them a log
     cannot be matched to what actually ran."""
@@ -355,14 +367,15 @@ def test_the_header_records_the_resolved_configuration(tmp_path, fake_claude):
     assert "--model sonnet" in body
 
 
-def test_the_header_records_an_inline_prompt(tmp_path, fake_claude):
+def test_the_header_records_an_inline_prompt(tmp_path, fake_claude, cli_mode):
     assert main(["schedule", "write a haiku", "-d", str(tmp_path)]) == 0
     assert "Prompt    : inline text: write a haiku" in _log_body(tmp_path)
 
 
 # --- the state body and the completion check must decode alike ------------
 
-def test_a_utf16_state_file_is_inlined_without_mojibake(tmp_path, fake_claude):
+def test_a_utf16_state_file_is_inlined_without_mojibake(tmp_path, fake_claude,
+                                                        cli_mode):
     state = tmp_path / "st.md"
     state.write_bytes("TASK_STATUS: IN_PROGRESS\n## Notes\nשלום\n".encode("utf-16"))
     assert main(["schedule", "x", "-d", str(tmp_path), "-s", str(state),
@@ -371,14 +384,16 @@ def test_a_utf16_state_file_is_inlined_without_mojibake(tmp_path, fake_claude):
     assert "שלום" in got
 
 
-def test_verbose_puts_stream_json_on_the_command_line(tmp_path, fake_claude):
+def test_verbose_puts_stream_json_on_the_command_line(tmp_path, fake_claude,
+                                                      cli_mode):
     main(["schedule", "hello", "-d", str(tmp_path), "-v"])
     argv = (fake_claude.dir / "argv-1.txt").read_text().splitlines()
     assert argv[argv.index("--output-format") + 1] == "stream-json"
     assert "--verbose" in argv
 
 
-def test_verbose_flags_come_before_the_user_flags(tmp_path, fake_claude):
+def test_verbose_flags_come_before_the_user_flags(tmp_path, fake_claude,
+                                                  cli_mode):
     """-v is one switch: the user never also needs -f "--verbose". lmi's own
     flags stay first so -f still composes after them, as README promises."""
     main(["schedule", "hello", "-d", str(tmp_path), "-v", "-f", "--model x"])
@@ -387,7 +402,8 @@ def test_verbose_flags_come_before_the_user_flags(tmp_path, fake_claude):
     assert argv.index("--output-format") < argv.index("--model")
 
 
-def test_without_verbose_the_command_line_is_untouched(tmp_path, fake_claude):
+def test_without_verbose_the_command_line_is_untouched(tmp_path, fake_claude,
+                                                       cli_mode):
     """The feature adds a path; it must not modify the existing one."""
     main(["schedule", "hello", "-d", str(tmp_path)])
     argv = (fake_claude.dir / "argv-1.txt").read_text().splitlines()
@@ -396,7 +412,7 @@ def test_without_verbose_the_command_line_is_untouched(tmp_path, fake_claude):
 
 
 def test_verbose_renders_claude_events_into_the_log(tmp_path, fake_claude,
-                                                    monkeypatch):
+                                                    cli_mode, monkeypatch):
     monkeypatch.setenv("FAKE_STREAM", "1")
     assert main(["schedule", "x", "-d", str(tmp_path), "-v"]) == 0
     body = _log_body(tmp_path)
@@ -409,7 +425,7 @@ def test_verbose_renders_claude_events_into_the_log(tmp_path, fake_claude,
 
 
 def test_verbose_never_uses_the_capture_path(tmp_path, fake_claude,
-                                             monkeypatch):
+                                             cli_mode, monkeypatch):
     """There is nothing to capture to a file when the lines are consumed as
     they arrive, so -v must not reach _capture_claude at all. Asserting on the
     absence of out-*.txt cannot work - the temp workspace is deleted when the
@@ -425,7 +441,7 @@ def test_verbose_never_uses_the_capture_path(tmp_path, fake_claude,
 
 
 def test_without_verbose_the_capture_path_is_still_used(tmp_path, fake_claude,
-                                                       monkeypatch):
+                                                       cli_mode, monkeypatch):
     """The mirror of the above: the existing path must stay the default."""
     from lmi.commands.schedule import runner as runner_mod
 
@@ -437,7 +453,7 @@ def test_without_verbose_the_capture_path_is_still_used(tmp_path, fake_claude,
 
 
 def test_a_clipped_message_inside_a_json_event_is_still_flagged(
-        tmp_path, fake_claude, monkeypatch):
+        tmp_path, fake_claude, cli_mode, monkeypatch):
     """MANDATORY.
 
     The name of this test avoids every word in QUOTA_RE on purpose. pytest
@@ -465,7 +481,7 @@ def test_a_clipped_message_inside_a_json_event_is_still_flagged(
 
 
 def test_a_failing_verbose_iteration_does_not_stop_the_loop(
-        tmp_path, fake_claude, monkeypatch):
+        tmp_path, fake_claude, cli_mode, monkeypatch):
     monkeypatch.setenv("FAKE_STREAM", "1")
     monkeypatch.setenv("FAKE_RC", "1")
     rc = main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "3", "-v"])
@@ -475,7 +491,7 @@ def test_a_failing_verbose_iteration_does_not_stop_the_loop(
 
 
 def test_claude_output_is_logged_while_the_iteration_is_still_running(
-        tmp_path, fake_claude, monkeypatch):
+        tmp_path, fake_claude, cli_mode, monkeypatch):
     """MANDATORY. The whole point of -v: output must reach the log as claude
     produces it, not after it exits. The fake blocks until the runner has
     logged its first event, then emits a second one. Under capture-then-replay
@@ -504,7 +520,7 @@ def test_claude_output_is_logged_while_the_iteration_is_still_running(
 
 
 def test_verbose_logs_the_whole_prompt_on_the_first_iteration(
-        tmp_path, fake_claude):
+        tmp_path, fake_claude, cli_mode):
     main(["schedule", "write a haiku", "-d", str(tmp_path), "-v"])
     body = _log_body(tmp_path)
     assert "--- prompt sent to claude" in body
@@ -513,14 +529,15 @@ def test_verbose_logs_the_whole_prompt_on_the_first_iteration(
     assert "write a haiku" in body                  # the task
 
 
-def test_without_verbose_the_prompt_is_not_logged(tmp_path, fake_claude):
+def test_without_verbose_the_prompt_is_not_logged(tmp_path, fake_claude,
+                                                  cli_mode):
     main(["schedule", "write a haiku", "-d", str(tmp_path)])
     body = _log_body(tmp_path)
     assert "--- prompt sent to claude" not in body
     assert "## State protocol - read this first" not in body
 
 
-def test_later_iterations_log_only_the_state(tmp_path, fake_claude):
+def test_later_iterations_log_only_the_state(tmp_path, fake_claude, cli_mode):
     """Option A: the header, protocol and task are byte-identical every
     iteration - the task is read once before the loop and the protocol is a
     module constant - so repeating them is noise, not information."""
@@ -532,7 +549,8 @@ def test_later_iterations_log_only_the_state(tmp_path, fake_claude):
     assert body.count("--- prompt sent to claude") == 1
 
 
-def test_the_state_block_of_a_later_iteration_is_logged(tmp_path, fake_claude):
+def test_the_state_block_of_a_later_iteration_is_logged(tmp_path, fake_claude,
+                                                        cli_mode):
     monkey = tmp_path / "run-claude-state.md"
     main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2", "-v"])
     body = _log_body(tmp_path)
@@ -543,7 +561,7 @@ def test_the_state_block_of_a_later_iteration_is_logged(tmp_path, fake_claude):
 
 
 def test_the_full_prompt_is_logged_by_whichever_iteration_reaches_it_first(
-        tmp_path, fake_claude, monkeypatch):
+        tmp_path, fake_claude, cli_mode, monkeypatch):
     """MANDATORY. Keying "log it in full" off iteration number 1 is wrong: an
     iteration can die before compose() and still leave the loop running, so
     iteration 2 would print "unchanged from iteration 1" about text that was
@@ -567,13 +585,14 @@ def test_the_full_prompt_is_logged_by_whichever_iteration_reaches_it_first(
     assert "--- state sent to claude" not in body
 
 
-def test_the_header_says_verbose_is_on(tmp_path, fake_claude, monkeypatch):
+def test_the_header_says_verbose_is_on(tmp_path, fake_claude, cli_mode,
+                                       monkeypatch):
     monkeypatch.setenv("FAKE_STREAM", "1")
     main(["schedule", "x", "-d", str(tmp_path), "-v"])
     assert "Verbose   : on" in _log_body(tmp_path)
 
 
 def test_the_header_says_nothing_about_verbose_when_it_is_off(
-        tmp_path, fake_claude):
+        tmp_path, fake_claude, cli_mode):
     main(["schedule", "x", "-d", str(tmp_path)])
     assert "Verbose" not in _log_body(tmp_path)

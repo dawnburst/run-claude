@@ -1,10 +1,9 @@
-"""The one pip command, and the read-only probe that precedes it.
+"""This command's pip install, and the read-only probe that precedes it.
 
-Every invocation is a list argv through subprocess.run, with the shell never
-invoked: the index URL comes from a config file and must never reach a shell.
-The install's output is inherited rather than captured, so pip's own progress
-and errors reach the user as they happen, and check=False so a non-zero exit
-returns instead of raising.
+How to spell and run a pip command moved to lmi/core/pip.py when
+`lmi install claude` became its second caller. What stayed here is what only
+`lmi upgrade` can answer: which package, whether a failure is fatal - it is -
+and the version probe, which exists solely to decide what to ask the user.
 
 Note this module is named `pip` and lives inside a package, so `import pip`
 elsewhere still finds the real one; nothing here imports pip as a library.
@@ -16,6 +15,7 @@ import subprocess
 
 from .config import PACKAGE
 from .exit_codes import EXIT_PIP_FAILED
+from ...core import pip as core_pip
 from ...core.errors import LmiError
 
 # `pip index versions lmi` answers with "lmi (0.9.0)" on the first line and
@@ -46,11 +46,7 @@ WINDOWS_CLAUSE = (
 
 
 def _index_argv(cfg):
-    argv = ["--index-url", cfg.index]
-    if cfg.cafile:
-        # pip's option is --cert. npm's is cafile; they are not interchangeable.
-        argv += ["--cert", str(cfg.cafile)]
-    return argv
+    return core_pip.index_argv(cfg.index, cfg.cafile)
 
 
 def latest(inst, cfg):
@@ -90,8 +86,7 @@ def install(inst, cfg, version, say):
     else:
         argv.append("%s==%s" % (PACKAGE, version))
 
-    say("  $ " + " ".join(argv))
-    code = subprocess.run(argv).returncode
+    code = core_pip.run(argv, say)
     if code != 0:
         what = PACKAGE if version is None else "%s==%s" % (PACKAGE, version)
         message = INSTALL_FAILED % (what, code)

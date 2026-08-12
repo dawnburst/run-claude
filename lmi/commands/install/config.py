@@ -43,6 +43,7 @@ HOME_CONFIG = core_config.HOME_CONFIG
 EXAMPLE = """{
   "claude": {
     "registry": "https://artifactory.example.com/api/npm/npm-virtual/",
+    "index": "https://artifactory.example.com/api/pypi/pypi-virtual/simple/",
     "cafile": "/etc/ssl/certs/corp-ca.pem"
   }
 }"""
@@ -59,6 +60,7 @@ def add_arguments(parser):
 @dataclass(frozen=True)
 class Config:
     registry: str
+    index: Optional[str]            # the PyPI index for the SDK, if any
     cafile: Optional[Path]
     settings: Dict                  # the settings.json template, parsed
     settings_source: Path           # where it was read from
@@ -80,6 +82,7 @@ def build_config(args):
     settings, settings_source = template.load(path)
     return Config(
         registry=_registry(section, path),
+        index=_index(section, path),
         cafile=_cafile(section, path),
         settings=settings,
         settings_source=settings_source,
@@ -94,6 +97,36 @@ def _registry(section, path):
         raise LmiError(
             '"claude.registry" must be a non-empty string - the npm registry '
             "URL to install from: %s" % path,
+            EXIT_USAGE,
+        )
+    return value.strip()
+
+
+def _index(section, path):
+    """The Python package index the SDK is installed from, or None.
+
+    Optional, and its absence is an ANSWER rather than an omission: it means
+    the SDK install is not attempted at all and the machine is provisioned into
+    `cli` mode. A site that only wants the CLI backend should not have to
+    configure a PyPI mirror it will never use.
+
+    What an absent value must NEVER mean is public PyPI. On an air-gapped
+    machine reaching for pypi.org is a timeout; on a machine with egress it
+    installs an unvetted package from a different source than every other
+    package here, and exits 0 - which is the whole reason this command exists,
+    defeated silently. Do not add a default.
+
+    A present-but-empty value is still an error: writing "index": "" is
+    somebody trying to configure something, not declining to.
+    """
+    value = section.get("index")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise LmiError(
+            '"claude.index" must be a non-empty string - the Python package '
+            "index URL to install the Claude Agent SDK from. Remove the key "
+            "entirely to skip the SDK and use the `cli` backend: %s" % path,
             EXIT_USAGE,
         )
     return value.strip()
