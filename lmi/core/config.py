@@ -41,11 +41,32 @@ def add_argument(parser):
 # --- discovery ------------------------------------------------------------
 
 def find(explicit, purpose, example):
-    """The config file to read.
+    """The config file to read, or a usage error naming everywhere looked.
 
     `purpose` is one sentence saying what the calling command needs it for, and
     `example` a minimal file to paste; both appear only when nothing is found,
     where they are all the operator has to go on.
+    """
+    path, candidates = find_optional(explicit)
+    if path is None:
+        raise LmiError(_nothing_found(candidates, purpose, example), EXIT_USAGE)
+    return path
+
+
+def find_optional(explicit):
+    """(the config file or None, every candidate looked at, in order).
+
+    The same search as find(), for the callers to which "there is no config
+    file" is an answer rather than an error - `lmi schedule`, where it means
+    the default backend, and `lmi config schedule`, which reports where a write
+    would land. Both refusals stay refusals even here: an explicit --config
+    that does not exist, and a file left at the pre-move ./lmi.json. Those are
+    not absences, they are a named file that would silently resolve to a
+    different one, which is how a machine gets provisioned against the wrong
+    source.
+
+    find() is defined in terms of this so the search order has one definition.
+    Do not give the two functions candidate lists of their own.
     """
     if explicit is not None:
         path = expand(explicit)
@@ -57,7 +78,7 @@ def find(explicit, purpose, example):
                 "the config file given with --config does not exist: %s" % path,
                 EXIT_USAGE,
             )
-        return path
+        return path, [path]
 
     candidates = []
     from_env = os.environ.get(CONFIG_ENV_VAR)
@@ -69,12 +90,12 @@ def find(explicit, purpose, example):
 
     for candidate in candidates:
         if kind(candidate) == fs.FILE:
-            return candidate
+            return candidate, candidates
         # Checked at the point in the order the old path used to occupy, so an
         # explicit --config or $LMI_CONFIG still wins and never sees this.
         if candidate == in_cwd:
             _refuse_legacy(Path.cwd() / CWD_CONFIG_NAME, in_cwd)
-    raise LmiError(_nothing_found(candidates, purpose, example), EXIT_USAGE)
+    return None, candidates
 
 
 def _refuse_legacy(legacy, expected):
