@@ -1,6 +1,5 @@
 """The iteration loop and the claude invocation."""
 
-import re
 import shutil
 import subprocess
 import sys
@@ -13,12 +12,15 @@ from pathlib import Path
 from ...core.errors import EXIT_OK, EXIT_USAGE, LmiError
 from ...core.lock import LockBusy, LockUnusable, single_instance_lock
 from ...core.log import Logger
-from . import paths, prompt, state
+from . import backend, paths, prompt, sdk, state
 from .config import AT_FORMAT, build_config
 from .stream import Renderer
 from .exit_codes import EXIT_CALL_FAILED, EXIT_INTERNAL, EXIT_LOCKED
 
-DEFAULT_FLAGS = ["--allowed-tools=Edit,Write"]
+# Built from backend.ALLOWED_TOOLS rather than spelled out, so the flag the CLI
+# backend passes and the list the SDK backend passes cannot drift apart. The
+# value is unchanged: "--allowed-tools=Edit,Write".
+DEFAULT_FLAGS = ["--allowed-tools=" + ",".join(backend.ALLOWED_TOOLS)]
 
 # What -v adds. --output-format stream-json is what makes claude emit an event
 # per step instead of one block of text at the end, which is the whole of how a
@@ -36,11 +38,10 @@ RULE = "=" * 75
 # confused with a real exit code in the log.
 ITERATION_ERROR_RC = 90
 
-QUOTA_RE = re.compile(
-    r"usage limit|rate.?limit|quota|credit balance|insufficient credit"
-    r"|too many requests|overloaded|exceeded your",
-    re.IGNORECASE,
-)
+# Moved to backend.py when the SDK backend became its second scanner, and
+# re-exported here because that is the name this module's readers and tests
+# already know. One pattern, so neither backend can be quieter than the other.
+QUOTA_RE = backend.QUOTA_RE
 
 
 def run(args):
@@ -50,14 +51,15 @@ def run(args):
     log_path = paths.resolve_log(cfg, run_ts)
     log = Logger(log_path)
 
-    claude = shutil.which("claude")
-    if claude is None:
-        raise LmiError("claude is not on PATH", EXIT_USAGE)
+    # Before the lock, before the header, before the loop: a backend that
+    # cannot run at all ends the run with one message rather than N skipped
+    # iterations under a header claiming a run started.
+    chosen = _select_backend(cfg)
 
     lock_path = state_path.parent / paths.LOCK_NAME
     try:
         with single_instance_lock(lock_path):
-            return _run_locked(cfg, log, state_path, run_ts, claude)
+            return _run_locked(cfg, log, state_path, run_ts, chosen)
     except LockBusy:
         print(
             "[ERROR] another run is working on this state file: %s" % state_path,
@@ -171,10 +173,109 @@ def _claude_argv(cfg, state_path, claude):
         ["--add-dir", str(state_path.parent)] + cfg.user_flags
 
 
-def _log_header(cfg, log, state_path, argv):
+# --- the seam -------------------------------------------------------------
+#
+# Two backends, one shape. Each exposes prepare / describe / call, and `call`
+# takes the composed prompt and returns the (exit code, quota?) pair that
+# _capture_claude and _stream_claude have always returned. Below this point the
+# loop cannot tell which one it has, which is the whole design: everything that
+# reads a run - _log_iteration_result, ITERATION_ERROR_RC, EXIT_CALL_FAILED -
+# keeps its single vocabulary.
+
+NO_CLAUDE = "claude is not on PATH"
+
+
+def _select_backend(cfg):
+    """The one place the configured mode decides anything.
+
+    Both preconditions live here rather than at the call site, so that "can
+    this backend run?" is answered once, before the lock, for whichever backend
+    was chosen - and so that nothing further down has to ask about the mode
+    again.
+
+    There is deliberately NO fallback between the two. If the SDK is missing
+    this raises; it does not quietly run the CLI instead. Falling back is the
+    installer's job, done once and written into a config file a human can read
+    - see backend.DEFAULT. A runner that silently changes backend is worse than
+    one that stops, because both backends exit 0 on success.
+    """
+    if cfg.mode == backend.SDK:
+        sdk.require()
+        return _SdkBackend()
+    claude = shutil.which("claude")
+    if claude is None:
+        raise LmiError(NO_CLAUDE, EXIT_USAGE)
+    return _CliBackend(claude)
+
+
+class _CliBackend:
+    """`claude -p`, a pipe and a temp workspace: exactly as it always was.
+
+    A thin wrapper around the functions below, which are unchanged. It exists
+    to give the CLI path the same three methods the SDK path has, not to
+    reorganise it - _claude_argv, _capture_claude, _stream_claude, _pump,
+    _decoded_lines and the prompt-N.txt / out-N.txt workspace all keep working
+    the way they did, comments included.
+    """
+
+    def __init__(self, claude):
+        self.claude = claude
+        self.argv = None
+
+    def prepare(self, cfg, state_path):
+        # Fixed for the whole run, so built once rather than per iteration.
+        self.argv = _claude_argv(cfg, state_path, self.claude)
+
+    def describe(self, cfg, log):
+        # argv[0] rather than a separate claude argument: they are the same
+        # value by construction, and two parameters could disagree.
+        log.line("claude    : " + self.argv[0])
+        log.line("Flags     : " + " ".join(self.argv[1:]))
+
+    def call(self, cfg, log, composed, state_path, tmp_dir, n):
+        prompt_path = tmp_dir / ("prompt-%d.txt" % n)
+        # open(), not Path.write_text(..., newline=...): that keyword arrived
+        # in Python 3.10 and pyproject declares >=3.9, so on the 3.9.6 that
+        # macOS ships every run died at iteration 1 with a TypeError.
+        with open(str(prompt_path), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(composed)
+        out_path = tmp_dir / ("out-%d.txt" % n)
+
+        if cfg.verbose:
+            return _stream_claude(cfg, log, self.argv, prompt_path)
+        return _capture_claude(cfg, log, self.argv, prompt_path, out_path)
+
+
+class _SdkBackend:
+    """The Claude Agent SDK, through commands/schedule/sdk.py.
+
+    It writes no prompt file and uses no temp workspace: query() takes the
+    prompt as a string. The workspace is still created for the run, because the
+    CLI backend needs it and the runner does not branch on the mode.
+    """
+
+    def prepare(self, cfg, state_path):
+        pass
+
+    def describe(self, cfg, log):
+        sdk.describe(cfg, log)
+
+    def call(self, cfg, log, composed, state_path, tmp_dir, n):
+        return sdk.call(cfg, log, composed, state_path)
+
+
+def _log_header(cfg, log, state_path, chosen):
     log.line(RULE)
     log.line("lmi schedule starting at " + paths.now_str())
     log.line("Working directory: " + str(cfg.work_dir))
+    # THE line that makes a two-backend run readable afterwards. Both backends
+    # exit 0 on success and neither leaves a mark on the state file saying
+    # which one ran, so without this nothing in an unattended run's only record
+    # distinguishes a run that used the intended backend from one that did not
+    # - and the entire point of a switch is that the outcome cannot tell you.
+    # The source is half the line: "sdk" alone does not say whether a config
+    # file chose it or nothing did.
+    log.line("Backend   : %s (from %s)" % (cfg.mode, cfg.mode_source))
     # The resolved configuration, which README's Logging section promises:
     # where the prompt came from, which claude is being run, and the complete
     # flag list including the defaults and -f.
@@ -182,10 +283,11 @@ def _log_header(cfg, log, state_path, argv):
         log.line("Prompt    : file " + str(cfg.prompt_file))
     else:
         log.line("Prompt    : inline text: " + (cfg.prompt_text or ""))
-    # argv[0] rather than a separate claude argument: they are the same value
-    # by construction (see _claude_argv), and two parameters could disagree.
-    log.line("claude    : " + argv[0])
-    log.line("Flags     : " + " ".join(argv[1:]))
+    # Whatever this backend resolved that the other one has no equivalent of:
+    # an argv and a flag list for the CLI, the options that decide what Claude
+    # may do for the SDK. Everything above and below is common to both, so the
+    # two logs line up everywhere except here.
+    chosen.describe(cfg, log)
     log.line("State file: " + str(state_path))
     log.line("Log file  : " + str(log.path))
     log.line("Iterations: %d" % cfg.max_runs)
@@ -242,10 +344,9 @@ def _log_summary(log, state_path, runs, fails):
         )
 
 
-def _run_locked(cfg, log, state_path, run_ts, claude):
-    # Fixed for the whole run, so built once rather than per iteration.
-    argv = _claude_argv(cfg, state_path, claude)
-    _log_header(cfg, log, state_path, argv)
+def _run_locked(cfg, log, state_path, run_ts, chosen):
+    chosen.prepare(cfg, state_path)
+    _log_header(cfg, log, state_path, chosen)
 
     state.prepare(state_path, cfg.resume, run_ts, log)
     # The task text never changes, so it is read and decoded once instead of on
@@ -266,7 +367,7 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
             log.line("--- iteration %s started %s ---" % (label, started))
 
             rc = _iteration_rc(
-                cfg, log, state_path, argv, task, tmp_dir, iteration,
+                cfg, log, state_path, chosen, task, tmp_dir, iteration,
                 label, started, prompt_log
             )
             runs += 1
@@ -292,12 +393,12 @@ def _run_locked(cfg, log, state_path, run_ts, claude):
     return EXIT_CALL_FAILED if fails else EXIT_OK
 
 
-def _iteration_rc(cfg, log, state_path, argv, task, tmp_dir, n, label, started,
+def _iteration_rc(cfg, log, state_path, chosen, task, tmp_dir, n, label, started,
                   prompt_log):
     """One iteration's exit code, with invariant 2 enforced around it."""
     try:
         return _one_iteration(
-            cfg, log, state_path, argv, task, tmp_dir, n, label, started,
+            cfg, log, state_path, chosen, task, tmp_dir, n, label, started,
             prompt_log
         )
     except LmiError:
@@ -327,24 +428,13 @@ def _sleep_between(cfg, log):
     time.sleep(secs)
 
 
-def _one_iteration(cfg, log, state_path, argv, task, tmp_dir, n, label, started,
+def _one_iteration(cfg, log, state_path, chosen, task, tmp_dir, n, label, started,
                    prompt_log):
     body = state.read_body(state_path)
     composed = prompt.compose(cfg, state_path, label, started, body, task)
     prompt_log.emit(log, composed, body)
 
-    prompt_path = tmp_dir / ("prompt-%d.txt" % n)
-    # open(), not Path.write_text(..., newline=...): that keyword arrived in
-    # Python 3.10 and pyproject declares >=3.9, so on the 3.9.6 that macOS
-    # ships every run died at iteration 1 with a TypeError.
-    with open(str(prompt_path), "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(composed)
-    out_path = tmp_dir / ("out-%d.txt" % n)
-
-    if cfg.verbose:
-        rc, quota = _stream_claude(cfg, log, argv, prompt_path)
-    else:
-        rc, quota = _capture_claude(cfg, log, argv, prompt_path, out_path)
+    rc, quota = chosen.call(cfg, log, composed, state_path, tmp_dir, n)
 
     if quota:
         # Tagged inline: [QUOTA] is this command's vocabulary, not something

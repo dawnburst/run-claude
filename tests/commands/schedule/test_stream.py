@@ -1,8 +1,20 @@
-"""The stream-json renderer: one claude event in, one log line out."""
+"""The two front ends: one claude event in, one log line out - the same line.
+
+`Renderer` reads claude's stream-json lines; `MessageRenderer` reads the SDK's
+typed messages. They are two front ends onto one set of row functions, and the
+table at the bottom of this module is where that claim is actually tested: the
+same logical event fed to both must come out byte-identical, or a CLI log and an
+SDK log stop lining up and no review of the difference between them means
+anything.
+"""
 
 import json
 
-from lmi.commands.schedule.stream import Renderer
+import pytest
+
+from lmi.commands.schedule.stream import MessageRenderer, Renderer
+
+from . import sdk_fake
 
 
 class FakeLog:
@@ -126,3 +138,279 @@ def test_a_blank_line_is_passed_through_without_warning():
     log = FakeLog()
     assert Renderer(log).render("") == ""
     assert log.lines == []
+
+
+# --- the SDK front end -----------------------------------------------------
+#
+# Task 41. The shapes come from sdk_fake rather than being defined again here:
+# they are the same objects every SDK-mode test renders, and a second set of
+# stand-ins would let the two drift apart - at which point this module would be
+# green about a shape no test actually feeds through the backend.
+
+def _render_message(message):
+    """Render one SDK message through a fresh MessageRenderer."""
+    return MessageRenderer(FakeLog()).render(message)
+
+
+def test_the_sdk_front_end_renders_a_tool_call():
+    out = _render_message(sdk_fake.AssistantMessage(content=[
+        sdk_fake.ToolUseBlock(name="Edit",
+                              input={"file_path": "lmi/core/log.py",
+                                     "old_string": "a"})]))
+    assert "Edit" in out and "lmi/core/log.py" in out
+    assert out.startswith("[claude]")
+
+
+def test_the_sdk_front_end_renders_thinking():
+    """The JSON front end gained thinking rows so that this one could have them.
+
+    Task 41 requires the two to emit identical rows for equivalent events, and
+    the SDK delivers ThinkingBlock as a first-class block - so dropping it in
+    either front end is a row that exists in one log and not the other.
+    """
+    out = _render_message(sdk_fake.AssistantMessage(content=[
+        sdk_fake.ThinkingBlock(thinking="the state file is under .claude/")]))
+    assert "the state file is under .claude/" in out
+
+
+def test_a_user_message_carrying_plain_text_is_rendered_as_text():
+    """A UserMessage's content is a list of blocks or a bare string."""
+    out = _render_message(sdk_fake.UserMessage(content="carry on"))
+    assert "carry on" in out
+
+
+def test_an_sdk_message_missing_the_fields_we_expect_does_not_raise():
+    """Same rule as the JSON side: one dull line, never an exception.
+
+    An exception out of the renderer reaches _iteration_rc, which records the
+    whole iteration as skipped - so a field renamed in a later SDK would
+    abandon the run rather than cost a log line.
+    """
+    for message in (sdk_fake.AssistantMessage(),
+                    sdk_fake.AssistantMessage(content=None),
+                    sdk_fake.AssistantMessage(content=[object()]),
+                    sdk_fake.UserMessage(content=[]),
+                    sdk_fake.SystemMessage(),
+                    sdk_fake.ResultMessage()):
+        assert isinstance(_render_message(message), str)
+
+
+def test_a_message_whose_rendering_raises_costs_one_line_not_the_iteration():
+    """Belt and braces over the defensive getattr()s. Same reason as above."""
+
+    class ResultMessage(object):                 # the name IS the matching key
+        @property
+        def subtype(self):
+            raise RuntimeError("a field that explodes when read")
+
+        def __repr__(self):
+            return "<exploding ResultMessage>"
+
+    out = _render_message(ResultMessage())
+    assert out.count("\n") == 0
+    assert "ResultMessage" in out
+
+
+def test_an_unknown_sdk_message_warns_once_and_describes_the_rest_plainly():
+    """MANDATORY. The SDK analogue of _give_up, and the other half of "degrade
+    out loud".
+
+    A message type a later SDK grows must not make the activity block go quiet
+    while the iteration still reports exit 0 - that is the failure item 26
+    exists to prevent, reached from the other backend. One [WARN], one line per
+    message, and nothing raised.
+    """
+    log = FakeLog()
+    renderer = MessageRenderer(log)
+
+    first = renderer.render(sdk_fake._Unknown(surprise="a new message type"))
+    second = renderer.render(sdk_fake._Unknown(surprise="and another"))
+
+    warnings = [line for line in log.lines if line.startswith("[WARN]")]
+    assert len(warnings) == 1
+    assert "Claude Agent SDK" in warnings[0]
+    for out in (first, second):
+        assert out.count("\n") == 0
+        assert "_Unknown" in out
+
+
+def test_an_unknown_sdk_message_is_described_by_field_name_never_by_value():
+    """An unknown message could carry a tool input, and ARG_KEYS exists exactly
+    so that a file's contents never reach the log. The degrade path must not be
+    the way round it."""
+    out = _render_message(sdk_fake._Unknown(
+        input={"file_path": "state.md", "content": "SECRET " * 200}))
+    assert "SECRET" not in out
+    assert "input" in out                        # the field name is fine
+
+
+# --- task 42: content is not in ARG_KEYS, in either front end ---------------
+
+def test_a_write_never_puts_the_file_content_in_the_log_in_either_mode():
+    """MANDATORY. Item 29, now with two ways to break it.
+
+    `ToolUseBlock.input` makes `content` easier to reach than a JSON dict did,
+    which makes the rule easier to break in the newer front end only - and a
+    Write's content is the whole new file, so rendering it puts the state file
+    into the log on every single save and buries the tool calls either side of
+    it. ARG_KEYS is an allowlist; both front ends read it through _tool_arg.
+    """
+    content = "\n".join("line %d" % n for n in range(400))
+    json_out = _render({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Write",
+         "input": {"file_path": "state.md", "content": content}}]}})
+    sdk_out = _render_message(sdk_fake.AssistantMessage(content=[
+        sdk_fake.ToolUseBlock(name="Write",
+                              input={"file_path": "state.md",
+                                     "content": content})]))
+
+    for out in (json_out, sdk_out):
+        assert out.count("\n") == 0
+        assert "line 399" not in out
+        assert "Write" in out and "state.md" in out
+    assert json_out == sdk_out
+
+
+# --- task 41: the same event, the same row, from either front end -----------
+#
+# The whole claim of the two-front-ends design, in one table. Each row is one
+# logical event in both of its wire shapes; the assertion is byte equality, not
+# "both mention the model name", because the point is that the two logs line up
+# well enough to diff - which is what task 55 does with two real runs.
+
+EQUIVALENT = [
+    (
+        "init",
+        {"type": "system", "subtype": "init", "model": "claude-opus-5",
+         "session_id": "a3f2b1c8", "cwd": "/repo/lmi"},
+        sdk_fake.SystemMessage(subtype="init",
+                               data={"model": "claude-opus-5",
+                                     "session_id": "a3f2b1c8",
+                                     "cwd": "/repo/lmi"}),
+    ),
+    (
+        "a system event that is not init",
+        {"type": "system", "subtype": "compact_boundary"},
+        sdk_fake.SystemMessage(subtype="compact_boundary", data={}),
+    ),
+    (
+        "assistant text",
+        {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "I'll start with fs.py."}]}},
+        sdk_fake.AssistantMessage(content=[
+            sdk_fake.TextBlock(text="I'll start with fs.py.")]),
+    ),
+    (
+        "assistant thinking",
+        {"type": "assistant", "message": {"content": [
+            {"type": "thinking", "thinking": "the floor is 3.9"}]}},
+        sdk_fake.AssistantMessage(content=[
+            sdk_fake.ThinkingBlock(thinking="the floor is 3.9")]),
+    ),
+    (
+        "a tool call",
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Edit",
+             "input": {"file_path": "lmi/core/log.py"}}]}},
+        sdk_fake.AssistantMessage(content=[
+            sdk_fake.ToolUseBlock(name="Edit",
+                                  input={"file_path": "lmi/core/log.py"})]),
+    ),
+    (
+        "a bash call",
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash",
+             "input": {"command": "python3 -m pytest tests/ -q"}}]}},
+        sdk_fake.AssistantMessage(content=[
+            sdk_fake.ToolUseBlock(
+                name="Bash",
+                input={"command": "python3 -m pytest tests/ -q"})]),
+    ),
+    (
+        "several blocks in one message",
+        {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Now the log."},
+            {"type": "tool_use", "name": "Write",
+             "input": {"file_path": "state.md"}}]}},
+        sdk_fake.AssistantMessage(content=[
+            sdk_fake.TextBlock(text="Now the log."),
+            sdk_fake.ToolUseBlock(name="Write",
+                                  input={"file_path": "state.md"})]),
+    ),
+    (
+        "an assistant message with nothing worth a row",
+        {"type": "assistant", "message": {"content": []}},
+        sdk_fake.AssistantMessage(content=[]),
+    ),
+    (
+        "a tool result",
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "content": "420 passed, 1 skipped",
+             "is_error": False}]}},
+        sdk_fake.UserMessage(content=[
+            sdk_fake.ToolResultBlock(content="420 passed, 1 skipped",
+                                     is_error=False)]),
+    ),
+    (
+        "a failed tool result",
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "content": "No such file",
+             "is_error": True}]}},
+        sdk_fake.UserMessage(content=[
+            sdk_fake.ToolResultBlock(content="No such file", is_error=True)]),
+    ),
+    (
+        "a tool result whose content is a list of blocks",
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result",
+             "content": [{"text": "first"}, {"text": "second"}],
+             "is_error": False}]}},
+        sdk_fake.UserMessage(content=[
+            sdk_fake.ToolResultBlock(
+                content=[{"text": "first"}, {"text": "second"}],
+                is_error=False)]),
+    ),
+    (
+        "the result",
+        {"type": "result", "subtype": "success", "is_error": False,
+         "num_turns": 11, "duration_ms": 108400, "result": "done"},
+        sdk_fake.ResultMessage(subtype="success", is_error=False, num_turns=11,
+                               duration_ms=108400, result="done"),
+    ),
+    (
+        "a failed result",
+        {"type": "result", "subtype": "error_during_execution",
+         "is_error": True, "num_turns": 3, "duration_ms": 900,
+         "result": "Claude AI usage limit reached"},
+        sdk_fake.ResultMessage(subtype="error_during_execution", is_error=True,
+                               num_turns=3, duration_ms=900,
+                               result="Claude AI usage limit reached"),
+    ),
+]
+
+
+@pytest.mark.parametrize("label,event,message",
+                         EQUIVALENT, ids=[row[0] for row in EQUIVALENT])
+def test_both_front_ends_emit_the_same_row(label, event, message):
+    """MANDATORY. The two backends' logs must be comparable.
+
+    Not a style preference: both backends exit 0 on success and neither marks
+    the state file, so the log is the only place a run's behaviour is visible.
+    If an equivalent event renders differently in the two modes, the two logs
+    cannot be diffed and the reviewer has no way to tell a backend difference
+    from a formatting difference. One row function, two callers - that is the
+    mechanism, and this is the test of it.
+    """
+    assert _render(event) == _render_message(message)
+
+
+def test_neither_front_end_warns_for_anything_in_that_table():
+    """A row rendered through the degrade path would satisfy the equality above
+    while telling the operator nothing. One [WARN] anywhere here means a shape
+    the table claims is understood is not."""
+    for _, event, message in EQUIVALENT:
+        json_log, sdk_log = FakeLog(), FakeLog()
+        Renderer(json_log).render(json.dumps(event))
+        MessageRenderer(sdk_log).render(message)
+        assert not [l for l in json_log.lines if l.startswith("[WARN]")]
+        assert not [l for l in sdk_log.lines if l.startswith("[WARN]")]

@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import List, Optional
 import shlex
 
+from . import backend
+from ...core import config as core_config
 from ...core import fs
 from ...core.errors import EXIT_USAGE, LmiError
 
@@ -39,7 +41,8 @@ def add_arguments(parser):
     )
     parser.add_argument(
         "-f", dest="flags", default="", metavar="FLAGS",
-        help="extra claude flags, appended after --allowed-tools=Edit,Write",
+        help="extra claude flags. CLI mode appends them to the argv; SDK "
+             "mode forwards them to the claude it spawns",
     )
     parser.add_argument(
         "-l", dest="log", metavar="PATH",
@@ -57,6 +60,16 @@ def add_arguments(parser):
         "-v", "--verbose", dest="verbose", action="store_true",
         help="log the prompt and render claude's activity live as it happens",
     )
+    # The same --config every other command takes, for the same file. It is
+    # what makes "the discovery order is unchanged" true for this command too:
+    # the backend is read from the `schedule` section of whichever lmi.json
+    # discovery resolves, and --config is the first step of that order.
+    #
+    # There is deliberately no --mode here. The switch is configuration, and a
+    # flag would need a precedence rule against the config file - one more way
+    # for a run to use a backend the operator did not intend. Change it with
+    # `lmi config schedule --mode ...`.
+    core_config.add_argument(parser)
 
 
 @dataclass
@@ -72,6 +85,11 @@ class Config:
     state_arg: Optional[str] = None
     resume: bool = False
     verbose: bool = False
+    # Which backend reaches Claude, and what chose it. The source is carried
+    # alongside the mode because the log header has to name both: two backends
+    # that both exit 0 on success are told apart by nothing else.
+    mode: str = backend.DEFAULT
+    mode_source: str = backend.DEFAULT_SOURCE
 
 
 def build_config(args):
@@ -86,6 +104,11 @@ def build_config(args):
     prompt_text, prompt_file = _classify_prompt(args)
     user_flags = shlex.split(args.flags) if args.flags else []
     _reject_output_format(args.verbose, user_flags)
+    # Resolved here rather than in the runner so that a bad value ends the run
+    # before the lock, the header and the loop - once, not as N skipped
+    # iterations. getattr, because several callers build an args object by hand.
+    mode, mode_source = backend.resolve(getattr(args, "config", None))
+    _check_forwardable(mode, user_flags)
     return Config(
         prompt_text=prompt_text,
         prompt_file=prompt_file,
@@ -98,7 +121,29 @@ def build_config(args):
         state_arg=args.state,
         resume=args.resume,
         verbose=args.verbose,
+        mode=mode,
+        mode_source=mode_source,
     )
+
+
+def _check_forwardable(mode, user_flags):
+    """-f works in BOTH backends. Validate it here so a bad flag costs exit 2.
+
+    In CLI mode the flags are appended to the argv. In SDK mode they are handed
+    to the SDK as `extra_args`, which the SDK renders onto the argv of the
+    `claude` it spawns - so -f keeps meaning the same thing in both modes: the
+    flags reach the same command line.
+
+    Parsed at config time rather than at the first call, so a flag the SDK
+    cannot forward ends the run with one message before the lock and before the
+    header, instead of five times over as skipped iterations. The parse itself
+    lives in sdk.py, because the mapping shape is the SDK's; nothing here
+    imports the SDK, and sdk.parse_flags does not either.
+    """
+    if not user_flags or mode == backend.CLI:
+        return
+    from . import sdk
+    sdk.parse_flags(user_flags)
 
 
 def _reject_output_format(verbose, user_flags):
