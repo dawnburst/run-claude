@@ -3,6 +3,12 @@
 `fake_claude` is the important one: no test may reach a real claude, since one
 exists on this machine and would spend real quota, so the fixture replaces PATH
 entirely rather than prepending.
+
+`fake_pip` lives here rather than under tests/commands/upgrade/ because two
+commands now run pip - `lmi upgrade` and `lmi install claude` - and one seam
+faked two ways is two descriptions of pip that can drift apart. It moved when
+the second caller appeared, which is the rule CLAUDE.md section 2 applies to
+lmi/core/, applied to a fixture.
 """
 
 import os
@@ -10,6 +16,8 @@ import stat
 import sys
 
 import pytest
+
+from lmi.commands.upgrade import installation
 
 # One definition for every permission test. os.geteuid is Unix-only and a
 # skipif argument is evaluated at import time, so a bare os.geteuid() call makes
@@ -169,3 +177,184 @@ def fake_claude(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_COUNT_FILE", str(count_file))
     return type("F", (), {"dir": recdir, "count_file": count_file,
                           "exe": exe})()
+
+
+# --- pip, for `lmi upgrade` and `lmi install claude` -----------------------
+#
+# pip is never found on PATH in either command - it is always
+# `<interpreter> -m pip` - so the seam is the INTERPRETER, and that is what is
+# faked here. A pip on PATH would be the wrong seam twice over: it is not what
+# the code looks for, and it is not what decides where a package lands.
+#
+# The fake answers three different things one interpreter has to answer:
+#
+#   `-m pip install ...`   the install, recorded and given an exit code
+#   `-m pip index versions` the version probe `lmi upgrade` degrades around
+#   `-c "import ..."`       the import probe `lmi install claude` decides the
+#                           schedule backend with
+#
+# The last of those is answered BEFORE anything is counted or recorded, so
+# `calls()` stays a list of pip invocations only. Otherwise the probe would
+# quietly satisfy a test asserting that a failing install is retried exactly
+# never - the assertion that keeps the two anti-fallbacks in install/sdk.py
+# honest - and that test would pass with a PyPI retry added.
+
+FAKE_PIP = """\
+#!{python}
+import os, re, sys
+
+# The import probe, answered first and counted separately - see above. Matched
+# on argv[1] rather than "-c" anywhere in argv, because pip spells --constraint
+# `-c` too and a future flag must not silently turn an install into a probe.
+if sys.argv[1:2] == ["-c"]:
+    p_file = os.environ.get("FAKE_PROBE_COUNT")
+    if p_file:
+        p = 0
+        if os.path.exists(p_file):
+            p = int(open(p_file).read() or 0)
+        open(p_file, "w").write(str(p + 1))
+    with open(os.path.join(os.environ["FAKE_PIP_DIR"], "probe.txt"), "a") as fh:
+        fh.write(sys.argv[2] + "\\n")
+    # Absent means NOT importable, deliberately: nothing is installed on a
+    # fresh machine, and a fake whose default is "yes" would let the mode be
+    # decided by pip's exit code in every test that forgot to say otherwise.
+    sys.exit(0 if os.environ.get("FAKE_IMPORTABLE") else 1)
+
+n_file = os.environ["FAKE_PIP_COUNT"]
+n = 0
+if os.path.exists(n_file):
+    n = int(open(n_file).read() or 0)
+n += 1
+open(n_file, "w").write(str(n))
+
+with open(os.path.join(os.environ["FAKE_PIP_DIR"], "argv-%d.txt" % n), "w") as fh:
+    fh.write("\\n".join(sys.argv[1:]))
+
+if "index" in sys.argv and "versions" in sys.argv:
+    latest = os.environ.get("FAKE_PIP_LATEST")
+    if not latest:
+        # The shape of a pip too old for the subcommand, which must degrade
+        # the question rather than fail the command.
+        sys.stderr.write("ERROR: unknown command \\"index\\"\\n")
+        sys.exit(2)
+    sys.stdout.write("lmi (%s)\\n" % latest)
+    sys.stdout.write("Available versions: %s\\n" % latest)
+    sys.exit(0)
+
+print("fake pip call %d: %s" % (n, " ".join(sys.argv[1:])))
+
+# Per-package failure, in FAKE_NPM_FAIL_GLOBAL's shape: an index that carries
+# one package and not another is the real case both commands have to survive,
+# and FAKE_PIP_RC alone can only fail every call.
+# Matched against the DISTRIBUTION NAME, with any version specifier stripped,
+# so the knob means "this index does not carry that package" and a caller does
+# not have to know how the requirement happens to be pinned today. `lmi install
+# claude` asks pip for `claude-agent-sdk>=X` rather than a bare name, and an
+# exact argv comparison here silently stopped firing the moment that pin
+# arrived - a fake that quietly no longer fails is a test asserting nothing.
+fail = os.environ.get("FAKE_PIP_FAIL_PACKAGE")
+if fail:
+    names = [re.split(r"[<>=!~\\[]", arg, 1)[0] for arg in sys.argv[1:]]
+    if fail in names:
+        sys.stderr.write(
+            "ERROR: No matching distribution found for %s\\n" % fail
+        )
+        sys.exit(1)
+
+sys.exit(int(os.environ.get("FAKE_PIP_RC", "0")))
+"""
+
+FAKE_SCRIPT = """\
+#!{python}
+import os, sys
+
+# FAKE_SCRIPT_STDERR: an extra line written to stderr BEFORE the version line
+# on stdout - a DeprecationWarning, a .pth file's own output, a locale
+# complaint - the shape that used to become "line 0" and fail verification
+# when stdout and stderr were merged.
+stderr_line = os.environ.get("FAKE_SCRIPT_STDERR")
+if stderr_line:
+    sys.stderr.write(stderr_line + "\\n")
+
+# FAKE_SCRIPT_BOM and FAKE_SCRIPT_PREFIX: a UTF-8 BOM or odd leading
+# whitespace ahead of "lmi" itself on the version line.
+bom = "\\ufeff" if os.environ.get("FAKE_SCRIPT_BOM") else ""
+prefix = os.environ.get("FAKE_SCRIPT_PREFIX", "")
+version = os.environ.get("FAKE_SCRIPT_VERSION", "0.1.0")
+sys.stdout.write("%s%slmi %s\\n" % (bom, prefix, version))
+
+# The version line is written above UNCONDITIONALLY, so FAKE_SCRIPT_RC can
+# exercise "printed a version line and then still exited non-zero" - the
+# returncode check must keep winning over a matched version line.
+rc = int(os.environ.get("FAKE_SCRIPT_RC", "0"))
+if rc:
+    sys.stderr.write("boom\\n")
+    sys.exit(rc)
+"""
+
+
+def _executable(path, body):
+    path.write_text(body.format(python=sys.executable), encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return path
+
+
+class Pip:
+    def __init__(self, exe, recdir, count_file, probe_file, script):
+        self.exe = exe
+        self.dir = recdir
+        self.count_file = count_file
+        self.probe_file = probe_file
+        self.script = script
+
+    def calls(self):
+        """Every pip invocation's argv, in order. Import probes are not pip."""
+        return [
+            (self.dir / ("argv-%d.txt" % i)).read_text(
+                encoding="utf-8").splitlines()
+            for i in range(1, self.count() + 1)
+        ]
+
+    def count(self):
+        return int(self.count_file.read_text() or 0)
+
+    def probes(self):
+        """The source of every `-c` the interpreter was asked to run."""
+        path = self.dir / "probe.txt"
+        if not path.exists():
+            return []
+        return path.read_text(encoding="utf-8").splitlines()
+
+    def installation(self, kind=installation.VENV, user_flag=False):
+        return installation.Installation(
+            kind=kind,
+            pip_prefix=[str(self.exe), "-m", "pip"],
+            user_flag=user_flag,
+            script=self.script,
+            where=self.exe.parent,
+        )
+
+
+@pytest.fixture
+def fake_pip(tmp_path, monkeypatch):
+    """A fake interpreter, plus a fake installed `lmi` console script.
+
+    Its directory is deliberately not tmp_path/"bin": fake_npm owns that name,
+    and an `lmi install claude` test needs both fixtures at once.
+    """
+    bindir = tmp_path / "pipbin"
+    bindir.mkdir()
+    exe = _executable(bindir / "python", FAKE_PIP)
+    script = _executable(bindir / "lmi", FAKE_SCRIPT)
+
+    recdir = tmp_path / "piprec"
+    recdir.mkdir()
+    count_file = tmp_path / "pipcount.txt"
+    count_file.write_text("0")
+    probe_file = tmp_path / "probecount.txt"
+    probe_file.write_text("0")
+
+    monkeypatch.setenv("FAKE_PIP_DIR", str(recdir))
+    monkeypatch.setenv("FAKE_PIP_COUNT", str(count_file))
+    monkeypatch.setenv("FAKE_PROBE_COUNT", str(probe_file))
+    return Pip(exe, recdir, count_file, probe_file, script)
