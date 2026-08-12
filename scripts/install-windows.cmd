@@ -26,6 +26,13 @@ rem  machine setting, and is what lets the installer run on a default Windows
 rem  where the policy would otherwise block a local script.
 rem ===========================================================================
 
+rem  This file prints nothing of its own on success - every user-facing message
+rem  comes from install-windows.ps1, including the closing note that
+rem  `lmi install claude` is what installs the Claude Code CLI and sets up the
+rem  Claude Agent SDK backend `lmi schedule` uses by default. Neither script
+rem  installs either one: they read no config file, so they have no registry,
+rem  no package index and no CA file to do it with.
+
 setlocal
 set "PS_SCRIPT=%~dp0install-windows.ps1"
 

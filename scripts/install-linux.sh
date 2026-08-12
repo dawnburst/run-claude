@@ -320,4 +320,8 @@ fi
 printf '\n  lmi needs the Claude Code CLI on PATH: %sclaude --version%s\n' "$B" "$Z"
 printf '  If it is missing, install it and run %sclaude auth login%s once -\n' "$B" "$Z"
 printf '  the sign-in is interactive and lmi cannot do it for you.\n'
+printf '\n  %slmi install claude%s does both: it installs the Claude Code CLI and\n' "$B" "$Z"
+printf '  sets up the Claude Agent SDK backend that %slmi schedule%s uses by\n' "$B" "$Z"
+printf '  default. This script deliberately installs neither - it reads no\n'
+printf '  config file, so it has no registry, no package index and no CA file.\n'
 printf '\n  Re-run this script to upgrade. Uninstall with %s--uninstall%s.\n' "$B" "$Z"

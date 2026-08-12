@@ -50,6 +50,22 @@ def test_the_example_documents_every_supported_key():
     assert set(doc["claude"]) == {"registry", "index", "cafile"}
 
 
+def test_the_example_documents_the_schedule_backend(tmp_path):
+    """The example is what a new site copies, so it documents the switch on
+    day one - both that the key exists and that the value it carries is one
+    the parser accepts. Two assertions rather than one: a `schedule` section
+    that build_config tolerates but backend.parse refuses would be a file
+    every new site starts broken with, and neither validator alone catches it.
+    """
+    from lmi.commands.schedule import backend
+    doc = json.loads((REPO / "examples" / "lmi.json").read_text(encoding="utf-8"))
+    assert set(doc["schedule"]) == {"mode"}
+    mode, source = backend.of_document(doc, REPO / "examples" / "lmi.json")
+    assert mode in backend.MODES
+    assert source != backend.DEFAULT_SOURCE, \
+        "the example must name a mode explicitly, not fall back to the default"
+
+
 def test_the_example_config_does_not_duplicate_the_template():
     """MANDATORY. Silent failure: a setting written where nothing reads it.
 
@@ -293,6 +309,129 @@ def test_the_readme_says_verbose_costs_no_tokens():
     start = readme.index("### Verbose mode")
     window = readme[start:start + 3000]
     assert "costs no tokens" in window or "no tokens" in window
+
+
+# --- the two backends -----------------------------------------------------
+#
+# The README is the user-facing documentation and is accurate; these keep it
+# that way for the one part of it a reader cannot check against anything else.
+# A backend is invisible in the outcome - both exit 0 on success - so every
+# fact about which one is running, and how to change it, exists only here and in
+# one log line.
+
+def test_the_readme_documents_the_backend_switch():
+    """Everything a reader needs that the outcome of a run cannot tell them."""
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    for needle in ("lmi config schedule",
+                   # -f is forwarded in BOTH backends, and the four flags the
+                   # SDK cannot forward are refused rather than dropped. Both
+                   # halves are documented, because a reader who assumes either
+                   # one wrongly loses flags silently.
+                   "works in both backends",
+                   "--permission-mode",
+                   'pip install "lmi[sdk]"',
+                   "no fallback between them at run time"):
+        assert needle in readme, "README.md must document %s" % needle
+
+
+def test_the_readme_says_sdk_mode_still_runs_a_claude_code_binary():
+    """MANDATORY. The one thing a reader will otherwise assume.
+
+    "SDK" reads as "a library instead of the binary", and it is not: the wheels
+    bundle a Claude Code binary and spawn it, and where pip serves the source
+    distribution instead the SDK looks for `claude` on PATH. Someone who
+    believes otherwise concludes the npm half of `lmi install claude` is
+    optional in SDK mode - and finds out on a machine that has no `claude`,
+    which is the one place the mistake is expensive.
+    """
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    assert "SDK mode still runs a Claude Code binary" in readme
+    start = readme.index("SDK mode still runs a Claude Code binary")
+    window = readme[start:start + 700]
+    assert "PATH" in window, "and that the sdist case falls back to PATH"
+
+
+def test_the_readme_names_the_default_backend_as_the_code_defines_it():
+    """The default is the one fact a reader is most likely to assume wrongly,
+    and the only one that changes what happens when they configure nothing."""
+    from lmi.commands.schedule import backend
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    assert "| `%s` | **The default.**" % backend.DEFAULT in readme, \
+        "the Backends table must mark `%s` as the default" % backend.DEFAULT
+    for mode in backend.MODES:
+        assert "`%s`" % mode in readme
+
+
+def test_the_readme_says_cli_mode_needs_no_pip_install():
+    """The 3.9 floor is the reason the SDK is an extra rather than a dependency,
+    and a site running CLI mode needs to know it still holds for them."""
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    start = readme.index("`cli` mode needs no pip install")
+    window = readme[start:start + 400]
+    assert "3.9" in window and "standard library" in window
+
+
+def test_the_readme_documents_every_config_key_the_example_prints():
+    """Generalised deliberately, so the next key is documented without anybody
+    remembering this test exists.
+
+    `claude.index` is what it catches today: a key an operator has to write by
+    hand, in a config file, to get the default backend installed at all - and
+    the config-file table is where they would look for it.
+    """
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    for key in json.loads(config.EXAMPLE)["claude"]:
+        assert "`%s`" % key in readme, \
+            "README.md must document the claude.%s config key" % key
+
+
+def test_the_readme_and_the_runner_agree_on_the_header_line():
+    """Item 33's line, quoted in the README as a sample log header.
+
+    Pinned against the code because it is the only record of which backend ran:
+    a reformat that left the README behind would leave a reader grepping their
+    logs for a line that is not there, which is exactly when they are trying to
+    work out why a run behaved unexpectedly.
+    """
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    runner = (REPO / "lmi" / "commands" / "schedule" / "runner.py").read_text(
+        encoding="utf-8")
+    for needle in ("Backend   : ", "(from "):
+        assert needle in readme, "README.md must show %r" % needle
+        assert needle in runner, "runner.py must write %r" % needle
+
+
+def test_claude_md_records_that_the_user_settings_source_is_load_bearing():
+    """MANDATORY. Item 40, and the sharpest asymmetry between the backends.
+
+    The CLI read ~/.claude/settings.json by virtue of BEING the CLI; the SDK
+    loads settings only from the sources it is told to. Omitting the user source
+    is **silent**: SDK mode runs against the wrong endpoint with no credentials,
+    while `lmi config switch` - whose entire purpose is changing that file -
+    quietly stops affecting `lmi schedule` at all. One list literal, no symptom
+    lmi can see, so CLAUDE.md has to carry the reason.
+    """
+    text = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "setting_sources" in text
+    start = text.index("setting_sources")
+    window = text[start:start + 900]
+    assert "user" in window
+
+
+def test_the_readme_lists_what_only_a_real_run_can_settle():
+    """Task 57. The unverified list is load-bearing documentation here.
+
+    Nothing about the two backends has been exercised against a real SDK, a
+    real Artifactory or Windows, and a README that read as though it had would
+    be the most expensive kind of stale: every silent failure in this area
+    reports success.
+    """
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    for needle in ("read-only config file",
+                   "pip show claude-agent-sdk",
+                   "pip download --no-deps claude-agent-sdk"):
+        assert needle in readme, \
+            "README.md's outstanding-measurements section must name %s" % needle
 
 
 def test_claude_md_records_why_the_full_prompt_flag_is_not_an_iteration_number():
