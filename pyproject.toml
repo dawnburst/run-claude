@@ -11,6 +11,29 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+# The `lmi schedule` SDK backend, and deliberately an EXTRA rather than a
+# dependency. `dependencies = []` is what lets every bootstrap script in
+# scripts/ install the wheel with --no-index on an air-gapped machine, and
+# tests/test_packaging.py fails if either half of that stops being true. A CLI
+# mode site installs none of this and stays standard-library only on 3.9.
+#
+# Lower-bounded rather than unpinned: a message-type rename in the SDK would
+# empty the activity log silently, which is exactly the failure class this
+# project keeps paying for.
+#
+# 0.2.136 is the version every shape lmi reads was verified against, field by
+# field, by tests/commands/schedule/test_sdk_fake_shapes.py - which skips
+# rather than passing when this extra is absent, so the check only happens
+# where the extra is installed. The same bound is spelled in
+# lmi/commands/install/sdk.py, because `lmi install claude` names the
+# distribution directly and this constraint would not reach it;
+# tests/test_packaging.py pins the two strings equal.
+#
+# Lower it only after running that module against the version your own index
+# carries. The floor is safe to keep high on an air-gapped site: a pip that
+# cannot satisfy it fails, and `lmi install claude` then writes
+# schedule.mode = "cli" and still exits 0 - a working machine, out loud.
+sdk = ["claude-agent-sdk>=0.2.136"]
 
 [project.scripts]
 lmi = "lmi.cli:main"
