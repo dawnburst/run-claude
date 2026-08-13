@@ -20,10 +20,27 @@ import json
 
 TAG = "[claude]"
 
-# How much of a tool argument survives into the log. Long enough for a real
+# How much of a tool ARGUMENT survives into the log. Long enough for a real
 # path or a pytest command, short enough that one event stays one readable
 # line.
 ARG_WIDTH = 160
+
+# How much of a piece of TEXT survives - a tool's output, what claude said, what
+# it was thinking. A separate budget from ARG_WIDTH, and the two must not be
+# collapsed back into one.
+#
+# They size different things. An argument identifies what a tool was pointed at:
+# a path, a command, a URL, all of which fit in a line and none of which anyone
+# reads past the end of. Text is the thing an operator opens a -v log FOR, and
+# 160 characters of it is a sentence and a half - a grep's hits, a file's head
+# and a stack trace were all cut off mid-word.
+#
+# Bounded rather than unbounded, because a Read returns whole files: without a
+# ceiling every file claude opens lands in the log in full, which is item 29's
+# harm arriving through a tool's output instead of its input. 2000 is roughly a
+# screenful - enough for a grep, a traceback or a test summary - and still two
+# orders of magnitude short of a source file.
+TEXT_WIDTH = 2000
 
 # The tool input field worth showing, most specific first. `content` is
 # deliberately absent and must stay absent: it carries the whole new file on a
@@ -71,11 +88,11 @@ def _row(kind, body):
 # nobody can review, because the two logs stop lining up from there on.
 
 def _text_row(text):
-    return _row("text", _clip(text))
+    return _row("text", _clip(text, TEXT_WIDTH))
 
 
 def _thinking_row(text):
-    return _row("think", _clip(text))
+    return _row("think", _clip(text, TEXT_WIDTH))
 
 
 def _tool_row(name, inp):
@@ -84,7 +101,11 @@ def _tool_row(name, inp):
 
 
 def _result_row(content, is_error):
-    return _row("error" if is_error else "result", _clip(content or ""))
+    # TEXT_WIDTH, not the default. This row carries a tool's OUTPUT, and it
+    # spent a long time inheriting ARG_WIDTH - the budget for a file path -
+    # simply because this call did not name a width. Do not drop the argument.
+    return _row("error" if is_error else "result",
+                _clip(content or "", TEXT_WIDTH))
 
 
 def _init_row(model, session, cwd):

@@ -17,7 +17,17 @@ import sys
 
 import pytest
 
+from lmi.commands.schedule import stream as _stream
 from lmi.commands.upgrade import installation
+
+# How many "padding " words FAKE_STREAM_QUOTA_TAIL sits behind.
+#
+# Derived from the renderer's own widest clip, never hardcoded. The [QUOTA] test
+# below works by placing the wording PAST that clip, so that finding the tag
+# proves the scan read the raw line; a literal count silently stops proving
+# anything the moment a width grows past it, and the test goes green for the
+# wrong reason. Widening TEXT_WIDTH is exactly what did that once.
+QUOTA_PAD_WORDS = _stream.TEXT_WIDTH // len("padding ") + 40
 
 # One definition for every permission test. os.geteuid is Unix-only and a
 # skipif argument is evaluated at import time, so a bare os.geteuid() call makes
@@ -101,9 +111,10 @@ if stream:
         # carries it; the rendered line cannot. That is what makes the [QUOTA]
         # test discriminate between scanning the raw line and the rendered
         # one - with a short message both scans find it, and the test is a
-        # false green.
+        # false green. The count comes from QUOTA_PAD_WORDS, which reads the
+        # renderer's width, so it cannot fall behind it.
         emit({{"type": "assistant", "message": {{"content": [
-            {{"type": "text", "text": ("padding " * 40) + tail}}]}}}})
+            {{"type": "text", "text": ("padding " * {quota_pad}) + tail}}]}}}})
 
     emit({{"type": "result", "subtype": "success", "is_error": False,
            "num_turns": 2, "duration_ms": 1234,
@@ -158,7 +169,10 @@ def fake_claude(tmp_path, monkeypatch):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     exe = bindir / ("claude.py" if os.name == "nt" else "claude")
-    exe.write_text(FAKE.format(python=sys.executable), encoding="utf-8")
+    exe.write_text(
+        FAKE.format(python=sys.executable, quota_pad=QUOTA_PAD_WORDS),
+        encoding="utf-8",
+    )
     exe.chmod(exe.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
     if os.name == "nt":

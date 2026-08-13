@@ -678,6 +678,47 @@ envelope behind it.
     spell a single-dash option, and mangling `-p` into `---p` is not an
     improvement on saying so.
 
+And one from reading a real `-v` log, which is the only place it could have been
+found: every test of the renderer asserted that a short string survived, and a
+short string always did.
+
+47. **A row that carries text is budgeted by `TEXT_WIDTH`; only a tool
+    *argument* gets `ARG_WIDTH`.** `_clip`'s default parameter is `ARG_WIDTH`,
+    so a row function that called `_clip(x)` without naming a width silently
+    inherited the budget for a file path — 160 characters. `_result_row` did,
+    and so did `_text_row` and `_thinking_row`, which meant **the tool output an
+    operator opens a `-v` log to read was sized as if it were a path**: every
+    grep's hits, every file's head and every stack trace was cut off mid-word,
+    `...`, at a sentence and a half.
+
+    Not silent in the usual sense — the `...` is right there — but it fails in
+    the direction that reads as working. The log still has one row per event and
+    still lines up between the two backends, so it looks complete; it just says
+    that claude ran something and never what came back. `_init_row` (80),
+    `_tool_row`'s name (20) and `_done_row`'s result text (200) had each named a
+    width of their own, so the three content rows were the ones that never did,
+    not a considered choice to make them narrow.
+
+    The ceiling stays, and 2000 is not a step towards removing it: a `Read`
+    returns whole files, so an unbounded result row is item 29's harm arriving
+    through a tool's *output* instead of its input — every file claude opens, in
+    full, in the log. Do not collapse the two constants back into one. A single
+    width can only be right for one of them, and the merge direction that looks
+    tidiest is the one that reinstates this bug.
+
+    One test had to be repaired rather than re-asserted, and it is the
+    interesting part. `test_a_clipped_message_inside_a_json_event_is_still_flagged`
+    pins item 28 by placing the quota wording **past the clip width**, so that
+    finding `[QUOTA]` proves the scan read the raw line. Its padding was a
+    literal `"padding " * 40` — 320 characters, comfortably past 160 and
+    comfortably short of 2000 — so widening the clip did not break the rule, it
+    dissolved the test's premise, and the test would have gone green for the
+    wrong reason had its second assertion not caught it. The padding is now
+    `tests/conftest.py`'s `QUOTA_PAD_WORDS`, derived from `stream.TEXT_WIDTH`
+    itself. **A test that works by exceeding a constant must read that
+    constant**, or it stops testing anything the first time the constant grows,
+    and nothing goes red to say so.
+
 ---
 
 ## 4. Rules for editing
@@ -687,8 +728,8 @@ envelope behind it.
    nothing — several bugs above only appear with awkward paths, or only when a
    claude call fails.
 
-   **664 passed, 19 skipped, in under four seconds** — measured, not estimated.
-   It was 505 (1 skipped) before the two-backend work.
+   **669 passed, 19 skipped, in under four seconds** — measured, not estimated.
+   It was 505 (1 skipped) before the two-backend work, and 664 before item 47.
 
    The 19 skips are the point of the number, not noise. Eighteen are
    `test_sdk_fake_shapes.py`, which is the only module that validates the SDK
@@ -696,9 +737,14 @@ envelope behind it.
    `sdk` extra is absent; the nineteenth is a Windows-only clause. So the
    default run leaves the SDK backend's shapes unchecked, and
    `pip install -e ".[sdk]"` then `python3 -m pytest tests/ -q` is the run that
-   checks them: **682 passed, 1 skipped**. Both numbers are worth knowing,
+   checks them: **687 passed, 1 skipped**. Both numbers are worth knowing,
    because a green default run is not evidence that the SDK backend matches the
    SDK it will meet.
+
+   The second number is the one to distrust in a report. 669 was measured on a
+   machine with no `sdk` extra installed; 687 is 669 plus the 18 shape tests
+   that skipped there, which is arithmetic and not a run. Re-measure it the
+   next time the extra is present.
 2. **Preserve the five invariants in section 1** and everything in section 3.
    Where a comment in the code says "do not simplify this back to X", X is the
    bug.
@@ -724,6 +770,15 @@ envelope behind it.
 5. Tests that mark themselves `MANDATORY` in their docstring pin one of the
    silent failures above. If one goes red, that failure is back — do not adjust
    the test to match new behaviour.
+
+   The one distinction worth drawing, because item 47 hit it: repairing a
+   test's *premise* is not adjusting its *assertion*. That test needed the
+   quota wording to fall past the clip width, and widening the clip stopped
+   the fixture supplying enough padding — the rule was untouched, the setup
+   stopped reaching it. Restoring the setup is right; relaxing the assertion
+   would not have been. Tell the two apart by inverting the guard the test
+   pins and checking it still goes red, which is the only real evidence that
+   a repaired test still tests anything.
 6. `os.geteuid` is Unix-only and a `skipif` argument is evaluated at import time,
    so permission tests use the shared `skip_as_root` marker in `tests/conftest.py`
    rather than a bare call, which would lose a whole module to an
@@ -734,8 +789,8 @@ envelope behind it.
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 664 passed, 19 skipped - no install needed
-pip install -e ".[sdk]"              # then 682 passed, 1 skipped: the 18 skips
+python3 -m pytest tests/ -q          # 669 passed, 19 skipped - no install needed
+pip install -e ".[sdk]"              # then 687 passed, 1 skipped: the 18 skips
 python3 -m pytest tests/ -q          # are the SDK shape checks. See 4.1
 ```
 

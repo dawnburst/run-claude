@@ -12,6 +12,7 @@ import json
 
 import pytest
 
+from lmi.commands.schedule import stream
 from lmi.commands.schedule.stream import MessageRenderer, Renderer
 
 from . import sdk_fake
@@ -86,6 +87,55 @@ def test_a_tool_result_is_rendered():
     out = _render({"type": "user", "message": {"content": [
         {"type": "tool_result", "content": "420 passed, 1 skipped"}]}})
     assert "420 passed, 1 skipped" in out
+
+
+def test_a_tool_result_is_not_clipped_to_the_argument_budget():
+    """MANDATORY. A tool result is what an operator reads a -v log FOR, and it
+    used to inherit ARG_WIDTH - the budget for a file path - because
+    _result_row called _clip with no width of its own. Every grep's hits and
+    every file's head were cut off mid-word at 160 characters.
+
+    Not silent, but it makes the feature useless in the direction that looks
+    fine: the log still shows a row per event, so it reads as complete, while
+    saying that claude ran something and never what it got back."""
+    body = " ".join("%d: a line of real output" % n for n in range(1, 80))
+    out = _render({"type": "user", "message": {"content": [
+        {"type": "tool_result", "content": body}]}})
+    assert "40: a line of real output" in out
+    assert len(out) > 1000
+
+
+def test_a_huge_tool_result_is_still_bounded_to_one_line():
+    """The other half of the same rule. A Read returns whole files, so an
+    unbounded result row would put every file claude opens into the log - item
+    29's harm arriving through the tool's output instead of its input."""
+    out = _render({"type": "user", "message": {"content": [
+        {"type": "tool_result", "content": "y" * 500000}]}})
+    assert len(out) < 3000
+    assert out.count("\n") == 0
+
+
+def test_assistant_prose_is_not_clipped_to_the_argument_budget():
+    """Same root cause, same fix: what claude said is content, not an argument.
+    Left at ARG_WIDTH it is cut off mid-sentence exactly like a tool result."""
+    body = " ".join("sentence %d of the explanation." % n for n in range(1, 60))
+    out = _render({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": body}]}})
+    assert "sentence 30 of the explanation." in out
+
+
+def test_thinking_is_not_clipped_to_the_argument_budget():
+    body = " ".join("thought %d about the state file." % n for n in range(1, 60))
+    out = _render({"type": "assistant", "message": {"content": [
+        {"type": "thinking", "thinking": body}]}})
+    assert "thought 30 about the state file." in out
+
+
+def test_the_content_budget_is_wider_than_the_argument_budget():
+    """The two must not be collapsed back into one constant. ARG_WIDTH sizes an
+    identifier - a path, a command, a URL - and TEXT_WIDTH sizes something
+    somebody has to read. A single width can only be wrong for one of them."""
+    assert stream.TEXT_WIDTH > stream.ARG_WIDTH
 
 
 def test_the_result_event_reports_how_the_iteration_went():
