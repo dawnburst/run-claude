@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from lmi.commands.install import (
-    claude_json, config, gitbash, settings, statusline, template,
+    claude_json, config, defaults, gitbash, settings, statusline, template,
 )
 from lmi.commands.upgrade import config as upgrade_config
 from lmi.core.errors import LmiError
@@ -187,6 +187,28 @@ def test_the_shipped_config_folder_carries_the_statusline_it_declares():
         "config/settings.json is expected to declare a statusline"
     assert statusline.find(folder / config.CWD_CONFIG_NAME) is not None, \
         "%s must exist beside it" % statusline.NAME
+
+
+def test_the_packaged_config_folder_declares_no_statusline():
+    """MANDATORY. The mirror of the test above, for the folder in the wheel.
+
+    The checkout's config/ ships both halves. The packaged folder ships
+    neither, and must keep declaring neither: no statusline.js goes into the
+    package - statusline.py says why - so a `statusLine` block in the packaged
+    template would install a command pointing at a file nothing writes, on
+    every machine that falls through to the default, and report success.
+    """
+    doc = json.loads(defaults.TEMPLATE.read_text(encoding="utf-8"))
+    assert not statusline.declares(doc)
+    assert statusline.find(defaults.CONFIG) is None
+
+
+def test_the_readme_documents_the_packaged_default():
+    """The search order gained a fifth entry, and it is the easiest to leave
+    stale: it is the one no operator can see in their own filesystem."""
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    for needle in (defaults.DIR_NAME, "packaged default"):
+        assert needle in readme, "README.md must document %s" % needle
 
 
 def test_the_readme_documents_the_statusline_script():

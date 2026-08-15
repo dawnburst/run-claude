@@ -6,7 +6,7 @@ import stat
 
 import pytest
 
-from lmi.commands.install import gitbash, prompts, runner, sdk, settings
+from lmi.commands.install import defaults, gitbash, prompts, runner, sdk, settings
 from lmi.commands.schedule import backend
 from lmi.core.errors import LmiError
 from tests.conftest import skip_as_root
@@ -192,6 +192,90 @@ def test_a_cafile_replaces_strict_ssl_false(
     flat = [" ".join(call) for call in fake_npm.calls()]
     assert any("cafile" in c for c in flat)
     assert not any("strict-ssl" in c for c in flat)
+
+
+def test_the_packaged_default_installs_with_no_config_file_at_all(
+        tmp_path, monkeypatch, fake_npm, sdk_pip, home, answers, no_claude,
+        capsys):
+    """`pip install lmi`, then `lmi install claude`, with nothing else on disk.
+
+    The whole point of the packaged folder, end to end: no lmi.json, no
+    settings.json, no ~/.lmi - and a machine that ends up with Claude Code
+    installed, a real settings file, and a config folder of its own to edit.
+    """
+    monkeypatch.delenv("LMI_CONFIG", raising=False)
+    monkeypatch.setenv("FAKE_IMPORTABLE", "1")
+    (tmp_path / "work").mkdir()
+    monkeypatch.chdir(tmp_path / "work")
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [True]           # the packaged config names an index
+
+    assert runner.run(Args(None)) == 0
+
+    assert ["install", "-g", "@anthropic-ai/claude-code"] in fake_npm.calls()
+    assert sdk_pip.calls()[0][-1] == sdk.REQUIREMENT
+    doc = read_settings(home)
+    assert doc["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-x"
+    assert doc["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "256000"
+
+    out = capsys.readouterr().out
+    assert "(packaged default)" in out, \
+        "the one config nobody chose has to say so before npm runs"
+
+
+def test_the_packaged_default_is_adopted_before_the_mode_is_written(
+        tmp_path, monkeypatch, fake_npm, sdk_pip, home, answers, no_claude,
+        capsys):
+    """MANDATORY. Silent failure: a mode written where nothing reads it.
+
+    `_write_mode` must not write `schedule.mode` into site-packages - `lmi
+    schedule` never searches there and the next `pip install --upgrade`
+    replaces it, so the machine would keep the default backend for ever with a
+    correct-looking file to prove otherwise. The packaged pair is copied to
+    ~/.lmi first, and the mode lands in the copy.
+    """
+    monkeypatch.delenv("LMI_CONFIG", raising=False)
+    monkeypatch.setenv("FAKE_IMPORTABLE", "1")
+    (tmp_path / "work").mkdir()
+    monkeypatch.chdir(tmp_path / "work")
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [True]
+
+    assert runner.run(Args(None)) == 0
+
+    adopted = home / ".lmi" / "config.json"
+    assert adopted.is_file()
+    assert (home / ".lmi" / "settings.json").is_file()
+    assert json.loads(adopted.read_text(encoding="utf-8"))["schedule"]["mode"] \
+        == backend.SDK
+    packaged = json.loads(defaults.CONFIG.read_text(encoding="utf-8"))
+    assert "schedule" not in packaged, "the wheel is not a place to keep state"
+
+
+def test_the_final_report_names_the_adopted_file_not_the_packaged_one(
+        tmp_path, monkeypatch, fake_npm, sdk_pip, home, answers, no_claude,
+        capsys):
+    """Found by a real run, which is the only place it was visible.
+
+    `_write_mode` wrote to the ~/.lmi copy correctly while `_report` still
+    printed cfg.source, so the closing line told the operator their backend had
+    been "written to" a file inside site-packages. Not silent - it says the
+    wrong thing out loud - but it sends someone to edit a file the next
+    `pip install --upgrade` replaces, and the mode they set there would never
+    be read.
+    """
+    monkeypatch.delenv("LMI_CONFIG", raising=False)
+    monkeypatch.setenv("FAKE_IMPORTABLE", "1")
+    (tmp_path / "work").mkdir()
+    monkeypatch.chdir(tmp_path / "work")
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [True]
+
+    assert runner.run(Args(None)) == 0
+
+    report = capsys.readouterr().out.rsplit("backend:", 1)[-1]
+    assert str(home / ".lmi" / "config.json") in report
+    assert str(defaults.CONFIG) not in report
 
 
 def test_no_cafile_warns_about_tls(

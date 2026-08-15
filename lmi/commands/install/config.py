@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
-from . import statusline, template
+from . import defaults, statusline, template
 from ...core import config as core_config
 from ...core import fs
 from ...core.errors import EXIT_USAGE, LmiError
@@ -77,7 +77,8 @@ def build_config(args):
     optional, so there is nothing to refuse, but a path that cannot even be
     classified should still stop the command before npm changes the machine.
     """
-    path = core_config.find(getattr(args, "config", None), PURPOSE, EXAMPLE)
+    path = core_config.find(getattr(args, "config", None), PURPOSE, EXAMPLE,
+                            fallback=defaults.CONFIG)
     section = core_config.section(core_config.load(path), SECTION, path, EXAMPLE)
     settings, settings_source = template.load(path)
     return Config(

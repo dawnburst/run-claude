@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from lmi.commands.install import config
+from lmi.commands.install import config, defaults
 from lmi.core.errors import LmiError
 
 
@@ -40,6 +40,28 @@ MINIMAL = {"claude": {"registry": "https://artifactory.corp.local/api/npm/npm/"}
 
 # The working-directory default: ./config/lmi.json, not ./lmi.json.
 CWD = ("config", "lmi.json")
+
+
+@pytest.fixture
+def no_packaged_config(tmp_path, monkeypatch):
+    """Hide the config folder packaged with lmi.
+
+    It always exists in a working install, so this is the only way left to
+    reach "no config file found" - which still has to be right, because a
+    broken install is exactly when it gets read.
+    """
+    monkeypatch.setattr(defaults, "CONFIG",
+                        tmp_path / "absent" / "lmi.json")
+
+
+@pytest.fixture
+def bare_search(tmp_path, monkeypatch):
+    """An empty search: no $LMI_CONFIG, no ./config/lmi.json, no ~/.lmi."""
+    monkeypatch.delenv("LMI_CONFIG", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    (tmp_path / "work").mkdir(exist_ok=True)
+    monkeypatch.chdir(tmp_path / "work")
 
 
 def test_explicit_config_wins(tmp_path, monkeypatch):
@@ -125,22 +147,60 @@ def test_the_old_path_does_not_override_an_explicit_config(tmp_path, monkeypatch
     assert config.build_config(Args()).source == legacy
 
 
-def test_home_is_the_last_resort(tmp_path, monkeypatch):
-    monkeypatch.delenv("LMI_CONFIG", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+def test_home_beats_the_packaged_default(tmp_path, bare_search):
     fallback = write(tmp_path / "home" / ".lmi" / "config.json", MINIMAL)
-    (tmp_path / "work").mkdir()
-    monkeypatch.chdir(tmp_path / "work")
     assert config.build_config(Args()).source == fallback
 
 
-def test_no_config_anywhere_is_usage_with_an_example(tmp_path, monkeypatch):
-    monkeypatch.delenv("LMI_CONFIG", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
-    (tmp_path / "work").mkdir()
-    monkeypatch.chdir(tmp_path / "work")
+def test_the_packaged_default_is_the_last_resort(bare_search):
+    """`pip install lmi` is the whole installation: no config file to write.
+
+    Nothing in the search exists, and the command still gets a registry and a
+    settings template - from the folder shipped inside the package. The
+    template comes along for free: template.load reads the neighbour of
+    whatever discovery resolved, and the packaged folder is laid out like any
+    other config folder for exactly that reason.
+    """
+    cfg = config.build_config(Args())
+    assert cfg.source == defaults.CONFIG
+    assert cfg.registry
+    assert cfg.settings_source == defaults.TEMPLATE
+    assert cfg.settings["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "256000"
+
+
+def test_the_packaged_default_carries_no_statusline(bare_search):
+    """MANDATORY. Item 32's two warnings must stay quiet on the packaged pair.
+
+    No statusline.js ships inside the package - statusline.py says why - so the
+    packaged template must not declare a `statusLine` either. Declaring one
+    would install a command pointing at a file that is never written, on every
+    machine that falls through to the default, and say so in a [WARN] nobody
+    can act on.
+    """
+    from lmi.commands.install import statusline
+    cfg = config.build_config(Args())
+    assert cfg.statusline is None
+    assert not statusline.declares(cfg.settings)
+
+
+def test_the_packaged_default_does_not_mask_the_old_path(tmp_path, bare_search):
+    """MANDATORY. Silent failure: provisioning against the wrong registry.
+
+    A last-resort default changed what falling through *reaches*: an lmi.json
+    left at the pre-move path used to fall through to ~/.lmi and would now
+    reach the packaged registry instead. Either way it is a machine provisioned
+    from a source the operator can see in the working directory and did not
+    get. The refusal fires first, as before.
+    """
+    legacy = write(tmp_path / "work" / "lmi.json", MINIMAL)
+    with pytest.raises(LmiError) as exc:
+        config.build_config(Args())
+    assert exc.value.code == 2
+    assert str(legacy) in str(exc.value)
+
+
+def test_no_config_anywhere_is_usage_with_an_example(
+        bare_search, no_packaged_config):
     with pytest.raises(LmiError) as exc:
         config.build_config(Args())
     assert exc.value.code == 2

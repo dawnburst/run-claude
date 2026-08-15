@@ -78,6 +78,8 @@ lmi/commands/schedule/      the command, as a self-contained package
   exit_codes.py             this command's own codes (1, 3, 4)
 lmi/commands/install/       `lmi install claude`, as a self-contained package
   config.py                 arguments, config-file discovery, the frozen Config
+  defaults.py               the packaged config folder, and adopting it
+  default-config/           that folder: lmi.json and settings.json, in the wheel
   template.py               finding and validating the settings.json template
   statusline.py             finding and copying the statusline.js beside it
   prompts.py                every question, and the no-terminal guard
@@ -718,6 +720,56 @@ short string always did.
     itself. **A test that works by exceeding a constant must read that
     constant**, or it stops testing anything the first time the constant grows,
     and nothing goes red to say so.
+
+And one for the config folder packaged inside the wheel, which is what makes
+`pip install lmi` the whole installation.
+
+48. **The packaged default is last, it is announced, and it is copied out
+    before anything is written to it.** `install/default-config/` holds an
+    `lmi.json` and the `settings.json` beside it, laid out like any config
+    folder so `template.load` finds the template for free. Three properties, and
+    each is a silent failure without it.
+
+    It is the **last** candidate, after `~/.lmi/config.json`, so every file a
+    human placed outranks it — anything else is item 21 shipped as a feature.
+    It reaches discovery through a `fallback` parameter on `core_config.find`
+    and **must not** become a candidate inside `find_optional`: `lmi schedule`
+    and `lmi config schedule` search through that function, and a packaged
+    candidate there would point a `--set` at `site-packages`.
+
+    `runner._describe` annotates it `(packaged default)` in the `Config:` line
+    printed before the first npm command. **Silent without it:** a mistyped
+    working directory used to be exit 2, "no config file found", and now
+    installs successfully from whatever registry the wheel carries, with output
+    indistinguishable from a run that read the site's own file.
+
+    `defaults.adopt` copies both files to `~/.lmi/` immediately before
+    `_write_mode`. **Silent without it:** `schedule.mode` written into
+    `site-packages` is item 39 reached from a new direction — a file with
+    exactly the right contents in it that `lmi schedule` never reads and the
+    next `pip install --upgrade` replaces. Both halves are copied, or an
+    operator editing the config lmi just made them meets "no settings template
+    found" from a folder lmi created. It runs *after* the last Claude write, so
+    a failed install leaves no config folder claiming to have provisioned the
+    machine.
+
+    Two smaller ones ride along. `pyproject.toml` needs the
+    `[tool.setuptools.package-data]` entry or the folder is in the checkout and
+    **not** in the wheel — a green suite and broken installs, which is why
+    `test_declares_the_packaged_config_folder_as_package_data` asserts the
+    declaration itself; from a checkout there is nothing else to look at. And no
+    `statusline.js` ships in the package and the packaged template declares no
+    `statusLine`, so item 32's two warnings stay quiet — see statusline.py on
+    why one script in the wheel would be the wrong shape.
+
+    Its two URLs are the public npm registry and public PyPI, so the fallback
+    path provisions a machine with internet access end to end. That is **not**
+    item 38 being softened: that rule forbids *inferring* public PyPI from an
+    absent `index`, and `config._index` still returns None and still refuses to
+    default. This is a value written in a file, printed before anything runs,
+    consented to at the SDK question and left in `~/.lmi/config.json` where the
+    operator can see it. Do not move it back into the code as a default for a
+    missing key.
 
 ---
 

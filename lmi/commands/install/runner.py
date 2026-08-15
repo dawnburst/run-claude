@@ -14,7 +14,8 @@ provisioned and is not.
 
 import shutil
 
-from . import claude_json, gitbash, npm, prompts, sdk, settings, statusline
+from . import (claude_json, defaults, gitbash, npm, prompts, sdk, settings,
+               statusline)
 from .config import build_config
 from .exit_codes import EXIT_CONFIG_WRITE, EXIT_INTERNAL
 from ..schedule import backend
@@ -155,7 +156,7 @@ def run(args):
 
 def _run(args):
     cfg = build_config(args)
-    say("Config:   %s" % cfg.source)
+    say("Config:   %s" % _describe(cfg.source))
     say("Settings: %s" % cfg.settings_source)
 
     npm_exe = npm.find()
@@ -195,9 +196,10 @@ def _run(args):
     # `sdk` - on a machine where pip may never have run; that is `lmi
     # schedule`'s loud exit 2, not a silent wrong backend, and it is the right
     # side to fail on.
-    _write_mode(cfg, mode)
+    mode_source = defaults.adopt(cfg.source, say)
+    _write_mode(mode_source, mode)
 
-    _report(backups, cfg, mode)
+    _report(backups, mode_source, mode)
     return EXIT_OK
 
 
@@ -270,6 +272,21 @@ def _resolve_git_bash():
     return None
 
 
+def _describe(source):
+    """The config path as the user is shown it, before anything is changed.
+
+    The packaged folder is annotated, because it is the one candidate nobody
+    put there. A run that reaches it by accident - a mistyped working directory,
+    a checkout that was never given a config - installs from a different
+    registry than the operator believes, and unannotated the line would read
+    exactly like a run that found the site's own file. Printed before the first
+    npm command, which is what keeps a last-resort default from being silent.
+    """
+    if defaults.is_packaged(source):
+        return "%s (packaged default)" % source
+    return str(source)
+
+
 # --- changes --------------------------------------------------------------
 
 def _configure_npm(cfg, npm_exe):
@@ -315,7 +332,7 @@ def _install_sdk(cfg, wants_sdk):
     return backend.CLI
 
 
-def _write_mode(cfg, mode):
+def _write_mode(source, mode):
     """Record the backend in the lmi.json this command read.
 
     Through backend.write, which is the ONLY writer of this key - `lmi config
@@ -325,8 +342,13 @@ def _write_mode(cfg, mode):
     The file is the one discovery resolved, so it exists and is the one
     `lmi schedule` will read back: there is no shadowing case here, unlike
     `lmi config schedule`, which may have to create a file from nothing.
+
+    `source` rather than cfg.source because of the one case where those differ:
+    a run that fell through to the packaged config folder writes to the copy
+    defaults.adopt has just made in ~/.lmi, never into site-packages, which
+    `lmi schedule` does not read and the next upgrade replaces.
     """
-    backend.write(cfg.source, mode, EXIT_CONFIG_WRITE)
+    backend.write(source, mode, EXIT_CONFIG_WRITE)
 
 
 def _write_statusline(cfg, stamp, backups):
@@ -405,7 +427,12 @@ def _back_up(path, stamp, what, backups):
 
 # --- reporting ------------------------------------------------------------
 
-def _report(backups, cfg, mode):
+def _report(backups, mode_source, mode):
+    """What happened, once. `mode_source` is where the backend was actually
+    written, which is not cfg.source on the one path where those differ - a run
+    that fell through to the packaged folder wrote to the ~/.lmi copy adopt just
+    made. Naming the packaged file here would send an operator to edit a file
+    inside site-packages that the next upgrade replaces."""
     say("")
     if backups:
         say("Your previous configuration was saved:")
@@ -421,9 +448,9 @@ def _report(backups, cfg, mode):
     # stated here as well as at the moment it was decided - by the time the
     # command ends, the line that decided it has scrolled past a pip install.
     if mode == backend.SDK:
-        say(MODE_REPORT % (mode, cfg.source))
+        say(MODE_REPORT % (mode, mode_source))
     else:
-        say(MODE_REPORT_CLI % (mode, cfg.source, mode, backend.SDK))
+        say(MODE_REPORT_CLI % (mode, mode_source, mode, backend.SDK))
 
 
 def say(message=""):
