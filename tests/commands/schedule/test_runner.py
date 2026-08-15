@@ -57,6 +57,44 @@ def test_the_composed_prompt_reaches_claude_on_stdin(tmp_path, fake_claude,
     assert "write a haiku" in body
 
 
+@pytest.mark.skipif(not hasattr(os, "getsid"),
+                    reason="sessions are a POSIX idea; see CLAUDE.md item 50")
+@pytest.mark.parametrize("flags", [[], ["-v"]])
+def test_claude_runs_in_a_session_with_no_controlling_terminal(
+        tmp_path, fake_claude, cli_mode, monkeypatch, flags):
+    """MANDATORY. Invariant 3, from the direction it was actually broken.
+
+    Feeding the prompt on stdin makes stdin unavailable for questions. It does
+    NOT make the terminal unavailable: a child inherits its parent's
+    controlling terminal, and a program that wants an answer badly enough
+    opens /dev/tty, which no stdin redirection can reach. Claude Code does
+    exactly that when it hits a rate or quota limit, and an unattended run then
+    waited on a keypress for ever - no timeout, no error, nothing in the log
+    after "--- claude output ---". Reported from a real run; reproduced here by
+    giving lmi a real pty and a claude that reads /dev/tty.
+
+    A session of its own has no controlling terminal by definition, so the
+    open fails with ENXIO and claude has to decide without us. Whatever it then
+    does, invariant 2 has an answer for it; blocking for ever is the one
+    outcome the loop cannot survive.
+
+    Asserted as "a different session from ours", not as "opening /dev/tty
+    fails": pytest usually runs without a controlling terminal in the first
+    place, so the direct check passes for the wrong reason and would keep
+    passing with the fix deleted. Both invocation paths are covered - capture
+    and -v streaming are two subprocess calls, and only one of them was fixed
+    first.
+    """
+    sess = tmp_path / "session.txt"
+    monkeypatch.setenv("FAKE_SESSION_FILE", str(sess))
+
+    assert main(["schedule", "x", "-d", str(tmp_path)] + flags) == 0
+
+    child_pid, child_sid = (int(v) for v in sess.read_text().split())
+    assert child_sid == child_pid, "claude must lead its own session"
+    assert child_sid != os.getsid(0), "and not share the runner's"
+
+
 def test_back_to_back_loop_runs_count_times(tmp_path, fake_claude, cli_mode):
     assert main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "3"]) == 0
     assert _count(fake_claude) == 3

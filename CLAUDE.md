@@ -799,6 +799,48 @@ And two for the config folder packaged inside the wheel, which is what makes
     per-invocation registry flag, while `--trusted-host` covers one command and
     no `pip.conf` is ever written. Do not "fix" that by writing one.
 
+And one for the invocation itself, which is invariant 3 broken from the one
+direction nobody had covered:
+
+50. **claude runs in a session of its own.** Both invocations in
+    `schedule/runner.py` pass `start_new_session=True`. Feeding the prompt on
+    stdin makes *stdin* unavailable for questions, which is what invariant 3
+    always rested on; it does nothing about the **terminal**. A child inherits
+    its parent's controlling terminal, and a program that wants an answer badly
+    enough opens `/dev/tty` — which is the entire purpose of `/dev/tty`, and
+    which no stdin redirection can intercept. Claude Code does this on a rate,
+    token or quota limit. **The symptom is the worst one this project has:** the
+    run neither fails nor finishes. It waits for a keypress for ever, with no
+    timeout, no error and nothing in the log after `--- claude output ---`, and
+    a scheduled overnight run simply never comes back. Reported from a real run;
+    reproduced under a real pty with a fake claude that opens `/dev/tty`.
+
+    A new session has no controlling terminal by definition, so the open fails
+    with `ENXIO` and claude decides without us. Retry or non-zero exit are both
+    outcomes item 2 handles.
+
+    Three things ride along. `_stream_claude` **kills the child** if `_pump`
+    raises: `Popen.__exit__` closes the pipe and then *waits*, which was safe
+    while claude shared this process group and a terminal Ctrl-C reached it too
+    — `start_new_session` took that away, and the wait would now block for ever.
+    The `except BaseException` there is deliberate: `KeyboardInterrupt` is the
+    case. `subprocess.run` already kills on its own, so `_capture_claude` needs
+    nothing.
+
+    The test asserts **"a different session from the runner's"**, not "opening
+    /dev/tty fails". pytest normally runs with no controlling terminal at all,
+    so the direct check passes for the wrong reason and keeps passing with the
+    fix deleted — verified by deleting it. It covers both invocation paths,
+    because capture and `-v` streaming are two `subprocess` calls and only one
+    of them was fixed first.
+
+    POSIX only. CPython's Windows `_execute_child` names the parameter
+    `unused_start_new_session` and ignores it, so this is a no-op there and a
+    Claude Code that opens `CONIN$` would still block. Fixing that means
+    `creationflags`, a real Windows box and a real rate limit — do not guess at
+    it from Linux, and see section 4 rule 4 on why that platform's I/O details
+    are not changed blind.
+
 ---
 
 ## 4. Rules for editing

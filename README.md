@@ -419,10 +419,29 @@ workspace, a transient `OSError` from `subprocess.run` — is logged with its
 traceback and the iteration is recorded as skipped; the loop still continues.
 
 **Nothing in `lmi schedule` ever waits for a keypress.** The prompt arrives on
-stdin and every wait is a `time.sleep`. This is a property of the unattended
-runner rather than of `lmi` as a whole:
-[`lmi install claude`](#lmi-install-claude) is interactive by design, and guards
-only against *hanging*.
+stdin, every wait is a `time.sleep`, and **claude is run in a session of its
+own**. This is a property of the unattended runner rather than of `lmi` as a
+whole: [`lmi install claude`](#lmi-install-claude) is interactive by design, and
+guards only against *hanging*.
+
+That third one was added after a real run stopped dead. Putting the prompt on
+stdin makes stdin unavailable for questions; it does **not** make the terminal
+unavailable. A child inherits its parent's controlling terminal, and a program
+that wants an answer badly enough opens `/dev/tty` and reads from there — which
+is precisely what `/dev/tty` is for, and which no amount of stdin redirection can
+intercept. Claude Code does this when it hits a rate, token or quota limit, and
+the loop then waited for somebody to press Enter: no timeout, no error, and
+nothing in the log after `--- claude output ---`. `subprocess` is now given
+`start_new_session=True`, which puts claude in a session with no controlling
+terminal at all, so that open fails with `ENXIO` and claude has to decide without
+us. Whatever it decides — retry, or exit non-zero — the loop has an answer for;
+waiting for ever was the one outcome it could not survive.
+
+Two consequences worth knowing. **Ctrl-C no longer reaches claude through the
+terminal**, because it is no longer in this process group; the runner kills it
+explicitly instead. And this is a POSIX mechanism: the equivalent on Windows, a
+child opening `CONIN$`, is **not** addressed — see
+[Known limitations](#known-limitations).
 
 ### Logging
 
@@ -521,6 +540,15 @@ editor is inlined into the next prompt correctly rather than as mojibake.
 
 - **No per-iteration timeout.** A hung `claude` call stalls the loop
   indefinitely. No test can surface this as a failure; it is a missing feature.
+  The one *known* cause of a hang is fixed — claude asking on `/dev/tty` at a
+  rate limit, above — but a claude that hangs for any other reason still stalls
+  the run.
+- **The terminal guard is POSIX-only.** `start_new_session=True` is how claude is
+  kept away from `/dev/tty`, and CPython ignores it on Windows. A Claude Code
+  that opens `CONIN$` there would still block an unattended run. The fix would be
+  a `creationflags` change, and it is not made blind: it needs a Windows box and
+  a real rate limit to verify, and the console handling on that platform is the
+  part of the install that has already been verified working.
 - **A quota failure consumes an iteration.** There is no retry with backoff — the
   failure is flagged `[QUOTA]` and the loop moves on to the next iteration.
 - **No log rotation.** Each run writes a new timestamped log file. `-v` makes

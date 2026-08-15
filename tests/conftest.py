@@ -144,6 +144,16 @@ if sf:
     elif at and int(at) == n:
         open(sf, "w", encoding="utf-8").write("TASK_STATUS: COMPLETE\\n")
 
+sess = os.environ.get("FAKE_SESSION_FILE")
+if sess:
+    # What makes /dev/tty reachable or not. A child in its own session has no
+    # controlling terminal by definition, so the open that a rate-limited
+    # claude does - and that no stdin redirection can intercept - fails
+    # instead of blocking the whole unattended run on a keypress.
+    open(sess, "w", encoding="utf-8").write(
+        "%d %d" % (os.getpid(), os.getsid(0))
+    )
+
 if os.environ.get("FAKE_WRECK_TMP"):
     # Delete the runner's whole temp workspace, prompt file and all, the way a
     # cleanup script or an over-eager tmpreaper would. The next iteration then

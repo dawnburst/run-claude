@@ -450,6 +450,25 @@ def _one_iteration(cfg, log, state_path, chosen, task, tmp_dir, n, label, starte
     return rc
 
 
+# Why both invocations below pass start_new_session=True.
+#
+# Feeding the prompt on stdin makes stdin unavailable for questions, which is
+# what invariant 3 has always relied on. It does not make the TERMINAL
+# unavailable. A child keeps its parent's controlling terminal, and a program
+# that wants an answer badly enough opens /dev/tty and reads from there, which
+# no amount of stdin redirection can reach - that is the whole point of
+# /dev/tty. Claude Code does exactly this when it hits a rate or quota limit,
+# and the unattended run then waits for a keypress for ever: no timeout, no
+# error, nothing in the log after "--- claude output ---".
+#
+# setsid puts the child in a session of its own, which by definition has no
+# controlling terminal, so the open fails with ENXIO and claude has to decide
+# without us. Whatever it then does - retry, exit non-zero - invariant 2 has an
+# answer for. Blocking for ever is the one outcome the loop cannot survive.
+#
+# POSIX only, and harmless elsewhere: CPython's Windows _execute_child names
+# the parameter unused_start_new_session and ignores it. The Windows equivalent
+# (a child opening CONIN$) is NOT addressed here - see CLAUDE.md item 50.
 def _capture_claude(cfg, log, argv, prompt_path, out_path):
     """Run claude to a file and replay it afterwards. (exit code, quota?)"""
     log.line("--- claude output ---")
@@ -460,6 +479,7 @@ def _capture_claude(cfg, log, argv, prompt_path, out_path):
         completed = subprocess.run(
             argv, stdin=stdin_fh, stdout=out_fh,
             stderr=subprocess.STDOUT, cwd=str(cfg.work_dir),
+            start_new_session=True,
         )
     output = out_path.read_text(encoding="utf-8", errors="replace")
     quota = _pump(log, output.splitlines())
@@ -482,8 +502,19 @@ def _stream_claude(cfg, log, argv, prompt_path):
             subprocess.Popen(
                 argv, stdin=stdin_fh, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, cwd=str(cfg.work_dir),
+                start_new_session=True,
             ) as proc:
-        quota = _pump(log, _decoded_lines(proc.stdout), renderer.render)
+        try:
+            quota = _pump(log, _decoded_lines(proc.stdout), renderer.render)
+        except BaseException:
+            # Popen.__exit__ closes the pipe and then WAITS. That was safe
+            # while claude shared this process group, because a Ctrl-C at the
+            # terminal reached it too and it died on its own. start_new_session
+            # took that away: the signal now stops here, and the wait would
+            # block for ever on a child nobody has told to stop. KeyboardInter-
+            # rupt is the reason for BaseException rather than Exception.
+            proc.kill()
+            raise
     log.line("--- end of claude activity ---")
     return proc.returncode, quota
 
