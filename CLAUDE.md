@@ -787,8 +787,17 @@ And two for the config folder packaged inside the wheel, which is what makes
     miss would leave TLS in whatever state the machine had while the config
     states in plain sight that it was configured. One consequence to keep: a
     private CA now fails loudly at `npm install`, which is why `INSTALL_FAILED`
-    grew a third hypothesis naming both keys. `sdk._index_argv` makes the same
-    guess one file over, for pip's `--trusted-host`, and is not covered here.
+    grew a third hypothesis naming both keys.
+
+    The same holds one file over, in `sdk._index_argv`, and it was found by a
+    real run rather than by the suite: the absence of a `cafile` used to buy pip
+    a `--trusted-host`, and once the packaged default named an `index` that
+    guess ran on every fallback install. **One key governs both tools**, like
+    `cafile` does — one decision about one pair of hosts, where two spellings
+    would be two chances to configure half a machine. The asymmetry that stays
+    is real: npm's write is global and permanent because npm has no
+    per-invocation registry flag, while `--trusted-host` covers one command and
+    no `pip.conf` is ever written. Do not "fix" that by writing one.
 
 ---
 

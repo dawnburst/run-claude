@@ -685,7 +685,7 @@ registry without anybody finding out.
 | `registry` | **yes** | The npm registry URL to install from — your internal Artifactory. |
 | `index` | no | The **Python** package index the Claude Agent SDK is installed from. Absent: the SDK is not installed and the machine is set to the `cli` backend. See [Backends](#backends). |
 | `cafile` | no | PEM file for the internal CA — `npm config set cafile`, and pip's `--cert` for the SDK. Checked for existence before any npm command runs. |
-| `strict-ssl` | no | `true` or `false`, written straight through to `npm config set strict-ssl`. **Omit it and npm's TLS setting is not touched at all.** |
+| `strict-ssl` | no | `true` or `false`, written straight through to `npm config set strict-ssl`, and `false` additionally buys pip a `--trusted-host` for the SDK install. **Omit it and neither tool's TLS is touched at all.** |
 
 Four keys, and no more. Anything else in the file is ignored, and the whole
 `claude` section is validated before a single npm command runs. `cafile` in
@@ -703,20 +703,28 @@ package. Too much to switch off because a file omitted an unrelated key, and wit
 the packaged default to fall through to it would have become what a bare
 `pip install lmi` did to a machine.
 
-| Config | What npm gets |
-|---|---|
-| neither key | nothing — npm's TLS settings are left alone |
-| `cafile` | `npm config set cafile <path>` |
-| `"strict-ssl": false` | verification off, with the warning below every run |
-| `"strict-ssl": true` | verification on — the repair for a machine an older `lmi` turned it off on |
-| `cafile` + `"strict-ssl": false` | **exit 2.** Contradictory: verification off means the CA is never consulted, so `cafile` would silently do nothing |
+| Config | npm | pip (the SDK install) |
+|---|---|---|
+| neither key | nothing — TLS left alone | nothing — TLS left alone |
+| `cafile` | `npm config set cafile <path>` | `--cert <path>` |
+| `"strict-ssl": false` | `strict-ssl false`, with the warning below | `--trusted-host <index host>`, with a warning |
+| `"strict-ssl": true` | `strict-ssl true` — the repair for a machine an older `lmi` turned it off on | nothing; pip verifies by default |
+| `cafile` + `"strict-ssl": false` | **exit 2.** Contradictory: verification off means the CA is never consulted, so `cafile` would silently do nothing | |
+
+One key for both tools, like `cafile`: it is one decision about one pair of
+hosts, and two spellings for it would be two chances to configure half a
+machine. The asymmetry that remains is real and deliberate — npm's setting is
+**global and permanent** because npm has no per-invocation registry flag, while
+pip's `--trusted-host` covers that one command and no `pip.conf` is ever
+written.
 
 The spelling is `strict-ssl`, npm's own, like `registry` and `cafile`.
 `strict_ssl`, `strictSsl` and `strictSSL` are refused with exit 2 rather than
 ignored, because an ignored one leaves TLS untouched while the config claims
 otherwise. The consequence of not guessing is that a private CA now fails at
-`npm install` instead of being waved through, so that error names the certificate
-as one of its three hypotheses and says which key fixes it.
+`npm install` — and at the SDK's `pip install` — instead of being waved through,
+so the npm error names the certificate as one of its three hypotheses and says
+which key fixes it.
 
 An absent `index` means **"do not install the SDK"** — it never means public
 PyPI. On an air-gapped machine reaching for pypi.org is a timeout; on a machine
