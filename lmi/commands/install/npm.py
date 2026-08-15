@@ -22,12 +22,15 @@ NO_NPM = (
     "    lmi deliberately does not install Node.js itself."
 )
 
-# Two hypotheses, not one. The registry clause is first because this command
+# Three hypotheses, not one. The registry clause is first because this command
 # exists for air-gapped machines: the likeliest failure by far is that the
 # internal registry is unreachable or has never mirrored the package, and
 # populating it is explicitly not lmi's job. Answering that with "try sudo"
 # sends the operator to the wrong side of the building. npm's own output is
-# inherited and appears immediately above this, so keep both clauses short.
+# inherited and appears immediately above this, so keep the clauses short.
+# The TLS clause became reachable when lmi stopped turning strict-ssl off for
+# any config without a "cafile": a private CA the machine does not trust now
+# fails here, loudly, instead of being silently waved through.
 INSTALL_FAILED = (
     "npm install -g %s failed (exit %d).\n"
     "    npm's own output above says which of these it was:\n"

@@ -721,7 +721,7 @@ short string always did.
     constant**, or it stops testing anything the first time the constant grows,
     and nothing goes red to say so.
 
-And one for the config folder packaged inside the wheel, which is what makes
+And two for the config folder packaged inside the wheel, which is what makes
 `pip install lmi` the whole installation.
 
 48. **The packaged default is last, it is announced, and it is copied out
@@ -770,6 +770,25 @@ And one for the config folder packaged inside the wheel, which is what makes
     consented to at the SDK question and left in `~/.lmi/config.json` where the
     operator can see it. Do not move it back into the code as a default for a
     missing key.
+49. **Nothing about npm's TLS is inferred.** `_configure_npm` used to read "no
+    `cafile`" as "verification cannot work here" and run
+    `npm config set strict-ssl false`. Right for an internal Artifactory behind
+    a private CA, wrong for every registry whose certificate already verifies —
+    and the setting is **global and permanent**, covering every later
+    `npm install` by that user, for every package. Item 48 made it the default:
+    a bare `pip install lmi` would have turned verification off on the machine.
+    A config setting neither key now leaves npm alone; `"strict-ssl"` says so
+    explicitly, and `true` is the repair path for a machine an older `lmi`
+    turned it off on. `cafile` with `"strict-ssl": false` is exit 2 —
+    verification off means the CA is never consulted, so `cafile` would silently
+    do nothing. The key is npm's own spelling, and
+    `config._refuse_misspelt_strict_ssl` turns `strict_ssl` / `strictSsl` /
+    `strictSSL` into exit 2: unknown keys pass unexamined by design, so a near
+    miss would leave TLS in whatever state the machine had while the config
+    states in plain sight that it was configured. One consequence to keep: a
+    private CA now fails loudly at `npm install`, which is why `INSTALL_FAILED`
+    grew a third hypothesis naming both keys. `sdk._index_argv` makes the same
+    guess one file over, for pip's `--trusted-host`, and is not covered here.
 
 ---
 

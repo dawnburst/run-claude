@@ -142,7 +142,6 @@ def test_a_fresh_install_runs_npm_then_writes_both_files(
     assert runner.run(Args(str(cfg_file))) == 0
 
     assert fake_npm.calls() == [
-        ["config", "set", "strict-ssl", "false", "--global"],
         ["config", "set", "registry",
          "https://artifactory.corp.local/api/npm/npm/", "--global"],
         ["install", "-g", "@anthropic-ai/claude-code"],
@@ -278,12 +277,58 @@ def test_the_final_report_names_the_adopted_file_not_the_packaged_one(
     assert str(defaults.CONFIG) not in report
 
 
-def test_no_cafile_warns_about_tls(
+def test_neither_tls_key_leaves_npm_alone(
         fake_npm, home, cfg_file, answers, no_claude, capsys):
+    """MANDATORY. A config that says nothing about TLS must change nothing.
+
+    `npm config set strict-ssl false` is global and permanent: it covers every
+    later `npm install` by that user, for every package. lmi used to run it for
+    any config without a "cafile", inferring from the absence of one key that
+    verification could not work - true of a private CA, false of every registry
+    the machine already trusts, and with a packaged default to fall through to
+    it became what a bare `pip install lmi` did to a machine. Not lmi's to
+    guess at.
+    """
     answers["secret"] = ["sk-x"]
     runner.run(Args(str(cfg_file)))
-    out = capsys.readouterr().out
-    assert "[WARN]" in out and "verification" in out
+
+    flat = [" ".join(call) for call in fake_npm.calls()]
+    assert not any("strict-ssl" in c for c in flat)
+    # The unrelated "claude is not on PATH" warning is expected here, so match
+    # the TLS one by its own wording rather than by [WARN].
+    assert "verification is now OFF" not in capsys.readouterr().out
+
+
+def test_strict_ssl_false_turns_verification_off_and_warns(
+        tmp_path, fake_npm, home, answers, no_claude, capsys):
+    """Off is still available - it just has to be asked for now."""
+    write_json(tmp_path / "settings.json", TEMPLATE)
+    cfg = write_json(tmp_path / "lmi.json", {"claude": {
+        "registry": "https://r/", "strict-ssl": False}})
+    answers["secret"] = ["sk-x"]
+
+    assert runner.run(Args(str(cfg))) == 0
+    assert ["config", "set", "strict-ssl", "false", "--global"] in fake_npm.calls()
+    assert "verification is now OFF" in capsys.readouterr().out
+
+
+def test_strict_ssl_true_puts_verification_back(
+        tmp_path, fake_npm, home, answers, no_claude, capsys):
+    """The repair path for a machine an older lmi turned it off on.
+
+    Leaving npm alone is right for a fresh machine and not enough for one
+    already carrying `strict-ssl=false` in its npmrc from a previous run -
+    there, doing nothing preserves the very setting this change exists to stop
+    making.
+    """
+    write_json(tmp_path / "settings.json", TEMPLATE)
+    cfg = write_json(tmp_path / "lmi.json", {"claude": {
+        "registry": "https://r/", "strict-ssl": True}})
+    answers["secret"] = ["sk-x"]
+
+    assert runner.run(Args(str(cfg))) == 0
+    assert ["config", "set", "strict-ssl", "true", "--global"] in fake_npm.calls()
+    assert "verification is now OFF" not in capsys.readouterr().out
 
 
 def test_declining_repair_changes_nothing(

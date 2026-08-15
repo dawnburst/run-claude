@@ -209,6 +209,74 @@ def test_no_config_anywhere_is_usage_with_an_example(
     assert "lmi.json" in message          # the paths searched
 
 
+def test_strict_ssl_absent_is_none_not_false(tmp_path):
+    """MANDATORY. Absent means "do not touch it", never "turn it off".
+
+    The old code inferred `strict-ssl false` from a missing `cafile`.
+    Collapsing None back into False here restores that one layer down, where
+    the runner test cannot see it: the Config would report a decision the
+    operator never made, and every later npm install by that user would skip
+    verification.
+    """
+    path = write(tmp_path / "lmi.json", MINIMAL)
+    assert config.build_config(Args(config=str(path))).strict_ssl is None
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_strict_ssl_is_carried_through_as_given(tmp_path, value):
+    path = write(tmp_path / "lmi.json",
+                 {"claude": {"registry": "https://r/", "strict-ssl": value}})
+    assert config.build_config(Args(config=str(path))).strict_ssl is value
+
+
+@pytest.mark.parametrize("value", ["false", 0, "no", []])
+def test_strict_ssl_must_be_a_boolean(tmp_path, value):
+    """A JSON string "false" is truthy in Python: it would turn verification ON."""
+    path = write(tmp_path / "lmi.json",
+                 {"claude": {"registry": "https://r/", "strict-ssl": value}})
+    with pytest.raises(LmiError) as exc:
+        config.build_config(Args(config=str(path)))
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("wrong", ["strict_ssl", "strictSsl", "strictSSL"])
+def test_a_misspelt_strict_ssl_is_refused_not_ignored(tmp_path, wrong):
+    """MANDATORY. Silent failure: TLS left in whatever state the machine had.
+
+    Unrecognised keys pass unexamined by design, so a config that says
+    strict_ssl would configure nothing while stating in plain sight that it
+    had. These are the three near misses a reader of the Python attribute or of
+    ordinary JSON reaches for.
+    """
+    path = write(tmp_path / "lmi.json",
+                 {"claude": {"registry": "https://r/", wrong: False}})
+    with pytest.raises(LmiError) as exc:
+        config.build_config(Args(config=str(path)))
+    assert exc.value.code == 2
+    assert "strict-ssl" in str(exc.value)
+
+
+def test_cafile_with_strict_ssl_false_is_a_contradiction(tmp_path):
+    """Together the CA is never consulted, so cafile would silently do nothing."""
+    pem = tmp_path / "ca.pem"
+    pem.write_bytes(b"-----BEGIN CERTIFICATE-----\n")
+    path = write(tmp_path / "lmi.json", {"claude": {
+        "registry": "https://r/", "cafile": str(pem), "strict-ssl": False}})
+    with pytest.raises(LmiError) as exc:
+        config.build_config(Args(config=str(path)))
+    assert exc.value.code == 2
+
+
+def test_cafile_with_strict_ssl_true_is_allowed(tmp_path):
+    """The pair that agrees: verify, and verify against this CA."""
+    pem = tmp_path / "ca.pem"
+    pem.write_bytes(b"-----BEGIN CERTIFICATE-----\n")
+    path = write(tmp_path / "lmi.json", {"claude": {
+        "registry": "https://r/", "cafile": str(pem), "strict-ssl": True}})
+    cfg = config.build_config(Args(config=str(path)))
+    assert cfg.cafile == pem and cfg.strict_ssl is True
+
+
 @pytest.mark.parametrize("doc", [
     [1, 2, 3],                                        # top level not an object
     {},                                               # no "claude"

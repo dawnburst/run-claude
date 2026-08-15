@@ -42,6 +42,7 @@ def test_both_packaged_files_exist_and_are_a_valid_config_folder(tmp_path):
     assert cfg.registry
     assert cfg.index
     assert cfg.cafile is None
+    assert cfg.strict_ssl is None, "the packaged default touches nobody's TLS"
 
 
 def test_the_packaged_config_is_the_two_urls_a_site_must_change():

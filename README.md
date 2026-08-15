@@ -684,13 +684,39 @@ registry without anybody finding out.
 |---|---|---|
 | `registry` | **yes** | The npm registry URL to install from — your internal Artifactory. |
 | `index` | no | The **Python** package index the Claude Agent SDK is installed from. Absent: the SDK is not installed and the machine is set to the `cli` backend. See [Backends](#backends). |
-| `cafile` | no | PEM file for the internal CA. Covers both npm and pip. Present: TLS verification stays on. Absent: `npm config set strict-ssl false` plus a per-invocation `--trusted-host` for pip, with a warning every run. |
+| `cafile` | no | PEM file for the internal CA — `npm config set cafile`, and pip's `--cert` for the SDK. Checked for existence before any npm command runs. |
+| `strict-ssl` | no | `true` or `false`, written straight through to `npm config set strict-ssl`. **Omit it and npm's TLS setting is not touched at all.** |
 
-Three keys, and no more. Anything else in the file is ignored, and the whole
+Four keys, and no more. Anything else in the file is ignored, and the whole
 `claude` section is validated before a single npm command runs. `cafile` in
 particular is checked for existence up front, because `npm config set cafile
 /typo` succeeds and the mistake resurfaces much later as an unrelated TLS error
 from the install step.
+
+**Nothing about npm's TLS is inferred.** A config that sets neither key leaves the
+machine's npm exactly as it was. `lmi` used to read "no `cafile`" as
+"verification cannot work here" and run `npm config set strict-ssl false` — right
+for an internal Artifactory behind a private CA the machine does not trust, wrong
+for every registry whose certificate already verifies. That setting is **global
+and permanent**: it covers every later `npm install` by that user, for every
+package. Too much to switch off because a file omitted an unrelated key, and with
+the packaged default to fall through to it would have become what a bare
+`pip install lmi` did to a machine.
+
+| Config | What npm gets |
+|---|---|
+| neither key | nothing — npm's TLS settings are left alone |
+| `cafile` | `npm config set cafile <path>` |
+| `"strict-ssl": false` | verification off, with the warning below every run |
+| `"strict-ssl": true` | verification on — the repair for a machine an older `lmi` turned it off on |
+| `cafile` + `"strict-ssl": false` | **exit 2.** Contradictory: verification off means the CA is never consulted, so `cafile` would silently do nothing |
+
+The spelling is `strict-ssl`, npm's own, like `registry` and `cafile`.
+`strict_ssl`, `strictSsl` and `strictSSL` are refused with exit 2 rather than
+ignored, because an ignored one leaves TLS untouched while the config claims
+otherwise. The consequence of not guessing is that a private CA now fails at
+`npm install` instead of being waved through, so that error names the certificate
+as one of its three hypotheses and says which key fixes it.
 
 An absent `index` means **"do not install the SDK"** — it never means public
 PyPI. On an air-gapped machine reaching for pypi.org is a timeout; on a machine
@@ -975,12 +1001,14 @@ still takes effect.
   PATH change made a moment ago. **Open a new terminal** and run `claude`. If it
   is still missing, add the `bin` subdirectory of `npm prefix -g` to your PATH.
   Exiting non-zero here would fail runs that in fact succeeded.
-- **"certificate verification is now OFF".** You have no `cafile` configured, so
-  `strict-ssl` was turned off for **every** npm install by this user, not just
-  this one. The risk is not interception from outside — it is that anyone on the
-  internal network who can answer as the registry host gets a package whose
-  install scripts run. Point `cafile` at your internal CA to close it. The
-  warning repeats every run, deliberately.
+- **"certificate verification is now OFF".** Your config sets
+  `"strict-ssl": false`, so verification is off for **every** npm install by this
+  user, not just this one. The risk is not interception from outside — it is that
+  anyone on the internal network who can answer as the registry host gets a
+  package whose install scripts run. Point `cafile` at your internal CA and drop
+  `strict-ssl` to close it. The warning repeats every run, deliberately. `lmi`
+  never turns verification off on its own: a config that says nothing about TLS
+  leaves the machine's npm alone.
 
 ### Exit codes
 

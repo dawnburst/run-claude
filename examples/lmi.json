@@ -6,7 +6,8 @@
   "claude": {
     "registry": "https://artifactory.example.com/api/npm/npm-virtual/",
     "index": "https://artifactory.example.com/api/pypi/pypi-virtual/simple/",
-    "cafile": "/etc/ssl/certs/corp-ca.pem"
+    "cafile": "/etc/ssl/certs/corp-ca.pem",
+    "strict-ssl": true
   },
   "schedule": {
     "mode": "sdk"

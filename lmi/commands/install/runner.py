@@ -39,7 +39,9 @@ TLS_WARNING = (
     "[WARN] certificate verification is now OFF for every npm install by this\n"
     "       user, not just Claude Code. Anyone who can answer as the registry\n"
     "       host can serve a package whose install scripts run.\n"
-    "       Set \"cafile\" in the config file to your internal CA to close this."
+    "       Set \"cafile\" to your internal CA and drop \"strict-ssl\" to close\n"
+    "       this. \"strict-ssl\": true puts it back on a machine an older lmi\n"
+    "       turned it off on."
 )
 
 NO_CLAUDE_ON_PATH = (
@@ -290,12 +292,23 @@ def _describe(source):
 # --- changes --------------------------------------------------------------
 
 def _configure_npm(cfg, npm_exe):
+    """npm's TLS settings, then the registry.
+
+    Nothing here is inferred. A config that sets neither key leaves the
+    machine's npm TLS exactly as it was: `strict-ssl false` is global,
+    permanent and covers every later `npm install` by that user, which is too
+    much to switch off because a config file happened to omit an unrelated key.
+    See config._strict_ssl.
+    """
     if cfg.cafile:
         say("Trusting the CA in %s" % cfg.cafile)
         npm.config_set(npm_exe, "cafile", str(cfg.cafile), say)
-    else:
-        npm.config_set(npm_exe, "strict-ssl", "false", say)
-        say(TLS_WARNING)
+    if cfg.strict_ssl is not None:
+        npm.config_set(
+            npm_exe, "strict-ssl", "true" if cfg.strict_ssl else "false", say
+        )
+        if not cfg.strict_ssl:
+            say(TLS_WARNING)
     npm.config_set(npm_exe, "registry", cfg.registry, say)
 
 

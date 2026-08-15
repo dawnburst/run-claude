@@ -47,7 +47,7 @@ def test_the_example_config_is_accepted_by_the_validator(tmp_path):
 
 def test_the_example_documents_every_supported_key():
     doc = json.loads((REPO / "examples" / "lmi.json").read_text(encoding="utf-8"))
-    assert set(doc["claude"]) == {"registry", "index", "cafile"}
+    assert set(doc["claude"]) == {"registry", "index", "cafile", "strict-ssl"}
 
 
 def test_the_example_documents_the_schedule_backend(tmp_path):
