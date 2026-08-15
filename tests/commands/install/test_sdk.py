@@ -14,6 +14,8 @@ and is answered yes in exactly the cases this command must catch.
 
 import sys
 
+import pytest
+
 from lmi.commands.install import sdk
 from tests.commands.install.conftest import make_install_config
 
@@ -55,7 +57,7 @@ def test_the_index_url_is_the_configured_one(sdk_pip, tmp_path):
     assert argv[argv.index("--index-url") + 1] == INDEX
 
 
-def test_a_cafile_becomes_cert_and_silences_the_warning(sdk_pip, tmp_path):
+def test_a_cafile_becomes_cert_and_asks_for_no_trusted_host(sdk_pip, tmp_path):
     """pip's option is --cert; npm's is cafile. They are not interchangeable."""
     pem = tmp_path / "ca.pem"
     pem.write_bytes(b"-----BEGIN CERTIFICATE-----\n")
@@ -69,7 +71,7 @@ def test_a_cafile_becomes_cert_and_silences_the_warning(sdk_pip, tmp_path):
     assert not any("[WARN]" in line for line in lines)
 
 
-def test_no_cafile_disables_verification_out_loud(sdk_pip, tmp_path):
+def test_strict_ssl_false_disables_verification_out_loud(sdk_pip, tmp_path):
     """The same trade _configure_npm makes for npm, and the same warning class.
 
     Not silent, and not a global change: --trusted-host applies to this one
@@ -77,11 +79,32 @@ def test_no_cafile_disables_verification_out_loud(sdk_pip, tmp_path):
     redirect every future pip on the machine, by any user, for any package.
     """
     lines, say = said()
-    sdk.install(make_install_config(tmp_path, index=INDEX), say)
+    sdk.install(make_install_config(tmp_path, index=INDEX, strict_ssl=False),
+                say)
 
     argv = sdk_pip.calls()[0]
     assert argv[argv.index("--trusted-host") + 1] == "artifactory.corp.local"
     assert any("[WARN]" in line for line in lines)
+
+
+@pytest.mark.parametrize("strict_ssl", [None, True])
+def test_neither_tls_key_leaves_pips_verification_alone(
+        sdk_pip, tmp_path, strict_ssl):
+    """MANDATORY. Item 49, on pip's side of the fence.
+
+    The absence of a cafile used to be read as "verification cannot work here"
+    and buy a --trusted-host. Right for an internal index behind a private CA,
+    wrong for one whose certificate the machine already trusts - and once the
+    packaged default named an index, it fired on every fallback install, which
+    is where it was found. Only `"strict-ssl": false` turns it off now.
+    """
+    lines, say = said()
+    sdk.install(
+        make_install_config(tmp_path, index=INDEX, strict_ssl=strict_ssl), say)
+
+    argv = sdk_pip.calls()[0]
+    assert "--trusted-host" not in argv
+    assert not any("[WARN]" in line for line in lines)
 
 
 def test_no_pip_conf_is_written(sdk_pip, tmp_path, home):

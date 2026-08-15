@@ -6,7 +6,7 @@ import stat
 
 import pytest
 
-from lmi.commands.install import gitbash, prompts, runner, sdk, settings
+from lmi.commands.install import defaults, gitbash, prompts, runner, sdk, settings
 from lmi.commands.schedule import backend
 from lmi.core.errors import LmiError
 from tests.conftest import skip_as_root
@@ -142,7 +142,6 @@ def test_a_fresh_install_runs_npm_then_writes_both_files(
     assert runner.run(Args(str(cfg_file))) == 0
 
     assert fake_npm.calls() == [
-        ["config", "set", "strict-ssl", "false", "--global"],
         ["config", "set", "registry",
          "https://artifactory.corp.local/api/npm/npm/", "--global"],
         ["install", "-g", "@anthropic-ai/claude-code"],
@@ -194,12 +193,142 @@ def test_a_cafile_replaces_strict_ssl_false(
     assert not any("strict-ssl" in c for c in flat)
 
 
-def test_no_cafile_warns_about_tls(
+def test_the_packaged_default_installs_with_no_config_file_at_all(
+        tmp_path, monkeypatch, fake_npm, sdk_pip, home, answers, no_claude,
+        capsys):
+    """`pip install lmi`, then `lmi install claude`, with nothing else on disk.
+
+    The whole point of the packaged folder, end to end: no lmi.json, no
+    settings.json, no ~/.lmi - and a machine that ends up with Claude Code
+    installed, a real settings file, and a config folder of its own to edit.
+    """
+    monkeypatch.delenv("LMI_CONFIG", raising=False)
+    monkeypatch.setenv("FAKE_IMPORTABLE", "1")
+    (tmp_path / "work").mkdir()
+    monkeypatch.chdir(tmp_path / "work")
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [True]           # the packaged config names an index
+
+    assert runner.run(Args(None)) == 0
+
+    assert ["install", "-g", "@anthropic-ai/claude-code"] in fake_npm.calls()
+    assert sdk_pip.calls()[0][-1] == sdk.REQUIREMENT
+    doc = read_settings(home)
+    assert doc["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-x"
+    assert doc["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "256000"
+
+    out = capsys.readouterr().out
+    assert "(packaged default)" in out, \
+        "the one config nobody chose has to say so before npm runs"
+
+
+def test_the_packaged_default_is_adopted_before_the_mode_is_written(
+        tmp_path, monkeypatch, fake_npm, sdk_pip, home, answers, no_claude,
+        capsys):
+    """MANDATORY. Silent failure: a mode written where nothing reads it.
+
+    `_write_mode` must not write `schedule.mode` into site-packages - `lmi
+    schedule` never searches there and the next `pip install --upgrade`
+    replaces it, so the machine would keep the default backend for ever with a
+    correct-looking file to prove otherwise. The packaged pair is copied to
+    ~/.lmi first, and the mode lands in the copy.
+    """
+    monkeypatch.delenv("LMI_CONFIG", raising=False)
+    monkeypatch.setenv("FAKE_IMPORTABLE", "1")
+    (tmp_path / "work").mkdir()
+    monkeypatch.chdir(tmp_path / "work")
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [True]
+
+    assert runner.run(Args(None)) == 0
+
+    adopted = home / ".lmi" / "config.json"
+    assert adopted.is_file()
+    assert (home / ".lmi" / "settings.json").is_file()
+    assert json.loads(adopted.read_text(encoding="utf-8"))["schedule"]["mode"] \
+        == backend.SDK
+    packaged = json.loads(defaults.CONFIG.read_text(encoding="utf-8"))
+    assert "schedule" not in packaged, "the wheel is not a place to keep state"
+
+
+def test_the_final_report_names_the_adopted_file_not_the_packaged_one(
+        tmp_path, monkeypatch, fake_npm, sdk_pip, home, answers, no_claude,
+        capsys):
+    """Found by a real run, which is the only place it was visible.
+
+    `_write_mode` wrote to the ~/.lmi copy correctly while `_report` still
+    printed cfg.source, so the closing line told the operator their backend had
+    been "written to" a file inside site-packages. Not silent - it says the
+    wrong thing out loud - but it sends someone to edit a file the next
+    `pip install --upgrade` replaces, and the mode they set there would never
+    be read.
+    """
+    monkeypatch.delenv("LMI_CONFIG", raising=False)
+    monkeypatch.setenv("FAKE_IMPORTABLE", "1")
+    (tmp_path / "work").mkdir()
+    monkeypatch.chdir(tmp_path / "work")
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [True]
+
+    assert runner.run(Args(None)) == 0
+
+    report = capsys.readouterr().out.rsplit("backend:", 1)[-1]
+    assert str(home / ".lmi" / "config.json") in report
+    assert str(defaults.CONFIG) not in report
+
+
+def test_neither_tls_key_leaves_npm_alone(
         fake_npm, home, cfg_file, answers, no_claude, capsys):
+    """MANDATORY. A config that says nothing about TLS must change nothing.
+
+    `npm config set strict-ssl false` is global and permanent: it covers every
+    later `npm install` by that user, for every package. lmi used to run it for
+    any config without a "cafile", inferring from the absence of one key that
+    verification could not work - true of a private CA, false of every registry
+    the machine already trusts, and with a packaged default to fall through to
+    it became what a bare `pip install lmi` did to a machine. Not lmi's to
+    guess at.
+    """
     answers["secret"] = ["sk-x"]
     runner.run(Args(str(cfg_file)))
-    out = capsys.readouterr().out
-    assert "[WARN]" in out and "verification" in out
+
+    flat = [" ".join(call) for call in fake_npm.calls()]
+    assert not any("strict-ssl" in c for c in flat)
+    # The unrelated "claude is not on PATH" warning is expected here, so match
+    # the TLS one by its own wording rather than by [WARN].
+    assert "verification is now OFF" not in capsys.readouterr().out
+
+
+def test_strict_ssl_false_turns_verification_off_and_warns(
+        tmp_path, fake_npm, home, answers, no_claude, capsys):
+    """Off is still available - it just has to be asked for now."""
+    write_json(tmp_path / "settings.json", TEMPLATE)
+    cfg = write_json(tmp_path / "lmi.json", {"claude": {
+        "registry": "https://r/", "strict-ssl": False}})
+    answers["secret"] = ["sk-x"]
+
+    assert runner.run(Args(str(cfg))) == 0
+    assert ["config", "set", "strict-ssl", "false", "--global"] in fake_npm.calls()
+    assert "verification is now OFF" in capsys.readouterr().out
+
+
+def test_strict_ssl_true_puts_verification_back(
+        tmp_path, fake_npm, home, answers, no_claude, capsys):
+    """The repair path for a machine an older lmi turned it off on.
+
+    Leaving npm alone is right for a fresh machine and not enough for one
+    already carrying `strict-ssl=false` in its npmrc from a previous run -
+    there, doing nothing preserves the very setting this change exists to stop
+    making.
+    """
+    write_json(tmp_path / "settings.json", TEMPLATE)
+    cfg = write_json(tmp_path / "lmi.json", {"claude": {
+        "registry": "https://r/", "strict-ssl": True}})
+    answers["secret"] = ["sk-x"]
+
+    assert runner.run(Args(str(cfg))) == 0
+    assert ["config", "set", "strict-ssl", "true", "--global"] in fake_npm.calls()
+    assert "verification is now OFF" not in capsys.readouterr().out
 
 
 def test_declining_repair_changes_nothing(

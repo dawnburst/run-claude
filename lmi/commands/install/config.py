@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
-from . import statusline, template
+from . import defaults, statusline, template
 from ...core import config as core_config
 from ...core import fs
 from ...core.errors import EXIT_USAGE, LmiError
@@ -44,7 +44,8 @@ EXAMPLE = """{
   "claude": {
     "registry": "https://artifactory.example.com/api/npm/npm-virtual/",
     "index": "https://artifactory.example.com/api/pypi/pypi-virtual/simple/",
-    "cafile": "/etc/ssl/certs/corp-ca.pem"
+    "cafile": "/etc/ssl/certs/corp-ca.pem",
+    "strict-ssl": true
   }
 }"""
 
@@ -62,6 +63,7 @@ class Config:
     registry: str
     index: Optional[str]            # the PyPI index for the SDK, if any
     cafile: Optional[Path]
+    strict_ssl: Optional[bool]      # None = leave npm's TLS setting alone
     settings: Dict                  # the settings.json template, parsed
     settings_source: Path           # where it was read from
     statusline: Optional[Path]      # the statusline.js beside it, if any
@@ -77,13 +79,16 @@ def build_config(args):
     optional, so there is nothing to refuse, but a path that cannot even be
     classified should still stop the command before npm changes the machine.
     """
-    path = core_config.find(getattr(args, "config", None), PURPOSE, EXAMPLE)
+    path = core_config.find(getattr(args, "config", None), PURPOSE, EXAMPLE,
+                            fallback=defaults.CONFIG)
     section = core_config.section(core_config.load(path), SECTION, path, EXAMPLE)
     settings, settings_source = template.load(path)
+    cafile = _cafile(section, path)
     return Config(
         registry=_registry(section, path),
         index=_index(section, path),
-        cafile=_cafile(section, path),
+        cafile=cafile,
+        strict_ssl=_strict_ssl(section, path, cafile),
         settings=settings,
         settings_source=settings_source,
         statusline=statusline.find(path),
@@ -130,6 +135,66 @@ def _index(section, path):
             EXIT_USAGE,
         )
     return value.strip()
+
+
+def _strict_ssl(section, path, cafile):
+    """None to leave npm's TLS setting alone, or the boolean to write.
+
+    Absent means absent: `npm config set strict-ssl` is not run at all, and
+    whatever the machine has stays. It used to be inferred - no `cafile` was
+    read as "verification cannot work here, turn it off" - which is true of an
+    internal Artifactory behind a private CA and false of every registry with a
+    certificate the machine already trusts. The setting is global and permanent,
+    covering every `npm install` that user runs afterwards for every package, so
+    inferring it from the absence of an unrelated key was too much to take on a
+    guess; with a packaged default to fall through to it would have become what
+    a bare `pip install lmi` did to a machine. A site that needs it off says so,
+    and `true` is how a machine an older lmi turned it off on is put back.
+    """
+    key = "strict-ssl"
+    _refuse_misspelt_strict_ssl(section, path)
+    value = section.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise LmiError(
+            '"claude.%s" must be true or false, not %s: %s'
+            % (key, type(value).__name__, path),
+            EXIT_USAGE,
+        )
+    # Both is contradictory rather than belt-and-braces: strict-ssl false turns
+    # verification off wholesale, so the CA that cafile names is never consulted
+    # and that key silently does nothing.
+    if value is False and cafile is not None:
+        raise LmiError(
+            '"claude.cafile" and "claude.strict-ssl": false contradict each '
+            "other: %s\n"
+            "    strict-ssl false turns verification off entirely, so the CA in "
+            "cafile is never used.\n"
+            "    Keep cafile to verify against your own CA, or drop it and keep "
+            "strict-ssl false to verify nothing." % path,
+            EXIT_USAGE,
+        )
+    return value
+
+
+def _refuse_misspelt_strict_ssl(section, path):
+    """The key is npm's own spelling, and a near miss would be silent.
+
+    Unknown keys pass unexamined by design, which is right for a file that has
+    to survive a newer lmi. It is wrong for this one: `strict_ssl` and
+    `strictSsl` are what a reader of the Python attribute or of most JSON
+    reaches for, and ignoring one leaves TLS verification in whatever state the
+    machine was in while the config file says, in plain sight, that it was
+    configured either way.
+    """
+    for wrong in ("strict_ssl", "strictSsl", "strictSSL"):
+        if wrong in section:
+            raise LmiError(
+                'the config file spells the key "%s"; it is "strict-ssl", the '
+                "name npm itself uses: %s" % (wrong, path),
+                EXIT_USAGE,
+            )
 
 
 def _cafile(section, path):

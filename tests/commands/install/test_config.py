@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from lmi.commands.install import config
+from lmi.commands.install import config, defaults
 from lmi.core.errors import LmiError
 
 
@@ -40,6 +40,28 @@ MINIMAL = {"claude": {"registry": "https://artifactory.corp.local/api/npm/npm/"}
 
 # The working-directory default: ./config/lmi.json, not ./lmi.json.
 CWD = ("config", "lmi.json")
+
+
+@pytest.fixture
+def no_packaged_config(tmp_path, monkeypatch):
+    """Hide the config folder packaged with lmi.
+
+    It always exists in a working install, so this is the only way left to
+    reach "no config file found" - which still has to be right, because a
+    broken install is exactly when it gets read.
+    """
+    monkeypatch.setattr(defaults, "CONFIG",
+                        tmp_path / "absent" / "lmi.json")
+
+
+@pytest.fixture
+def bare_search(tmp_path, monkeypatch):
+    """An empty search: no $LMI_CONFIG, no ./config/lmi.json, no ~/.lmi."""
+    monkeypatch.delenv("LMI_CONFIG", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    (tmp_path / "work").mkdir(exist_ok=True)
+    monkeypatch.chdir(tmp_path / "work")
 
 
 def test_explicit_config_wins(tmp_path, monkeypatch):
@@ -125,28 +147,134 @@ def test_the_old_path_does_not_override_an_explicit_config(tmp_path, monkeypatch
     assert config.build_config(Args()).source == legacy
 
 
-def test_home_is_the_last_resort(tmp_path, monkeypatch):
-    monkeypatch.delenv("LMI_CONFIG", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+def test_home_beats_the_packaged_default(tmp_path, bare_search):
     fallback = write(tmp_path / "home" / ".lmi" / "config.json", MINIMAL)
-    (tmp_path / "work").mkdir()
-    monkeypatch.chdir(tmp_path / "work")
     assert config.build_config(Args()).source == fallback
 
 
-def test_no_config_anywhere_is_usage_with_an_example(tmp_path, monkeypatch):
-    monkeypatch.delenv("LMI_CONFIG", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
-    (tmp_path / "work").mkdir()
-    monkeypatch.chdir(tmp_path / "work")
+def test_the_packaged_default_is_the_last_resort(bare_search):
+    """`pip install lmi` is the whole installation: no config file to write.
+
+    Nothing in the search exists, and the command still gets a registry and a
+    settings template - from the folder shipped inside the package. The
+    template comes along for free: template.load reads the neighbour of
+    whatever discovery resolved, and the packaged folder is laid out like any
+    other config folder for exactly that reason.
+    """
+    cfg = config.build_config(Args())
+    assert cfg.source == defaults.CONFIG
+    assert cfg.registry
+    assert cfg.settings_source == defaults.TEMPLATE
+    assert cfg.settings["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "256000"
+
+
+def test_the_packaged_default_carries_no_statusline(bare_search):
+    """MANDATORY. Item 32's two warnings must stay quiet on the packaged pair.
+
+    No statusline.js ships inside the package - statusline.py says why - so the
+    packaged template must not declare a `statusLine` either. Declaring one
+    would install a command pointing at a file that is never written, on every
+    machine that falls through to the default, and say so in a [WARN] nobody
+    can act on.
+    """
+    from lmi.commands.install import statusline
+    cfg = config.build_config(Args())
+    assert cfg.statusline is None
+    assert not statusline.declares(cfg.settings)
+
+
+def test_the_packaged_default_does_not_mask_the_old_path(tmp_path, bare_search):
+    """MANDATORY. Silent failure: provisioning against the wrong registry.
+
+    A last-resort default changed what falling through *reaches*: an lmi.json
+    left at the pre-move path used to fall through to ~/.lmi and would now
+    reach the packaged registry instead. Either way it is a machine provisioned
+    from a source the operator can see in the working directory and did not
+    get. The refusal fires first, as before.
+    """
+    legacy = write(tmp_path / "work" / "lmi.json", MINIMAL)
+    with pytest.raises(LmiError) as exc:
+        config.build_config(Args())
+    assert exc.value.code == 2
+    assert str(legacy) in str(exc.value)
+
+
+def test_no_config_anywhere_is_usage_with_an_example(
+        bare_search, no_packaged_config):
     with pytest.raises(LmiError) as exc:
         config.build_config(Args())
     assert exc.value.code == 2
     message = str(exc.value)
     assert "registry" in message          # the paste-ready example
     assert "lmi.json" in message          # the paths searched
+
+
+def test_strict_ssl_absent_is_none_not_false(tmp_path):
+    """MANDATORY. Absent means "do not touch it", never "turn it off".
+
+    The old code inferred `strict-ssl false` from a missing `cafile`.
+    Collapsing None back into False here restores that one layer down, where
+    the runner test cannot see it: the Config would report a decision the
+    operator never made, and every later npm install by that user would skip
+    verification.
+    """
+    path = write(tmp_path / "lmi.json", MINIMAL)
+    assert config.build_config(Args(config=str(path))).strict_ssl is None
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_strict_ssl_is_carried_through_as_given(tmp_path, value):
+    path = write(tmp_path / "lmi.json",
+                 {"claude": {"registry": "https://r/", "strict-ssl": value}})
+    assert config.build_config(Args(config=str(path))).strict_ssl is value
+
+
+@pytest.mark.parametrize("value", ["false", 0, "no", []])
+def test_strict_ssl_must_be_a_boolean(tmp_path, value):
+    """A JSON string "false" is truthy in Python: it would turn verification ON."""
+    path = write(tmp_path / "lmi.json",
+                 {"claude": {"registry": "https://r/", "strict-ssl": value}})
+    with pytest.raises(LmiError) as exc:
+        config.build_config(Args(config=str(path)))
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("wrong", ["strict_ssl", "strictSsl", "strictSSL"])
+def test_a_misspelt_strict_ssl_is_refused_not_ignored(tmp_path, wrong):
+    """MANDATORY. Silent failure: TLS left in whatever state the machine had.
+
+    Unrecognised keys pass unexamined by design, so a config that says
+    strict_ssl would configure nothing while stating in plain sight that it
+    had. These are the three near misses a reader of the Python attribute or of
+    ordinary JSON reaches for.
+    """
+    path = write(tmp_path / "lmi.json",
+                 {"claude": {"registry": "https://r/", wrong: False}})
+    with pytest.raises(LmiError) as exc:
+        config.build_config(Args(config=str(path)))
+    assert exc.value.code == 2
+    assert "strict-ssl" in str(exc.value)
+
+
+def test_cafile_with_strict_ssl_false_is_a_contradiction(tmp_path):
+    """Together the CA is never consulted, so cafile would silently do nothing."""
+    pem = tmp_path / "ca.pem"
+    pem.write_bytes(b"-----BEGIN CERTIFICATE-----\n")
+    path = write(tmp_path / "lmi.json", {"claude": {
+        "registry": "https://r/", "cafile": str(pem), "strict-ssl": False}})
+    with pytest.raises(LmiError) as exc:
+        config.build_config(Args(config=str(path)))
+    assert exc.value.code == 2
+
+
+def test_cafile_with_strict_ssl_true_is_allowed(tmp_path):
+    """The pair that agrees: verify, and verify against this CA."""
+    pem = tmp_path / "ca.pem"
+    pem.write_bytes(b"-----BEGIN CERTIFICATE-----\n")
+    path = write(tmp_path / "lmi.json", {"claude": {
+        "registry": "https://r/", "cafile": str(pem), "strict-ssl": True}})
+    cfg = config.build_config(Args(config=str(path)))
+    assert cfg.cafile == pem and cfg.strict_ssl is True
 
 
 @pytest.mark.parametrize("doc", [

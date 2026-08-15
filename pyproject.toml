@@ -40,3 +40,10 @@ lmi = "lmi.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["lmi*"]
+
+# The config folder packaged inside the wheel, which `lmi install claude`
+# falls through to when the search finds nothing. Without this declaration
+# setuptools ships the .py files and nothing else: the checkout works and
+# every install is broken - see tests/test_packaging.py.
+[tool.setuptools.package-data]
+"lmi.commands.install" = ["default-config/*.json"]

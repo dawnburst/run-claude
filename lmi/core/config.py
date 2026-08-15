@@ -40,17 +40,29 @@ def add_argument(parser):
 
 # --- discovery ------------------------------------------------------------
 
-def find(explicit, purpose, example):
+def find(explicit, purpose, example, fallback=None):
     """The config file to read, or a usage error naming everywhere looked.
 
     `purpose` is one sentence saying what the calling command needs it for, and
     `example` a minimal file to paste; both appear only when nothing is found,
     where they are all the operator has to go on.
+
+    `fallback` is a last candidate after every other, for a command that ships
+    a default of its own - `lmi install claude` and the config folder packaged
+    inside the wheel. It is deliberately a parameter here rather than a
+    candidate in find_optional: `lmi schedule` and `lmi config schedule` search
+    through that function, and a packaged file appearing there would be a
+    `schedule.mode` written into site-packages, which is item 39's silent
+    failure. A command that passes nothing keeps exactly the old behaviour.
     """
     path, candidates = find_optional(explicit)
-    if path is None:
-        raise LmiError(_nothing_found(candidates, purpose, example), EXIT_USAGE)
-    return path
+    if path is not None:
+        return path
+    if fallback is not None:
+        candidates = candidates + [fallback]
+        if kind(fallback) == fs.FILE:
+            return fallback
+    raise LmiError(_nothing_found(candidates, purpose, example), EXIT_USAGE)
 
 
 def find_optional(explicit):

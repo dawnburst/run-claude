@@ -598,9 +598,8 @@ bootstrap a runtime, and it never invokes `sudo`.
 
 ### The config file
 
-Everything that differs between sites lives in one JSON file; nothing
-site-specific is compiled into `lmi`. [`examples/lmi.json`](examples/lmi.json) is
-a complete one — copy it and edit it.
+Everything that differs between sites lives in one JSON file.
+[`examples/lmi.json`](examples/lmi.json) is a complete one — copy it and edit it.
 
 Searched in this order, first match wins:
 
@@ -608,10 +607,56 @@ Searched in this order, first match wins:
 2. `$LMI_CONFIG`
 3. `./config/lmi.json`
 4. `~/.lmi/config.json`
+5. `default-config/`, packaged inside `lmi` itself
 
 The working-directory default is `./config/lmi.json` — a checkout keeps its
 config in one obvious place rather than loose in the root. This repository
 ships one, pointing at the public npm registry; a site replaces it.
+
+**The last entry is why `pip install lmi` is the whole installation.** A machine
+with the wheel and nothing else can run `lmi install claude`: there is no file to
+fetch, write or edit first. `lmi/commands/install/default-config/` holds the same
+pair any config folder holds — an `lmi.json` with the two URLs that differ
+between sites, `registry` and `index`, and the `settings.json` template beside it
+carrying the 256K profile and the token placeholder. No `cafile`: that key is
+checked to exist, so any value here would be exit 2 on a machine without that
+file.
+
+Both URLs point at the **public** sources — `registry.npmjs.org` and
+`pypi.org/simple/` — so a machine with internet access is provisioned end to end
+by `pip install lmi` and `lmi install claude`, with no config file at all. **A
+site installs from its own mirrors by editing `default-config/lmi.json` before
+building the wheel it distributes**, and its machines then need no config file
+either.
+
+Note what that does *not* change. `index` being public here is a value written in
+a file, printed as `Config:` before anything runs, asked about before pip is
+invoked, and visible in `~/.lmi/config.json` afterwards. `lmi` still refuses to
+*infer* public PyPI from an absent `index` — see [the `index`
+key](#the-config-file) below — because an inferred one is the same install with
+nobody told. On an air-gapped machine that forgets to edit the file, the SDK
+question is still asked first and a failing pip is still a `[WARN]` and the `cli`
+backend, not a failed install.
+
+Two properties keep a last-resort default from becoming the wrong-registry
+provisioning the rules below exist to prevent:
+
+- **It is last, and it is announced.** Every file a human put somewhere outranks
+  it, and a run that falls through to it prints
+  `Config:   .../default-config/lmi.json (packaged default)` before the first
+  npm command. Otherwise a mistyped working directory would install from a
+  registry nobody chose and read exactly like a normal run.
+- **It is copied out before it is written to.** Just before recording the
+  backend, `lmi install claude` copies both packaged files to `~/.lmi/` and says
+  so. `schedule.mode` then lands in a file `lmi schedule` actually reads —
+  writing it inside `site-packages` would be a correct-looking file that nothing
+  looks at and that the next `pip install --upgrade` replaces. From then on the
+  machine has an ordinary config folder to edit, and the next install finds it by
+  the ordinary search.
+
+The packaged folder deliberately carries **no `statusline.js`**, and its template
+declares no `statusLine` — one script inside the package would give every site
+the same statusline and no way to vary it.
 
 A file left at the **old** `./lmi.json` path is **exit 2**, not a silent skip.
 Skipping it would let `~/.lmi/config.json` win — a different registry — while
@@ -639,13 +684,47 @@ registry without anybody finding out.
 |---|---|---|
 | `registry` | **yes** | The npm registry URL to install from — your internal Artifactory. |
 | `index` | no | The **Python** package index the Claude Agent SDK is installed from. Absent: the SDK is not installed and the machine is set to the `cli` backend. See [Backends](#backends). |
-| `cafile` | no | PEM file for the internal CA. Covers both npm and pip. Present: TLS verification stays on. Absent: `npm config set strict-ssl false` plus a per-invocation `--trusted-host` for pip, with a warning every run. |
+| `cafile` | no | PEM file for the internal CA — `npm config set cafile`, and pip's `--cert` for the SDK. Checked for existence before any npm command runs. |
+| `strict-ssl` | no | `true` or `false`, written straight through to `npm config set strict-ssl`, and `false` additionally buys pip a `--trusted-host` for the SDK install. **Omit it and neither tool's TLS is touched at all.** |
 
-Three keys, and no more. Anything else in the file is ignored, and the whole
+Four keys, and no more. Anything else in the file is ignored, and the whole
 `claude` section is validated before a single npm command runs. `cafile` in
 particular is checked for existence up front, because `npm config set cafile
 /typo` succeeds and the mistake resurfaces much later as an unrelated TLS error
 from the install step.
+
+**Nothing about npm's TLS is inferred.** A config that sets neither key leaves the
+machine's npm exactly as it was. `lmi` used to read "no `cafile`" as
+"verification cannot work here" and run `npm config set strict-ssl false` — right
+for an internal Artifactory behind a private CA the machine does not trust, wrong
+for every registry whose certificate already verifies. That setting is **global
+and permanent**: it covers every later `npm install` by that user, for every
+package. Too much to switch off because a file omitted an unrelated key, and with
+the packaged default to fall through to it would have become what a bare
+`pip install lmi` did to a machine.
+
+| Config | npm | pip (the SDK install) |
+|---|---|---|
+| neither key | nothing — TLS left alone | nothing — TLS left alone |
+| `cafile` | `npm config set cafile <path>` | `--cert <path>` |
+| `"strict-ssl": false` | `strict-ssl false`, with the warning below | `--trusted-host <index host>`, with a warning |
+| `"strict-ssl": true` | `strict-ssl true` — the repair for a machine an older `lmi` turned it off on | nothing; pip verifies by default |
+| `cafile` + `"strict-ssl": false` | **exit 2.** Contradictory: verification off means the CA is never consulted, so `cafile` would silently do nothing | |
+
+One key for both tools, like `cafile`: it is one decision about one pair of
+hosts, and two spellings for it would be two chances to configure half a
+machine. The asymmetry that remains is real and deliberate — npm's setting is
+**global and permanent** because npm has no per-invocation registry flag, while
+pip's `--trusted-host` covers that one command and no `pip.conf` is ever
+written.
+
+The spelling is `strict-ssl`, npm's own, like `registry` and `cafile`.
+`strict_ssl`, `strictSsl` and `strictSSL` are refused with exit 2 rather than
+ignored, because an ignored one leaves TLS untouched while the config claims
+otherwise. The consequence of not guessing is that a private CA now fails at
+`npm install` — and at the SDK's `pip install` — instead of being waved through,
+so the npm error names the certificate as one of its three hypotheses and says
+which key fixes it.
 
 An absent `index` means **"do not install the SDK"** — it never means public
 PyPI. On an air-gapped machine reaching for pypi.org is a timeout; on a machine
@@ -930,12 +1009,14 @@ still takes effect.
   PATH change made a moment ago. **Open a new terminal** and run `claude`. If it
   is still missing, add the `bin` subdirectory of `npm prefix -g` to your PATH.
   Exiting non-zero here would fail runs that in fact succeeded.
-- **"certificate verification is now OFF".** You have no `cafile` configured, so
-  `strict-ssl` was turned off for **every** npm install by this user, not just
-  this one. The risk is not interception from outside — it is that anyone on the
-  internal network who can answer as the registry host gets a package whose
-  install scripts run. Point `cafile` at your internal CA to close it. The
-  warning repeats every run, deliberately.
+- **"certificate verification is now OFF".** Your config sets
+  `"strict-ssl": false`, so verification is off for **every** npm install by this
+  user, not just this one. The risk is not interception from outside — it is that
+  anyone on the internal network who can answer as the registry host gets a
+  package whose install scripts run. Point `cafile` at your internal CA and drop
+  `strict-ssl` to close it. The warning repeats every run, deliberately. `lmi`
+  never turns verification off on its own: a config that says nothing about TLS
+  leaves the machine's npm alone.
 
 ### Exit codes
 

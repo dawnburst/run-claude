@@ -46,10 +46,11 @@ REQUIREMENT = DISTRIBUTION + SPECIFIER
 MODULE = "claude_agent_sdk"
 
 TLS_WARNING = (
-    "[WARN] no \"cafile\" is configured, so certificate verification is OFF for\n"
-    "       this one pip invocation. Anyone who can answer as %s can\n"
+    "[WARN] \"strict-ssl\" is false, so certificate verification is OFF for this\n"
+    "       one pip invocation. Anyone who can answer as %s can\n"
     "       serve the package that is about to be installed.\n"
-    "       Set \"cafile\" in the config file to your internal CA to close this."
+    "       Set \"cafile\" to your internal CA and drop \"strict-ssl\" to close\n"
+    "       this."
 )
 
 
@@ -89,17 +90,27 @@ def install(cfg, say):
 def _index_argv(cfg, say):
     """--index-url and the TLS decision, mirroring _configure_npm's shape.
 
-    With a cafile, pip is pointed at it with --cert. Without one, verification
-    is disabled for THIS INVOCATION ONLY and said out loud - the same trade
-    _configure_npm makes, and the same warning class.
+    Nothing is inferred, which is item 49 applied on this side of the fence.
+    With a cafile, pip is pointed at it with --cert. Verification is turned off
+    only when the config asks for it - `"strict-ssl": false`, the same key that
+    governs npm, because it is one decision about one pair of hosts and two
+    spellings for it would be two chances to configure only half a machine. A
+    config that says neither leaves pip's default verification alone.
+
+    The absence of a cafile used to be enough on its own, which is right for an
+    internal index behind a private CA and wrong for one whose certificate the
+    machine already trusts - and once the packaged default named an index, that
+    guess ran on every fallback install. The cost of not guessing is that a
+    private CA now fails here, loudly, rather than being waved through.
 
     The asymmetry with npm is deliberate and is a feature: npm's config writes
     are global because npm has no per-invocation registry flag, and pip does.
-    So nothing here writes a pip.conf. A global pip.conf would silently
-    redirect every future pip on this machine, by any user, for any package.
+    So `--trusted-host` covers this one command and nothing here writes a
+    pip.conf. A global pip.conf would silently redirect every future pip on
+    this machine, by any user, for any package.
     """
     argv = core_pip.index_argv(cfg.index, cfg.cafile)
-    if cfg.cafile:
+    if cfg.strict_ssl is not False:
         return argv
     host = urlsplit(cfg.index).hostname
     if host:

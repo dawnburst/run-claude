@@ -113,11 +113,12 @@ def sdk_pip(fake_pip, monkeypatch):
 
 
 def make_install_config(tmp_path, index=None, cafile=None, **kw):
-    """An install Config, so its seven fields are spelled in one place."""
+    """An install Config, so its eight fields are spelled in one place."""
     fields = dict(
         registry="https://artifactory.corp.local/api/npm/npm/",
         index=index,
         cafile=cafile,
+        strict_ssl=None,
         settings={"env": {}},
         settings_source=tmp_path / "settings.json",
         statusline=None,

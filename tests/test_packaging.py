@@ -17,6 +17,7 @@ from pathlib import Path
 
 import lmi
 from lmi.cli import main
+from lmi.commands.install import defaults
 
 REPO = Path(__file__).resolve().parent.parent
 PYPROJECT = (REPO / "pyproject.toml").read_text(encoding="utf-8")
@@ -130,6 +131,38 @@ def test_only_the_schedule_command_imports_the_sdk():
         "only lmi/commands/schedule/ may import claude_agent_sdk; found it in: %s"
         % offenders
     )
+
+
+def test_declares_the_packaged_config_folder_as_package_data():
+    """MANDATORY. Silent failure: works in a checkout, gone after pip install.
+
+    setuptools puts .py files in the wheel and nothing else. Without this
+    declaration `default-config/` is absent from every *installed* copy, so
+    `lmi install claude` on a machine that has only the wheel - the machine the
+    packaged default exists to serve - falls back to "no config file found",
+    while the developer's checkout finds the folder on disk and looks fine.
+    There is no way to notice that from here except by asserting the
+    declaration, since the suite never builds a wheel.
+    """
+    assert defaults.CONFIG.is_file()
+    assert defaults.TEMPLATE.is_file()
+    assert re.search(
+        r"^\s*\"lmi\.commands\.install\"\s*=\s*\[[^\]]*default-config/",
+        PYPROJECT, re.MULTILINE,
+    ), ("pyproject.toml must keep [tool.setuptools.package-data] "
+        "\"lmi.commands.install\" = [\"default-config/*.json\"]")
+
+
+def test_the_packaged_config_folder_holds_no_python():
+    """A data directory, not a package: nothing imports from it.
+
+    An __init__.py there would make it a package `packages.find` picks up on
+    its own, and the package-data declaration above - the thing that actually
+    carries the JSON - would look redundant to the next reader.
+    """
+    stray = sorted(p.name for p in defaults.DIR.iterdir()
+                   if p.suffix == ".py")
+    assert stray == [], "default-config/ is data: %s" % stray
 
 
 def test_declares_the_python_floor():
