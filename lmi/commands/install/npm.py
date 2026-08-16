@@ -22,18 +22,45 @@ NO_NPM = (
     "    lmi deliberately does not install Node.js itself."
 )
 
-# Three hypotheses, not one. The registry clause is first because this command
-# exists for air-gapped machines: the likeliest failure by far is that the
-# internal registry is unreachable or has never mirrored the package, and
-# populating it is explicitly not lmi's job. Answering that with "try sudo"
-# sends the operator to the wrong side of the building. npm's own output is
-# inherited and appears immediately above this, so keep the clauses short.
+# Hypotheses, not one, and the ORDER is load-bearing - each clause is guarded by
+# "if npm reported X", so the list is read top-down until one matches, and a
+# clause that misdirects costs the operator a whole attempt.
+#
+# The busy clause is first. It is the only one whose failure mode is undone in
+# ten seconds, and - more importantly - it is the one the permissions clause
+# below actively answers wrongly: EBUSY is a file lock, an Administrator shell
+# cannot clear a file lock, and an operator who reads "try Administrator" first
+# spends their retry on it and fails identically. That is exactly the "wrong
+# side of the building" this list was already ordered to avoid; it simply
+# arrives through a different clause. It is also unreachable on a first
+# install - there is nothing to overwrite - so it costs a fresh-machine
+# operator two lines they can see do not apply to them.
+#
+# The registry clause stays ahead of permissions for its original reason: this
+# command exists for air-gapped machines, where an unreachable internal registry
+# or one that never mirrored the package is the likeliest failure by far, and
+# populating it is explicitly not lmi's job.
+#
 # The TLS clause became reachable when lmi stopped turning strict-ssl off for
 # any config without a "cafile": a private CA the machine does not trust now
 # fails here, loudly, instead of being silently waved through.
+#
+# npm's own output is inherited and appears immediately above this - lmi never
+# sees it and so can never say which of these it was, which is why the clauses
+# quote the words npm prints rather than describing them. Keep them short.
 INSTALL_FAILED = (
     "npm install -g %s failed (exit %d).\n"
     "    npm's own output above says which of these it was:\n"
+    # "resource busy or locked" is npm's own wording and must stay on ONE line:
+    # the operator matches this clause against the text on their screen, and a
+    # phrase broken across a wrap is not findable by eye or by search.
+    "      - Claude Code is running, if npm reported EBUSY or\n"
+    "        \"resource busy or locked\". A running program's files cannot be\n"
+    "        replaced, so installing over an existing one fails until it is\n"
+    "        closed. This is NOT a permissions problem, and an Administrator\n"
+    "        shell will not fix it. Close every Claude Code session - other\n"
+    "        terminals, your editor's extension, any `lmi schedule` run - and\n"
+    "        run this again.\n"
     "      - the registry, if npm reported a network error or a 404. Check the\n"
     "        \"registry\" value in the config file, and that Artifactory really\n"
     "        mirrors this package - lmi does not populate it.\n"

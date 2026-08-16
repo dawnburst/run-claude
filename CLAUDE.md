@@ -842,7 +842,7 @@ And two for the config folder packaged inside the wheel, which is what makes
    nothing — several bugs above only appear with awkward paths, or only when a
    claude call fails.
 
-   **720 passed, 19 skipped, in under four seconds** — measured, not estimated.
+   **722 passed, 19 skipped, in under four seconds** — measured, not estimated.
    It was 505 (1 skipped) before the two-backend work, 664 before item 47, and
    704 before item 30 grew its keep-the-existing-token branch.
 
@@ -859,12 +859,12 @@ And two for the config folder packaged inside the wheel, which is what makes
    `sdk` extra is absent; the nineteenth is a Windows-only clause. So the
    default run leaves the SDK backend's shapes unchecked, and
    `pip install -e ".[sdk]"` then `python3 -m pytest tests/ -q` is the run that
-   checks them: **738 passed, 1 skipped**. Both numbers are worth knowing,
+   checks them: **740 passed, 1 skipped**. Both numbers are worth knowing,
    because a green default run is not evidence that the SDK backend matches the
    SDK it will meet.
 
-   The second number is the one to distrust in a report. 720 was measured on a
-   machine with no `sdk` extra installed; 738 is 720 plus the 18 shape tests
+   The second number is the one to distrust in a report. 722 was measured on a
+   machine with no `sdk` extra installed; 740 is 722 plus the 18 shape tests
    that skipped there, which is arithmetic and not a run. Re-measure it the
    next time the extra is present — it has now been arithmetic for three
    consecutive changes.
@@ -912,8 +912,8 @@ And two for the config folder packaged inside the wheel, which is what makes
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 720 passed, 19 skipped - no install needed
-pip install -e ".[sdk]"              # then 738 passed, 1 skipped: the 18 skips
+python3 -m pytest tests/ -q          # 722 passed, 19 skipped - no install needed
+pip install -e ".[sdk]"              # then 740 passed, 1 skipped: the 18 skips
 python3 -m pytest tests/ -q          # are the SDK shape checks. See 4.1
 ```
 

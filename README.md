@@ -1016,6 +1016,17 @@ still takes effect.
 
 ### When it does not work
 
+- **`npm install -g` failed with `EBUSY`, `resource busy or locked`.** Claude
+  Code is running. A running program's files cannot be replaced, so a repair
+  install fails until every session is closed — other terminals, your editor's
+  Claude Code extension, any `lmi schedule` run. Close them all and run
+  `lmi install claude` again. This is **not** a permissions problem: an
+  Administrator shell cannot clear a file lock, and re-running elevated fails
+  identically. If it persists, something else is holding the files — antivirus
+  scanning the npm prefix as it is written is the usual culprit on a corporate
+  machine, and a prefix inside OneDrive or on a network share is the other. A
+  half-written install left behind by an earlier failure clears with
+  `npm uninstall -g @anthropic-ai/claude-code` before you retry.
 - **`npm install -g` failed with `EACCES`.** The global `node_modules` is
   root-owned. Either re-run with `sudo` (an Administrator shell on Windows), or
   give npm a prefix you own — `npm config set prefix ~/.npm-global`, then put

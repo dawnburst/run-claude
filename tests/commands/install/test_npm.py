@@ -88,6 +88,45 @@ def test_install_failure_names_both_ways_forward(fake_npm, monkeypatch):
     assert "prefix" in message
 
 
+def test_install_failure_names_the_running_claude_code_case(fake_npm, monkeypatch):
+    """MANDATORY. The one cause the rest of this message actively misdirects on.
+
+    Windows cannot overwrite the files of a running program, so a repair run
+    with a Claude Code session open anywhere fails with EBUSY. Nothing in lmi
+    can see that - npm's output is inherited, not captured - so the clause has
+    to be in the list of hypotheses, and it has to quote the words npm actually
+    prints, or the operator cannot match it to what is on their screen.
+    """
+    monkeypatch.setenv("FAKE_NPM_RC", "1")
+    with pytest.raises(LmiError) as exc:
+        npm.install(npm.find(), [].append)
+    message = str(exc.value)
+    assert "EBUSY" in message
+    # On one line: a phrase broken across a wrap is findable by neither eye
+    # nor search, which is the whole purpose of quoting npm's own wording.
+    assert "resource busy or locked" in message
+    assert "running" in message.lower()
+    assert "Close every Claude Code" in message
+
+
+def test_the_busy_clause_comes_before_the_permissions_one(fake_npm, monkeypatch):
+    """MANDATORY. Order is the whole value of the clause.
+
+    Each clause is guarded by "if npm reported X", so the list is read top-down
+    until one matches. The permissions clause says to re-run in an
+    Administrator shell, and an Administrator shell cannot clear a file lock -
+    an operator who reads that first spends their next attempt on it, fails
+    identically, and has learned nothing. That is the same "wrong side of the
+    building" this list was already ordered to avoid, arriving through a
+    different clause.
+    """
+    monkeypatch.setenv("FAKE_NPM_RC", "1")
+    with pytest.raises(LmiError) as exc:
+        npm.install(npm.find(), [].append)
+    message = str(exc.value)
+    assert message.index("EBUSY") < message.index("Administrator")
+
+
 def test_a_registry_with_shell_metacharacters_is_passed_through_literally(fake_npm):
     """A list argv, never shell=True: a config value must not reach a shell."""
     nasty = "https://r/;rm -rf ~;#"
