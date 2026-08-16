@@ -802,6 +802,28 @@ to stay one — do not commit a real token to it. The prompt refuses a blank
 answer precisely so the placeholder can never be installed as though it were a
 token.
 
+The one exception is a re-install on a machine that already has a real token.
+`lmi install claude` reads the `env.ANTHROPIC_AUTH_TOKEN` out of the
+`~/.claude/settings.json` it is about to replace, and if it finds one, offers
+to keep it:
+
+```
+An auth token is already configured: sk-a...9f2c
+Claude Code auth token (blank to keep the existing one):
+```
+
+Only the two ends of the token are ever shown, and only for a token long enough
+that the hint is not the credential — anything shorter prints `****`. Enter then
+keeps that token and nothing else: the template is still installed **whole**, so
+every other value in the old file is replaced, exactly as on a first install.
+
+The offer is made only when there is genuinely something to keep. No
+`settings.json`, no `env.ANTHROPIC_AUTH_TOKEN`, a blank one, a file that no
+longer parses, or a file holding your template's own placeholder — each of those
+is "no token", the question loses its `(blank to keep the existing one)`, and a
+blank answer is refused as before. An unreadable file is a `[WARN]` and not an
+error: that file is about to be backed up and replaced regardless.
+
 ### The statusline script
 
 A `settings.json` may carry a `statusLine` block, and the shipped template does:
@@ -855,6 +877,7 @@ machine changes**. Abandon the command at a prompt and nothing has been touched.
 |---|---|---|
 | `Repair the installation?` | only when `claude` is already on PATH — the resolved path is printed first | keeps the default, **no**: exit 0, no npm command, no backup, no write |
 | `Claude Code auth token` | on every run that is going to do anything — i.e. once the repair question, if it was asked at all, has been answered yes. Read with `getpass`, so it is never echoed into your scrollback | **is refused.** Asked again, up to three times, then exit 2 with nothing changed |
+| `Claude Code auth token (blank to keep the existing one)` | the same question, in the one case where a blank has something to mean: a real token was read out of the `~/.claude/settings.json` about to be replaced. A masked hint at that token is printed above it | **keeps the token already on the machine.** Nothing else about the old file is kept |
 | `Install the Claude Agent SDK…?` | only when `claude.index` is set — with no index there is nothing to consent to | keeps the default, **yes** |
 | `Full path to bash.exe` | Windows only, and only when no Git Bash was found | skips it, with a `[WARN]` naming `CLAUDE_CODE_GIT_BASH_PATH` |
 

@@ -32,7 +32,39 @@ NO_TOKEN = (
     "    The settings template is installed whole, and the ANTHROPIC_AUTH_TOKEN\n"
     "    in it is a placeholder - writing it through would leave a settings file\n"
     "    that looks configured and fails every call.\n"
+    "    There is no token on this machine to keep either, which is the one\n"
+    "    thing a blank answer can mean.\n"
     "    Nothing was changed. Run this again with the token to hand."
+)
+
+TOKEN_QUESTION = "Claude Code auth token"
+TOKEN_QUESTION_KEEP = TOKEN_QUESTION + " (blank to keep the existing one)"
+
+# Printed before the question, never beside it, so the answer and the hint are
+# not on the same line. `mask` is the whole of what may be shown - see the note
+# there on why a fuller hint would be worse than none.
+TOKEN_EXISTS = "An auth token is already configured: %s"
+
+TOKEN_KEPT = "Keeping the existing token."
+
+# The placeholder is the case this whole branch has to be carved around: a
+# settings.json holding it is not a configured machine, and offering to keep it
+# would install the document that regression 30 exists to keep out of ~/.claude.
+TOKEN_IS_PLACEHOLDER = (
+    "The auth token in %s is the settings template's placeholder, not a\n"
+    "token, so there is nothing to keep."
+)
+
+# Nothing else in this command parses ~/.claude/settings.json, and that is
+# deliberate: it is backed up byte for byte and replaced whole, so a file the
+# user hand-edited into invalid JSON must not block an install that is about to
+# overwrite it anyway. Reading it to offer "keep the existing token" must not
+# reintroduce that block - so every failure here is a warning and no offer.
+UNREADABLE_SETTINGS = (
+    "[WARN] the auth token already on this machine could not be read, so it\n"
+    "       cannot be offered: %s\n"
+    "       The file is about to be replaced regardless, and is backed up\n"
+    "       first. Have the token to hand."
 )
 
 TLS_WARNING = (
@@ -169,7 +201,7 @@ def _run(args):
         say("Nothing was changed.")
         return EXIT_OK
 
-    token = _ask_for_token()
+    token = _ask_for_token(_existing_token(cfg))
     wants_sdk = _agreed_to_install_sdk(cfg)
     bash_path = _resolve_git_bash()
 
@@ -216,17 +248,60 @@ def _agreed_to_proceed():
     return prompts.confirm("Repair the installation?", default=False)
 
 
-def _ask_for_token():
+def _existing_token(cfg):
+    """The token a previous install left in ~/.claude/settings.json, or None.
+
+    The only reader of that file in this command, and it must never fail the
+    install: the file is backed up whole and replaced a few lines later, so a
+    hand-edited one that no longer parses is a warning and no offer, not an
+    error. That is the same reason `_write_settings` reads nothing.
+
+    A value equal to the template's own ANTHROPIC_AUTH_TOKEN is not a token.
+    Compared against THIS run's template rather than a constant, so the site's
+    placeholder is whatever the site wrote - lmi does not know one credential
+    shape from another, and this is the only honest test available. Without it,
+    a settings.json holding the placeholder would be offered up to be kept, and
+    Enter would install the exact document regression 30 exists to prevent.
+    """
+    path = settings.path()
+    try:
+        doc = jsonfile.read(path, "Claude Code settings", EXIT_CONFIG_WRITE)
+    except LmiError as exc:
+        # The first line only: jsonfile.read's message goes on to say it is
+        # refusing to overwrite the file, which is true of its callers and not
+        # of this one - the install overwrites it either way.
+        say(UNREADABLE_SETTINGS % str(exc).splitlines()[0])
+        return None
+    found = settings.token_of(doc)
+    if found is None:
+        return None
+    if found == settings.token_of(cfg.settings):
+        say(TOKEN_IS_PLACEHOLDER % path)
+        return None
+    return found
+
+
+def _ask_for_token(existing):
     """The token to write. Never blank, never None.
 
-    A blank answer used to mean "keep whatever is in the file" or "sign in
-    later". Neither survives installing the template whole: there is nothing
-    left to keep, and the only document a blank could produce is one carrying
-    the template's ANTHROPIC_AUTH_TOKEN placeholder verbatim - which reads as
-    configured and fails every call.
+    A blank answer means "keep the token already on this machine", and only
+    when there is one to keep - `existing` is None unless this command has just
+    read a real token out of the file it is about to replace. On every other
+    path blank still has nothing it could mean: the template is installed
+    whole, so there is nothing to keep and nothing to sign in later with, and
+    the only document a blank could produce is one carrying the template's
+    ANTHROPIC_AUTH_TOKEN placeholder verbatim - which reads as configured and
+    fails every call.
     """
+    if existing:
+        say(TOKEN_EXISTS % settings.mask(existing))
+        answer = prompts.secret(TOKEN_QUESTION_KEEP)
+        if not answer:
+            say(TOKEN_KEPT)
+            return existing
+        return answer
     for remaining in range(TOKEN_ATTEMPTS - 1, -1, -1):
-        answer = prompts.secret("Claude Code auth token")
+        answer = prompts.secret(TOKEN_QUESTION)
         if answer:
             return answer
         if remaining:

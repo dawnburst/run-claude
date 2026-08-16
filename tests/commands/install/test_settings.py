@@ -99,3 +99,66 @@ def test_no_git_bash_key_when_there_is_no_path():
     """
     doc = settings.compose({}, "sk-real", None)
     assert gitbash.VAR not in doc["env"]
+
+
+# --- reading a token back out of an installed settings.json ----------------
+#
+# The mirror of compose: what `lmi install claude` finds already on the machine,
+# so a re-run can offer to keep it. Content only, like the rest of this module -
+# runner.py owns which file it comes out of.
+
+def test_the_installed_token_is_read_back():
+    assert settings.token_of({"env": {"ANTHROPIC_AUTH_TOKEN": "sk-real"}}) \
+        == "sk-real"
+
+
+def test_no_token_in_a_document_without_one():
+    assert settings.token_of({}) is None
+    assert settings.token_of({"env": {}}) is None
+    assert settings.token_of({"theme": "dark"}) is None
+
+
+def test_a_blank_installed_token_is_no_token():
+    """MANDATORY. Silent failure: a blank kept, and every call 401s.
+
+    Returning "" here is not the same as returning None: the prompt would offer
+    to keep it, Enter would accept, and compose would write an empty
+    ANTHROPIC_AUTH_TOKEN into a settings.json that looks configured.
+    """
+    assert settings.token_of({"env": {"ANTHROPIC_AUTH_TOKEN": ""}}) is None
+    assert settings.token_of({"env": {"ANTHROPIC_AUTH_TOKEN": "   "}}) is None
+
+
+def test_a_non_string_env_or_token_is_no_token():
+    """A settings.json a user hand-edited is not the validated template.
+
+    template.py refuses these; this document came off the machine and went
+    through no validation at all, so every shape has to be survivable.
+    """
+    assert settings.token_of({"env": None}) is None
+    assert settings.token_of({"env": "sk-real"}) is None
+    assert settings.token_of({"env": {"ANTHROPIC_AUTH_TOKEN": 12345}}) is None
+    assert settings.token_of({"env": {"ANTHROPIC_AUTH_TOKEN": None}}) is None
+
+
+def test_a_masked_token_shows_only_its_ends():
+    assert settings.mask("sk-ant-api03-abcdefgh9f2c") == "sk-a...9f2c"
+
+
+def test_a_short_token_is_hidden_completely():
+    """MANDATORY-adjacent: the mask exists so the hint is not the credential.
+
+    Four leading and four trailing characters of a 15-character token is more
+    than half of it. Below the floor nothing is shown at all, because a hint
+    that reconstructs the secret is not a hint.
+    """
+    assert settings.mask("sk-abc") == "****"
+    assert settings.mask("x" * 15) == "****"
+    assert "x" not in settings.mask("x" * 15)
+
+
+def test_the_mask_never_reveals_more_than_eight_characters():
+    long_token = "sk-ant-api03-" + "z" * 200
+    shown = settings.mask(long_token)
+    assert len(shown.replace("...", "")) == 8
+    assert long_token not in shown
