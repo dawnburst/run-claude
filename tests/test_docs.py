@@ -466,3 +466,38 @@ def test_claude_md_records_why_the_full_prompt_flag_is_not_an_iteration_number()
     start = text.index("full_done")
     window = text[start:start + 900]
     assert "iteration 1" in window
+
+
+def test_the_readme_documents_keeping_the_existing_token():
+    """The prompt grew an answer that does something, so it must be findable.
+
+    A blank at this prompt is refused everywhere except one branch, and the
+    only way to discover that branch exists is to re-install on a machine that
+    already has a token - or to read this. The masked hint is documented with
+    it because an operator who sees `sk-a...9f2c` and cannot find it in the
+    README has to guess whether lmi just printed their credential.
+    """
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    for needle in ("blank to keep the existing one", "sk-a...9f2c", "****"):
+        assert needle in readme, "README.md must document %s" % needle
+
+
+def test_claude_md_records_what_a_blank_token_may_not_mean():
+    """MANDATORY. Item 30 is now a refusal WITH an exception, which is the
+    shape that rots: the four paths that must keep reaching the refusal are
+    invisible in the code - each is simply an early `return None` - and three
+    of them produce a settings.json that looks configured. The comparison
+    against the run's own template is the load-bearing one and is named here
+    because nothing else says why it is not a constant.
+    """
+    text = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "_existing_token" in text
+    # Anchored on the comparison rather than on the function: `_existing_token`
+    # is named twice, and the first mention is item 19's, which is about a
+    # different rule entirely.
+    assert "token_of(cfg.settings)" in text
+    start = text.index("token_of(cfg.settings)")
+    window = text[max(0, start - 1500):start + 1500]
+    assert "placeholder" in window
+    assert "no longer parses" in window or "unparseable" in window
+    assert "exit 2" in window

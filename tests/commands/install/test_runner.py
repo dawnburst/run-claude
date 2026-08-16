@@ -442,6 +442,137 @@ def test_a_re_typed_token_after_a_blank_one_is_accepted(
     assert read_settings(home)["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-second-try"
 
 
+# --- keeping the token a previous install left behind ---------------------
+
+INSTALLED_TOKEN = "sk-existing-corp-token-value"
+
+
+def install_settings(home, doc):
+    """A ~/.claude/settings.json already on the machine, as a re-run finds it."""
+    return write_json(home / ".claude" / "settings.json", doc)
+
+
+def installed_token(token):
+    return {"env": {"ANTHROPIC_AUTH_TOKEN": token}, "theme": "light"}
+
+
+def test_a_blank_answer_keeps_the_token_already_on_the_machine(
+        fake_npm, home, cfg_file, answers, no_claude):
+    """The second install on a machine should not need the token to hand.
+
+    A blank answer means exactly one thing, and only here: keep the token this
+    command can see in the file it is about to replace. Everywhere else - no
+    file, no token, an unreadable file, the template's placeholder - blank is
+    still refused, because there is nothing to keep.
+    """
+    install_settings(home, installed_token(INSTALLED_TOKEN))
+    answers["secret"] = [""]
+
+    assert runner.run(Args(str(cfg_file))) == 0
+    assert read_settings(home)["env"]["ANTHROPIC_AUTH_TOKEN"] == INSTALLED_TOKEN
+
+
+def test_keeping_a_token_still_installs_the_rest_of_the_template(
+        fake_npm, home, cfg_file, answers, no_claude):
+    """Keeping the token is not keeping the settings file.
+
+    The template is still installed whole. Only the one value lmi cannot get
+    from the template survives the replacement - the previous file's "theme"
+    must not, or "keep the token" has quietly become "merge".
+    """
+    install_settings(home, installed_token(INSTALLED_TOKEN))
+    answers["secret"] = [""]
+
+    assert runner.run(Args(str(cfg_file))) == 0
+    doc = read_settings(home)
+    assert doc["theme"] == "dark", "the template's value, not the old file's"
+    assert doc["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "256000"
+    assert "corp" in doc["extraKnownMarketplaces"]
+
+
+def test_the_prompt_offers_to_keep_it_and_shows_only_a_mask(
+        fake_npm, home, cfg_file, answers, no_claude, capsys):
+    """MANDATORY. Silent failure: a stale credential kept without knowing.
+
+    Enter is offered, so the operator has to be told what Enter will do and
+    which token it will keep. The mask is the whole of what may be printed: the
+    answer to this question is never echoed either, and a hint that carries the
+    credential into terminal scrollback is worse than no hint.
+    """
+    install_settings(home, installed_token(INSTALLED_TOKEN))
+    answers["secret"] = [""]
+
+    assert runner.run(Args(str(cfg_file))) == 0
+    asked = " ".join(answers["asked"])
+    assert "blank to keep the existing one" in asked
+    out = capsys.readouterr().out
+    assert "sk-e...alue" in out
+    assert INSTALLED_TOKEN not in out
+
+
+def test_a_typed_token_still_replaces_the_one_on_the_machine(
+        fake_npm, home, cfg_file, answers, no_claude):
+    install_settings(home, installed_token(INSTALLED_TOKEN))
+    answers["secret"] = ["sk-brand-new"]
+
+    assert runner.run(Args(str(cfg_file))) == 0
+    assert read_settings(home)["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-brand-new"
+
+
+def test_the_placeholder_on_the_machine_is_not_a_token_to_keep(
+        fake_npm, home, cfg_file, answers, no_claude):
+    """MANDATORY. Silent failure: the placeholder installed verbatim.
+
+    The one way "keep the existing one" reopens the failure it was carved out
+    of. A settings.json holding the template's own placeholder - copied there
+    by hand, or by an lmi old enough to have written it - is not a configured
+    machine, and offering to keep it would install a document that looks
+    configured and 401s on every call. Blank stays refused here.
+    """
+    install_settings(home, installed_token(PLACEHOLDER))
+    answers["secret"] = ["", "", ""]
+
+    with pytest.raises(LmiError) as exc:
+        runner.run(Args(str(cfg_file)))
+    assert exc.value.code == 2
+    assert not answers["secret"], "every attempt must be used before refusing"
+    assert fake_npm.count() == 0, "the refusal comes before anything changes"
+
+
+def test_an_unreadable_settings_file_offers_nothing_to_keep(
+        fake_npm, home, cfg_file, answers, no_claude, capsys):
+    """MANDATORY. Silent failure: a blank accepted with nothing behind it.
+
+    Nothing else in this command parses ~/.claude/settings.json, deliberately -
+    it is backed up byte for byte and replaced, so a file hand-edited into
+    invalid JSON must not block an install that is about to overwrite it. That
+    stays true: the read fails, it is said out loud, and the question goes back
+    to the one that has no blank answer.
+    """
+    install_settings(home, installed_token(INSTALLED_TOKEN))
+    (home / ".claude" / "settings.json").write_text('{"env": }', encoding="utf-8")
+    answers["secret"] = ["", "", ""]
+
+    with pytest.raises(LmiError) as exc:
+        runner.run(Args(str(cfg_file)))
+    assert exc.value.code == 2
+    out = capsys.readouterr().out
+    assert "[WARN]" in out
+    assert "blank to keep" not in " ".join(answers["asked"])
+
+
+def test_the_previous_token_is_kept_but_the_previous_file_is_still_backed_up(
+        fake_npm, home, cfg_file, answers, no_claude):
+    """Reading the file is not a substitute for preserving it (item 31)."""
+    install_settings(home, installed_token(INSTALLED_TOKEN))
+    answers["secret"] = [""]
+
+    assert runner.run(Args(str(cfg_file))) == 0
+    backup = next(p for p in (home / ".claude").iterdir()
+                  if ".bk_" in p.name and p.name.startswith("settings.json"))
+    assert json.loads(backup.read_text(encoding="utf-8"))["theme"] == "light"
+
+
 def test_an_already_onboarded_file_is_not_rewritten(
         fake_npm, home, cfg_file, answers, no_claude):
     with open(str(home / ".claude.json"), "w",

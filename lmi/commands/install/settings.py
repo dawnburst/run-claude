@@ -59,3 +59,46 @@ def compose(template, token, bash_path):
     if bash_path:
         env[gitbash.VAR] = bash_path
     return doc
+
+
+def token_of(doc):
+    """The auth token in a settings document, or None if there is not one.
+
+    The inverse of what compose writes, and the only reader of an installed
+    settings.json. `doc` may be a file a user hand-edited rather than the
+    validated template, so every shape has to be survivable: a non-object env,
+    a non-string value and a blank string are each "no token", never a value.
+
+    A blank one in particular must not come back as "": the caller offers to
+    keep whatever this returns, and keeping "" would write an empty token into
+    a document that then looks configured and fails every call.
+    """
+    env = doc.get(ENV_KEY)
+    if not isinstance(env, dict):
+        return None
+    value = env.get(TOKEN_KEY)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value
+
+
+# Four leading plus four trailing characters is more than half of a 15-character
+# secret. Below this length nothing is shown: a hint that reconstructs the token
+# is not a hint, and the whole reason this is masked is that the prompt's answer
+# is not echoed either.
+MASK_FLOOR = 16
+MASK_EDGE = 4
+HIDDEN = "****"
+
+
+def mask(token):
+    """A hint at which token is on the machine, safe to print.
+
+    Enough to recognise a token, never enough to use one. It exists because
+    "keep the existing one" is otherwise a decision made blind: a machine
+    re-pointed at a different gateway keeps a stale credential, and the 401
+    that follows points at the gateway rather than at the answer given here.
+    """
+    if len(token) < MASK_FLOOR:
+        return HIDDEN
+    return "%s...%s" % (token[:MASK_EDGE], token[-MASK_EDGE:])

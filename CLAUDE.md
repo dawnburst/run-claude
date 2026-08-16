@@ -331,11 +331,17 @@ and `null` is a value everywhere else in these documents, so a merge would set
 19. **An unparseable `.claude.json` is refused, not overwritten.** Treating it
     as `{}` would discard everything the user had. `jsonfile.read` raises exit
     3 and names the file; nothing is written. This used to cover
-    `settings.json` too, and no longer does: nothing parses that file any more
-    — `lmi install` backs it up byte for byte and replaces it whole — so an
-    unparseable one would only block an install that was about to overwrite it
-    regardless. The rule stands unchanged for `.claude.json`, which is still
-    read, and for `lmi config switch`, which still merges into what it finds.
+    `settings.json` too, and no longer does: `lmi install` backs it up byte for
+    byte and replaces it whole, so an unparseable one would only block an
+    install that was about to overwrite it regardless. The rule stands
+    unchanged for `.claude.json`, which is still read, and for `lmi config
+    switch`, which still merges into what it finds.
+
+    `runner._existing_token` reads `settings.json` again — it is the only
+    thing that does — and is the shape this exemption requires: it catches the
+    `LmiError`, warns, and offers no token to keep. A reader added here that
+    lets the raise through re-imposes the block on the one command the
+    exemption was carved out for. See item 30.
 20. **`core/jsonfile.write`'s temp file is born 0600, not chmod-ed to it later.**
     `os.open(..., 0o600)` plus `os.fdopen`, never plain `open()`. `~/.claude/`
     is 0755, so writing the auth token first and fixing the mode afterwards
@@ -440,21 +446,49 @@ And two for the settings template, which is how `lmi install claude` now
 configures Claude Code: a `settings.json` beside the `lmi.json` that discovery
 resolved, installed as `~/.claude/settings.json` verbatim but for the token.
 
-30. **A blank auth token is refused, because the placeholder must never be
-    installed.** The shipped and example templates carry
+30. **A blank auth token is refused unless there is a real token to keep, and
+    the placeholder is never one.** The shipped and example templates carry
     `"ANTHROPIC_AUTH_TOKEN": "<Token from the user input>"`, and the template
-    is installed whole — so unlike every earlier version of this command, a
-    blank answer has nothing left to mean. It cannot mean "keep the token
-    already there" (nothing is kept) and it cannot mean "sign in later"
-    (the placeholder would be written in its place). `runner._ask_for_token`
-    asks three times and then raises exit 2 with nothing changed.
-    **Silent:** the install reports success, `~/.claude/settings.json` looks
-    fully configured, the token key is present and roughly the right shape at
-    a glance — and the 401 the user eventually hits points at the gateway
-    rather than at lmi. Do not "restore" the blank-is-allowed branch;
-    `settings.compose` has no way to tell a placeholder from a token, and
-    teaching it one would mean lmi learning the shape of Anthropic's
-    credentials.
+    is installed whole — so a blank answer cannot mean "sign in later", and the
+    only document it could otherwise produce is one carrying that placeholder
+    verbatim. **Silent:** the install reports success, `~/.claude/settings.json`
+    looks fully configured, the token key is present and roughly the right
+    shape at a glance — and the 401 the user eventually hits points at the
+    gateway rather than at lmi.
+
+    A blank has exactly one meaning, and `runner._existing_token` is what earns
+    it: the token `lmi install claude` has just read out of the
+    `~/.claude/settings.json` it is about to replace. On that one branch
+    `_ask_for_token` returns it and says so; on every other path it still asks
+    three times and then raises exit 2 with nothing changed. The four paths
+    that must keep leading to the refusal are no file, no token key (or a blank
+    one), a file that no longer parses, and the placeholder — miss any of them
+    and the blank-is-allowed branch is reachable with nothing behind it, which
+    is this item's failure with a friendlier prompt.
+
+    The **placeholder comparison is the load-bearing half**, and it is against
+    `settings.token_of(cfg.settings)` — this run's template — not a constant.
+    lmi cannot tell a credential from a string, so "is this the placeholder"
+    has no answer except "is it what the operator's own template puts there".
+    Do not teach `settings.compose` to recognise a placeholder instead: that
+    would mean lmi learning the shape of Anthropic's credentials, and it is
+    still true that compose has no way to tell one from the other — which is
+    why the check lives at the point the token is *read*, before the question
+    is even phrased.
+
+    Two smaller rules ride along. Reading that file must **never fail the
+    install** — `jsonfile.read` raising is a `[WARN]` and no offer, because
+    item 19 is that an unparseable `settings.json` must not block an install
+    that backs it up and replaces it wholesale; the read added here is not
+    allowed to reintroduce the block it documents the absence of. And the hint
+    printed above the question is `settings.mask`, four characters each end and
+    only above a 16-character floor: the answer itself is read with `getpass`
+    and never echoed, so a hint that reconstructs the token would put into
+    scrollback exactly what the prompt is careful to keep out of it. The offer
+    exists so the operator knows *which* token they are keeping — a machine
+    re-pointed at a new gateway is where keeping a stale one silently is the
+    expensive mistake — and a hint that cannot be told apart from another
+    token does not serve that.
 31. **The backup is now the only copy of the machine's previous settings.**
     `jsonfile.backup` must stay *before* the write in
     `runner._write_settings`, and must stay fatal when the copy fails.
@@ -808,8 +842,16 @@ And two for the config folder packaged inside the wheel, which is what makes
    nothing — several bugs above only appear with awkward paths, or only when a
    claude call fails.
 
-   **669 passed, 19 skipped, in under four seconds** — measured, not estimated.
-   It was 505 (1 skipped) before the two-backend work, and 664 before item 47.
+   **722 passed, 19 skipped, in under four seconds** — measured, not estimated.
+   It was 505 (1 skipped) before the two-backend work, 664 before item 47, and
+   704 before item 30 grew its keep-the-existing-token branch.
+
+   The number written here had drifted to 669 while the suite was actually at
+   704, which is worth a sentence because of what it costs: the point of
+   recording it is that a report saying "the suite passes" can be checked
+   against something, and a stale figure quietly turns 35 tests appearing into
+   evidence of nothing. Re-measure it, do not adjust it by the count of tests
+   you think you added.
 
    The 19 skips are the point of the number, not noise. Eighteen are
    `test_sdk_fake_shapes.py`, which is the only module that validates the SDK
@@ -817,14 +859,15 @@ And two for the config folder packaged inside the wheel, which is what makes
    `sdk` extra is absent; the nineteenth is a Windows-only clause. So the
    default run leaves the SDK backend's shapes unchecked, and
    `pip install -e ".[sdk]"` then `python3 -m pytest tests/ -q` is the run that
-   checks them: **687 passed, 1 skipped**. Both numbers are worth knowing,
+   checks them: **740 passed, 1 skipped**. Both numbers are worth knowing,
    because a green default run is not evidence that the SDK backend matches the
    SDK it will meet.
 
-   The second number is the one to distrust in a report. 669 was measured on a
-   machine with no `sdk` extra installed; 687 is 669 plus the 18 shape tests
+   The second number is the one to distrust in a report. 722 was measured on a
+   machine with no `sdk` extra installed; 740 is 722 plus the 18 shape tests
    that skipped there, which is arithmetic and not a run. Re-measure it the
-   next time the extra is present.
+   next time the extra is present — it has now been arithmetic for three
+   consecutive changes.
 2. **Preserve the five invariants in section 1** and everything in section 3.
    Where a comment in the code says "do not simplify this back to X", X is the
    bug.
@@ -869,8 +912,8 @@ And two for the config folder packaged inside the wheel, which is what makes
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 669 passed, 19 skipped - no install needed
-pip install -e ".[sdk]"              # then 687 passed, 1 skipped: the 18 skips
+python3 -m pytest tests/ -q          # 722 passed, 19 skipped - no install needed
+pip install -e ".[sdk]"              # then 740 passed, 1 skipped: the 18 skips
 python3 -m pytest tests/ -q          # are the SDK shape checks. See 4.1
 ```
 
