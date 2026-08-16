@@ -97,7 +97,8 @@ lmi/commands/config/        `lmi config`, as a self-contained package
   runner.py                 the dispatcher, and nothing else
   output.py                 `say`, so the dispatcher can import subcommands
   switch.py                 `lmi config switch`: the flow
-  fragment.py               finding, reading and validating the switch file
+  catalog.py                where named switch files live, and their names
+  fragment.py               finding, reading and validating one switch file
   merge.py                  the recursive merge
   origin.py                 the write-once snapshot
   schedule.py               `lmi config schedule`: show and set the backend
@@ -833,6 +834,42 @@ And two for the config folder packaged inside the wheel, which is what makes
     per-invocation registry flag, while `--trusted-host` covers one command and
     no `pip.conf` is ever written. Do not "fix" that by writing one.
 
+And two for named switch files, which put a keyword and a filename into one
+argument for the first time.
+
+50. **A switch name is a name, not a path.** `catalog._validate` allows
+    `[A-Za-z0-9._-]+` and refuses `.` and `..` outright, so the argument cannot
+    be a path expression. Without it `lmi config switch ../../etc/passwd` reads
+    an arbitrary JSON document off the machine and `deep_merge`s it into
+    `~/.claude/settings.json` — an escape from the config folder, and a way to
+    build a settings file out of something that was never one. Not silent, but
+    the damage is done before anything is printed. The narrow character class
+    is deliberate: a name is typed at a shell and appears in the README, so
+    there is nothing for a wider one to buy. `--file` is the way to apply a
+    fragment from somewhere else, and it always was.
+51. **`origin` is reserved, and a file claiming it is reported rather than
+    shadowed.** The keyword and a switch name now occupy one positional. They
+    used to be separated by `choices=["origin"]`, which removed the ambiguity
+    by construction; names needed the slot, so the keyword wins instead and
+    `catalog.RESERVED` refuses `origin` as a name.
+
+    Reserving it is only half. A `settings_switch_origin.json` is then a file
+    that can never be applied by any invocation, and **silent** in the way that
+    costs most: it sits in the folder beside the ones that work, it is valid,
+    `lmi config switch origin` reports a successful restore every time, and
+    nothing anywhere connects that to the fragment never having run. Hence the
+    `[WARN]` from `_list`, and `scan` returning reserved names as a second list
+    rather than dropping them — dropping them is what makes the file invisible.
+
+    The failure that the old `choices=` guarded — a filename read as the
+    restore keyword — is unchanged and is the worse direction: a restore
+    discards every switch since the first one and consumes the snapshot, so a
+    name accidentally taking that path is not recoverable by running the
+    command again. It is pinned by
+    `test_a_name_never_takes_the_restore_path`, which is where that MANDATORY
+    test went when its mechanism was removed. Repairing a test's premise is not
+    relaxing its assertion; deleting it would have been.
+
 ---
 
 ## 4. Rules for editing
@@ -842,9 +879,10 @@ And two for the config folder packaged inside the wheel, which is what makes
    nothing — several bugs above only appear with awkward paths, or only when a
    claude call fails.
 
-   **722 passed, 19 skipped, in under four seconds** — measured, not estimated.
-   It was 505 (1 skipped) before the two-backend work, 664 before item 47, and
-   704 before item 30 grew its keep-the-existing-token branch.
+   **750 passed, 19 skipped, in under four seconds** — measured, not estimated.
+   It was 505 (1 skipped) before the two-backend work, 664 before item 47, 704
+   before item 30 grew its keep-the-existing-token branch, and 722 before named
+   switch files.
 
    The number written here had drifted to 669 while the suite was actually at
    704, which is worth a sentence because of what it costs: the point of
@@ -859,12 +897,12 @@ And two for the config folder packaged inside the wheel, which is what makes
    `sdk` extra is absent; the nineteenth is a Windows-only clause. So the
    default run leaves the SDK backend's shapes unchecked, and
    `pip install -e ".[sdk]"` then `python3 -m pytest tests/ -q` is the run that
-   checks them: **740 passed, 1 skipped**. Both numbers are worth knowing,
+   checks them: **768 passed, 1 skipped**. Both numbers are worth knowing,
    because a green default run is not evidence that the SDK backend matches the
    SDK it will meet.
 
-   The second number is the one to distrust in a report. 722 was measured on a
-   machine with no `sdk` extra installed; 740 is 722 plus the 18 shape tests
+   The second number is the one to distrust in a report. 750 was measured on a
+   machine with no `sdk` extra installed; 768 is 750 plus the 18 shape tests
    that skipped there, which is arithmetic and not a run. Re-measure it the
    next time the extra is present — it has now been arithmetic for three
    consecutive changes.
@@ -912,8 +950,8 @@ And two for the config folder packaged inside the wheel, which is what makes
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 722 passed, 19 skipped - no install needed
-pip install -e ".[sdk]"              # then 740 passed, 1 skipped: the 18 skips
+python3 -m pytest tests/ -q          # 750 passed, 19 skipped - no install needed
+pip install -e ".[sdk]"              # then 768 passed, 1 skipped: the 18 skips
 python3 -m pytest tests/ -q          # are the SDK shape checks. See 4.1
 ```
 

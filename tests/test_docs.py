@@ -12,6 +12,7 @@ import pytest
 from lmi.commands.install import (
     claude_json, config, defaults, gitbash, settings, statusline, template,
 )
+from lmi.commands.config import catalog
 from lmi.commands.upgrade import config as upgrade_config
 from lmi.core.errors import LmiError
 
@@ -501,3 +502,23 @@ def test_claude_md_records_what_a_blank_token_may_not_mean():
     assert "placeholder" in window
     assert "no longer parses" in window or "unparseable" in window
     assert "exit 2" in window
+
+
+def test_the_readme_documents_the_switch_file_convention():
+    """A convention only works if it is written down in one findable place.
+
+    The name is what an operator types and what they must call a file, and
+    lmi cannot infer either half from the other: a file named wrongly is simply
+    not listed, with nothing to say why.
+    """
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    assert catalog.PREFIX + "<name>" + catalog.SUFFIX in readme
+    assert "lmi config switch <name>" in readme
+
+
+def test_the_readme_says_the_reserved_name_cannot_be_selected():
+    """MANDATORY. Item 51's silent half - a fragment nothing can ever apply."""
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    for reserved in catalog.RESERVED:
+        assert "%s%s%s" % (catalog.PREFIX, reserved, catalog.SUFFIX) in readme
+    assert "reserved" in readme

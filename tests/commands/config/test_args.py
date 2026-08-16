@@ -25,16 +25,18 @@ def test_origin_is_accepted_as_the_target():
     assert parser().parse_args(["switch", "origin"]).target == "origin"
 
 
-def test_a_path_is_rejected_as_the_target():
-    """MANDATORY. Silent failure: a filename read as the restore keyword.
+def test_a_name_is_accepted_as_the_target():
+    """The positional carries a switch name now, not only the keyword.
 
-    Paths only ever arrive behind --file. If the positional accepted arbitrary
-    text, `lmi config switch prod.json` would look reasonable and would have to
-    guess whether the word is a keyword or a file - the ambiguity the --file
-    flag exists to remove.
+    It used to be `choices=["origin"]`, which made argparse reject everything
+    else and removed the keyword-vs-file ambiguity by construction. Named
+    switch files need the slot, so the ambiguity is removed the other way
+    round: `origin` is reserved (catalog.RESERVED), a name that is a path is
+    refused (catalog._validate), and the silent failure the old test named -
+    a filename taken for the restore keyword - is pinned in the runner by
+    test_a_name_never_takes_the_restore_path.
     """
-    with pytest.raises(SystemExit):
-        parser().parse_args(["switch", "prod.json"])
+    assert parser().parse_args(["switch", "prod"]).target == "prod"
 
 
 def test_file_takes_a_path():
