@@ -5,6 +5,7 @@ import json
 import pytest
 
 from lmi.commands.install import config, defaults, statusline, template
+from lmi.commands.install.exit_codes import EXIT_CONFIG_WRITE
 from lmi.core import config as core_config
 from lmi.core.errors import LmiError
 
@@ -63,8 +64,23 @@ def test_the_packaged_template_carries_the_placeholder_not_a_token():
     """Item 30: the placeholder is what the blank-answer refusal protects."""
     doc = json.loads(defaults.TEMPLATE.read_text(encoding="utf-8"))
     assert doc["env"]["ANTHROPIC_AUTH_TOKEN"] == "<Token from the user input>"
-    assert not statusline.declares(doc), \
-        "no statusline.js ships in the package, so nothing may declare one"
+
+
+def test_the_packaged_folder_ships_a_statusline_and_declares_it():
+    """MANDATORY. Item 32, both directions, for the folder in the wheel.
+
+    The packaged folder is now the only default that ships, and a statusline is
+    two files: the `statusLine` block in the template and the script its
+    command runs. Either half alone is **silent** - a command pointing at a
+    file that is not there, or a script in ~/.claude that nothing runs - and
+    both report success. This is the one config folder no operator assembled,
+    so nobody else will notice.
+    """
+    doc = json.loads(defaults.TEMPLATE.read_text(encoding="utf-8"))
+    script = defaults.DIR / statusline.NAME
+    assert script.is_file(), "%s must ship beside the template" % statusline.NAME
+    assert statusline.declares(doc), \
+        "the template must declare the statusLine that runs it"
 
 
 def test_adopt_returns_a_config_the_user_placed_unchanged(tmp_path, recorder):
@@ -156,3 +172,143 @@ def test_an_unwritable_home_is_reported_not_swallowed(home, recorder,
     monkeypatch.setattr(defaults.statusline, "install", refuse)
     with pytest.raises(LmiError):
         defaults.adopt(defaults.CONFIG, say)
+
+
+# --- adopting the whole folder, and preserving what was there -------------
+
+def packaged_names():
+    """Every file in the packaged folder, as adopt should name them in ~/.lmi.
+
+    lmi.json becomes config.json because that is what discovery looks for at
+    the home level; everything else keeps the name it shipped with.
+    """
+    out = set()
+    for path in defaults.DIR.iterdir():
+        if not path.is_file():
+            continue
+        out.add("config.json" if path.name == core_config.CWD_CONFIG_NAME
+                else path.name)
+    return out
+
+
+def test_adopt_copies_every_file_in_the_packaged_folder(home, recorder):
+    """Not just the two it used to name.
+
+    A switch file or a statusline.js placed in the packaged folder is part of
+    the default a site ships; copying only lmi.json and settings.json leaves it
+    inside site-packages, where `lmi config switch` never looks and the next
+    `pip install --upgrade` replaces it.
+    """
+    _, say = recorder
+    landed = defaults.adopt(defaults.CONFIG, say)
+    got = set(p.name for p in landed.parent.iterdir() if p.is_file())
+    assert got == packaged_names()
+
+
+def test_the_statusline_script_is_adopted_byte_for_byte(home, recorder):
+    """It is somebody's script. Normalising it is lmi editing a file it was
+    only asked to move - the same rule as installing it into ~/.claude."""
+    _, say = recorder
+    landed = defaults.adopt(defaults.CONFIG, say)
+    assert (landed.parent / statusline.NAME).read_bytes() == \
+        (defaults.DIR / statusline.NAME).read_bytes()
+
+
+def test_existing_files_are_backed_up_before_being_overwritten(home, recorder):
+    """MANDATORY. The copy is the only surviving version of what was there.
+
+    adopt runs when discovery found no config *file*, which does not mean the
+    folder is empty: a ~/.lmi holding only a settings.json, or only switch
+    files, or last month's leftovers, still falls through to the packaged
+    default and is copied into. Overwriting those without a backup destroys
+    work the operator cannot get back, at exit 0.
+    """
+    folder = home / ".lmi"
+    folder.mkdir(parents=True)
+    (folder / "settings.json").write_text('{"mine": true}', encoding="utf-8")
+    (folder / "settings_switch_mine.json").write_text('{"model": "opus"}',
+                                                      encoding="utf-8")
+
+    _, say = recorder
+    defaults.adopt(defaults.CONFIG, say)
+
+    backups = [p for p in folder.iterdir()
+               if p.is_dir() and p.name.startswith("backup_")]
+    assert len(backups) == 1, "one backup folder per adoption"
+    saved = set(p.name for p in backups[0].iterdir())
+    assert saved == {"settings.json", "settings_switch_mine.json"}
+    assert json.loads((backups[0] / "settings.json").read_text(
+        encoding="utf-8")) == {"mine": True}
+
+
+def test_the_backup_is_announced(home, recorder):
+    """A file moved without being mentioned is a file the operator loses.
+
+    Asserted against the real folder name - a timestamp - and a phrase with a
+    capital and a space in it. A bare `"backup_" in output` passes for the
+    wrong reason: pytest names its tmp directory after the test, so the paths
+    this command prints contain the test's own name.
+    """
+    folder = home / ".lmi"
+    folder.mkdir(parents=True)
+    (folder / "settings.json").write_text("{}", encoding="utf-8")
+    lines, say = recorder
+    defaults.adopt(defaults.CONFIG, say)
+
+    made = [p for p in folder.iterdir()
+            if p.is_dir() and p.name.startswith("backup_")]
+    assert len(made) == 1
+    assert made[0].name in said(lines)
+    assert "Backed up" in said(lines)
+
+
+def test_an_earlier_backup_is_not_backed_up_again(home, recorder):
+    """MANDATORY-adjacent: the backup folder lives INSIDE ~/.lmi.
+
+    Copying it into the next backup nests every generation inside the one after
+    it - the folder doubles on each adoption and the oldest copy sinks deeper
+    each time.
+    """
+    folder = home / ".lmi"
+    (folder / "backup_20200101-000000").mkdir(parents=True)
+    (folder / "backup_20200101-000000" / "settings.json").write_text(
+        "{}", encoding="utf-8")
+    (folder / "settings.json").write_text("{}", encoding="utf-8")
+
+    _, say = recorder
+    defaults.adopt(defaults.CONFIG, say)
+
+    fresh = [p for p in folder.iterdir()
+             if p.is_dir() and p.name.startswith("backup_")
+             and p.name != "backup_20200101-000000"]
+    assert len(fresh) == 1
+    assert not any(p.is_dir() for p in fresh[0].iterdir()), \
+        "the previous backup must not be copied into the new one"
+
+
+def test_no_backup_folder_appears_when_there_was_nothing_to_save(home, recorder):
+    """A fresh machine must not grow an empty backup_ folder."""
+    _, say = recorder
+    landed = defaults.adopt(defaults.CONFIG, say)
+    assert not any(p.name.startswith("backup_")
+                   for p in landed.parent.iterdir())
+
+
+def test_a_failed_backup_stops_the_adoption(home, recorder, monkeypatch):
+    """Fatal, like jsonfile.backup (item 31). Copying over a file we could not
+    preserve is not worth the risk, and the packaged default is recoverable by
+    simply running the command again."""
+    folder = home / ".lmi"
+    folder.mkdir(parents=True)
+    (folder / "settings.json").write_text('{"mine": true}', encoding="utf-8")
+
+    def refuse(*a, **kw):
+        raise OSError("no room")
+
+    monkeypatch.setattr(defaults.shutil, "copy2", refuse)
+    _, say = recorder
+    with pytest.raises(LmiError) as exc:
+        defaults.adopt(defaults.CONFIG, say)
+    assert exc.value.code == EXIT_CONFIG_WRITE
+    assert json.loads((folder / "settings.json").read_text(
+        encoding="utf-8")) == {"mine": True}, "the original is untouched"

@@ -90,7 +90,8 @@ same file as `lmi install claude`, and `./config/lmi.json` goes away with the
 clone — as does the `settings.json` beside it. A machine you intend to upgrade
 in place this way wants both kept somewhere the clone's disappearance cannot
 take with them. Copy
-[`examples/lmi.json`](examples/lmi.json), not the shipped `config/lmi.json` —
+[`examples/lmi.json`](examples/lmi.json), not the shipped
+`default-config/lmi.json` —
 the shipped file has no `lmi` section at all, precisely so nobody points
 `lmi upgrade` at public PyPI by accident, where `lmi` is not a package this
 project publishes. Edit the copy's `lmi.index` to name your site's own Python
@@ -647,16 +648,34 @@ provisioning the rules below exist to prevent:
   npm command. Otherwise a mistyped working directory would install from a
   registry nobody chose and read exactly like a normal run.
 - **It is copied out before it is written to.** Just before recording the
-  backend, `lmi install claude` copies both packaged files to `~/.lmi/` and says
-  so. `schedule.mode` then lands in a file `lmi schedule` actually reads —
-  writing it inside `site-packages` would be a correct-looking file that nothing
-  looks at and that the next `pip install --upgrade` replaces. From then on the
-  machine has an ordinary config folder to edit, and the next install finds it by
-  the ordinary search.
+  backend, `lmi install claude` copies **every file in the packaged folder** to
+  `~/.lmi/` and says so. `schedule.mode` then lands in a file `lmi schedule`
+  actually reads — writing it inside `site-packages` would be a correct-looking
+  file that nothing looks at and that the next `pip install --upgrade` replaces.
+  From then on the machine has an ordinary config folder to edit, and the next
+  install finds it by the ordinary search.
 
-The packaged folder deliberately carries **no `statusline.js`**, and its template
-declares no `statusLine` — one script inside the package would give every site
-the same statusline and no way to vary it.
+Every file, not just the two: `lmi.json` becomes `~/.lmi/config.json` — the name
+discovery looks for at the home level — and everything else keeps its own name.
+So a `statusline.js`, or a `settings_switch_<name>.json` your site ships in that
+folder, arrives in `~/.lmi/` where `lmi config switch` will actually find it.
+
+**Anything already in `~/.lmi/` is backed up first.** The packaged default is
+only reached when discovery found no config *file*, which is not the same as an
+empty folder — a `~/.lmi` holding just a `settings.json`, or only switch files,
+still falls through and gets copied into. Those files are copied to
+`~/.lmi/backup_<timestamp>/` before anything is overwritten, and the count and
+path are printed. A failed backup **stops the adoption** with nothing changed:
+that copy is the only surviving version, and the packaged default is still in
+the wheel if you run the command again. Earlier `backup_` folders are skipped
+rather than copied, so generations never nest inside each other. Nothing is ever
+deleted — clean them up yourself.
+
+The packaged folder ships a **`statusline.js`**, and its template declares the
+`statusLine` whose command runs it. Both halves or neither: a template declaring
+a statusline with no script beside it installs a command pointing at nothing, and
+a script with no declaration lands in `~/.claude` and is never run. Each is a
+`[WARN]` at run time, so the shipped pair is pinned by the suite instead.
 
 A file left at the **old** `./lmi.json` path is **exit 2**, not a silent skip.
 Skipping it would let `~/.lmi/config.json` win — a different registry — while
@@ -753,8 +772,9 @@ raw Claude Code settings document, and it is what the command installs as
 by the token you type and `CLAUDE_CODE_GIT_BASH_PATH` added on Windows.
 
 [`examples/settings.json`](examples/settings.json) is a complete one; this
-repository also ships a minimal [`config/settings.json`](config/settings.json)
-beside `config/lmi.json`, and a site replaces it.
+repository ships one inside the package, at
+[`lmi/commands/install/default-config/settings.json`](lmi/commands/install/default-config/settings.json)
+beside `default-config/lmi.json`, and a site replaces it.
 
 ```json
 {
@@ -841,7 +861,8 @@ and the `settings.json`, and `lmi install claude` copies it to
 `~/.claude/statusline.js` — **byte for byte**, line endings, encoding and
 executable bit included. It is your script; `lmi` moves it and does not edit it.
 This repository ships a working one at
-[`config/statusline.js`](config/statusline.js), which is what the shipped
+[`default-config/statusline.js`](lmi/commands/install/default-config/statusline.js),
+which is what the shipped
 template's command runs.
 
 Found beside whichever `lmi.json` won, for the same reason the template is:
@@ -1136,8 +1157,9 @@ live **beside the `lmi.json` that discovery resolves**, exactly where
 `settings_switch_<name>.json`:
 
 ```
-~/.lmi/lmi.json
+~/.lmi/config.json                    the config file itself
 ~/.lmi/settings.json                  the install template
+~/.lmi/statusline.js                  the script that template declares
 ~/.lmi/settings_switch_gateway.json   lmi config switch gateway
 ~/.lmi/settings_switch_direct.json    lmi config switch direct
 ~/.lmi/settings_switch_opus.json      lmi config switch opus
@@ -1384,7 +1406,7 @@ place.
 
 `lmi upgrade` reads the **same config file** as `lmi install claude` — the
 search order above is identical — but its own top-level section, `lmi`. The
-shipped `config/lmi.json` in this repository does **not** have one: `lmi` is
+shipped `default-config/lmi.json` in this repository does **not** have one: `lmi` is
 never published anywhere, so the only honest default is none at all rather
 than a placeholder that would resolve a stranger's package of the same name
 from public PyPI. Copy [`examples/lmi.json`](examples/lmi.json) and point
@@ -1504,6 +1526,16 @@ lmi/                  the package
                       section, the prompts, npm, the pip install of the
                       Claude Agent SDK, the two Claude config documents, the
                       statusline script, Windows Git Bash
+      default-config/ the ONLY config folder that ships, packaged inside the
+                      wheel: lmi.json, the settings.json template installed
+                      as ~/.claude/settings.json, and the statusline.js that
+                      template declares. Every file in it is copied to ~/.lmi
+                      on a machine with no config of its own. lmi.json has no
+                      "lmi" section on purpose (see lmi upgrade, below) - so
+                      lmi upgrade run against this checkout stops with 'the
+                      config file has no "lmi" section' and prints the
+                      pasteable example. Replaces the checkout's old config/
+                      folder, which no longer exists
     schedule/         the lmi schedule command: the backend vocabulary both
                       backends agree on, config/validation, paths, prompt
                       composition, the state file, the iteration loop, and
@@ -1514,14 +1546,6 @@ lmi/                  the package
                       detecting the installation, the version probe,
                       verifying by running the installed script
 tests/                pytest suite, mirrors the lmi/ tree
-config/lmi.json       the config lmi install claude reads by default, when run
-                      from this directory. It has no "lmi" section on purpose
-                      (see lmi upgrade, above) - so lmi upgrade run against
-                      this checkout stops with 'the config file has no "lmi"
-                      section' and prints the pasteable example
-config/settings.json  the settings.json template installed as
-                      ~/.claude/settings.json, read from beside the lmi.json
-                      above. A site replaces it
 examples/lmi.json     a complete lmi.json, with both "claude" and "lmi"
                       sections, to copy and edit
 examples/settings.json
@@ -1529,7 +1553,7 @@ examples/settings.json
                       a marketplace and a status line, to copy and edit
 examples/settings_switch.json
                       a settings.json fragment for lmi config switch, to copy
-                      to config/settings_switch.json and edit
+                      to ~/.lmi/settings_switch_<name>.json and edit
 docs/install/         per-platform install guides, one file each
 docs/superpowers/     the design specs, one per command
 scripts/              install scripts, all four installing the same wheel:

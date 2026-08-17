@@ -36,11 +36,13 @@ the second run of this command finds it by the ordinary search and never comes
 back here.
 """
 
+import shutil
 from pathlib import Path
 
 from . import statusline, template
 from .exit_codes import EXIT_CONFIG_WRITE
-from ...core import config as core_config
+from ...core import config as core_config, fs, jsonfile
+from ...core.errors import LmiError
 
 # A data directory, not a package: no __init__.py, and nothing imports from it.
 # pyproject.toml has to name it under [tool.setuptools.package-data] or it is
@@ -59,11 +61,29 @@ TEMPLATE = DIR / template.NAME
 ADOPTED = (
     "No config file was found, so the defaults packaged with lmi were used\n"
     "    and copied to a folder of your own:\n"
-    "      %s\n"
-    "      %s\n"
+    "%s\n"
     "    Edit those - the registry above all - and run this again to install\n"
     "    from your own source. The packaged copies are replaced on every\n"
     "    upgrade of lmi and are not the place to keep a site's settings."
+)
+
+BACKED_UP = (
+    "Backed up %d existing file%s from that folder first:\n"
+    "      %s\n"
+    "    Nothing there was deleted; the copies are never cleaned up."
+)
+
+# The folder adopt puts previous contents in, inside ~/.lmi so that one
+# directory holds a config and its own history. Prefix, not a suffix, so a
+# generation can be recognised without parsing the timestamp - which is what
+# lets the next adoption skip it instead of copying it into itself.
+BACKUP_PREFIX = "backup_"
+
+BROKEN_PACKAGE = (
+    "the config folder packaged inside lmi is incomplete: %s is missing from\n"
+    "    %s\n"
+    "    That is a broken installation of lmi itself, not a configuration\n"
+    "    error. Reinstall lmi, or pass --config to name a folder of your own."
 )
 
 
@@ -76,13 +96,17 @@ def adopt(source, say):
     """The config file the mode should be written to, materialising it if needed.
 
     Returns `source` unchanged for every config a human put somewhere, which is
-    every case but one. For the packaged folder it copies both files to ~/.lmi/
-    and returns the copy, so `backend.write` lands in the file `lmi schedule`
-    resolves rather than in the wheel.
+    every case but one. For the packaged folder it copies **every file in it**
+    to ~/.lmi/ and returns the config copy, so `backend.write` lands in the file
+    `lmi schedule` resolves rather than in the wheel.
 
-    Both halves, not just the config: an operator who later edits
-    ~/.lmi/config.json alone would meet "no settings template found" from a
-    folder lmi itself created.
+    Every file, not the two it used to name: the packaged folder is the one
+    default that ships, so a `statusline.js` or a `settings_switch_<name>.json`
+    in it is part of that default. Copying only lmi.json and settings.json
+    leaves the rest inside site-packages, where `lmi config switch` never looks
+    and the next `pip install --upgrade` replaces it - and an operator who edits
+    the config lmi just made them would meet "no settings template found" from
+    a folder lmi itself created.
 
     Item 39's re-check is satisfied by construction rather than by a second
     search. Discovery reached the packaged folder only because $LMI_CONFIG,
@@ -100,16 +124,92 @@ def adopt(source, say):
         return source
 
     home = core_config.expand(core_config.HOME_CONFIG)
-    # statusline.install, because it is already the atomic byte-for-byte copy
-    # this needs - O_BINARY, a temp file, os.replace - and a second one here
-    # would be a second chance to get the Windows text-mode trap wrong. Bytes
-    # are right for a JSON document too: the copy is what the operator will
-    # edit, and lmi has no business rewriting its line endings on the way.
-    statusline.install(CONFIG, home, "config file", EXIT_CONFIG_WRITE)
-    statusline.install(
-        TEMPLATE, home.parent / template.NAME, "settings template",
-        EXIT_CONFIG_WRITE,
-    )
+    folder = home.parent
+    packaged = _packaged_files()
+
+    # Before the first write, and fatal if it fails - see _back_up.
+    saved, into = _back_up(folder, say)
+
+    landed = []
+    for path in packaged:
+        # lmi.json becomes config.json: that is the name discovery looks for at
+        # the home level, and adopting it under its packaged name would produce
+        # a folder the next search walks straight past.
+        dest = home if path.name == core_config.CWD_CONFIG_NAME else \
+            folder / path.name
+        # statusline.install, because it is already the atomic byte-for-byte
+        # copy this needs - O_BINARY, a temp file, os.replace, the source's mode
+        # preserved - and a second one here would be a second chance to get the
+        # Windows text-mode trap wrong. Bytes are right for a JSON document too:
+        # the copy is what the operator will edit, and lmi has no business
+        # rewriting its line endings on the way.
+        statusline.install(path, dest, "packaged %s" % path.name,
+                           EXIT_CONFIG_WRITE)
+        landed.append(dest)
+
     say("")
-    say(ADOPTED % (home, home.parent / template.NAME))
+    say(ADOPTED % "\n".join("      %s" % p for p in landed))
+    if saved:
+        say("")
+        say(BACKED_UP % (saved, "" if saved == 1 else "s", into))
     return home
+
+
+def _packaged_files():
+    """Every file in the packaged folder, config and template first.
+
+    Order only matters for the report. What matters here is the refusal: a
+    folder missing either half is a broken lmi rather than a misconfiguration,
+    and copying whatever is left would produce a config folder that fails at
+    the next step with a message pointing at the operator instead of at the
+    install.
+    """
+    for required in (CONFIG, TEMPLATE):
+        if fs.kind(required) != fs.FILE:
+            raise LmiError(
+                BROKEN_PACKAGE % (required.name, DIR), EXIT_CONFIG_WRITE
+            )
+    rest = sorted(p for p in DIR.iterdir()
+                  if p.is_file() and p not in (CONFIG, TEMPLATE))
+    return [CONFIG, TEMPLATE] + rest
+
+
+def _back_up(folder, say):
+    """Copy what is already in `folder` into folder/backup_<stamp>/.
+
+    (how many were saved, where). Both zero and None when there was nothing,
+    so a fresh machine does not grow an empty backup directory.
+
+    adopt runs when discovery found no config *file*, which is not the same as
+    an empty folder: a ~/.lmi holding only a settings.json, or only switch
+    files, or one of these backups, still falls through to the packaged default
+    and is copied into. Those files are about to be overwritten and this copy is
+    the only version of them that survives - so a failure here is fatal, for
+    exactly the reason jsonfile.backup's is (item 31). Nothing is lost by
+    stopping: the packaged default is still in the wheel and the command can be
+    run again.
+
+    Earlier backups are skipped, not copied. They live inside the folder being
+    backed up, so including them would nest every generation inside the next -
+    the directory doubling on each adoption, with the oldest copy sinking a
+    level deeper each time.
+    """
+    if fs.kind(folder) != fs.DIR:
+        return 0, None
+    existing = sorted(p for p in folder.iterdir() if p.is_file())
+    if not existing:
+        return 0, None
+
+    into = folder / (BACKUP_PREFIX + jsonfile.timestamp())
+    try:
+        into.mkdir(parents=True, exist_ok=True)
+        for path in existing:
+            shutil.copy2(str(path), str(into / path.name))
+    except OSError as exc:
+        raise LmiError(
+            "could not back up the existing config folder: %s -> %s (%s)\n"
+            "    Nothing was changed. Overwriting files we cannot preserve is "
+            "not worth the risk." % (folder, into, exc),
+            EXIT_CONFIG_WRITE,
+        )
+    return len(existing), into

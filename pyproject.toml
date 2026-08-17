@@ -46,4 +46,4 @@ include = ["lmi*"]
 # setuptools ships the .py files and nothing else: the checkout works and
 # every install is broken - see tests/test_packaging.py.
 [tool.setuptools.package-data]
-"lmi.commands.install" = ["default-config/*.json"]
+"lmi.commands.install" = ["default-config/*"]

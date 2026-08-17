@@ -82,13 +82,14 @@ def test_the_example_config_does_not_duplicate_the_template():
 
 # --- the settings.json template -------------------------------------------
 
-@pytest.mark.parametrize("where", ["examples", "config"])
+@pytest.mark.parametrize("where", ["examples"])
 def test_the_shipped_settings_templates_are_accepted(tmp_path, where):
     """Both are copied and edited, so a rejected shape is a broken first day.
 
-    config/settings.json is the stronger case: it is not copied first, so a
-    shape the validator rejects is `lmi install claude` failing in a checkout
-    where it is supposed to work.
+    Only examples/ is parametrised now. The checkout's config/ folder is gone -
+    the packaged default-config/ is the one default that ships - and its own
+    template is covered by test_defaults.py against defaults.TEMPLATE, which is
+    the file that actually reaches a machine.
     """
     src = REPO / where / template.NAME
     assert src.is_file(), "%s/%s must exist" % (where, template.NAME)
@@ -97,7 +98,7 @@ def test_the_shipped_settings_templates_are_accepted(tmp_path, where):
     assert doc
 
 
-@pytest.mark.parametrize("where", ["examples", "config"])
+@pytest.mark.parametrize("where", ["examples"])
 def test_no_shipped_template_carries_a_real_looking_token(where):
     """MANDATORY. A committed token is a leaked token.
 
@@ -157,51 +158,43 @@ def test_the_readme_names_the_silent_keys():
 
 
 def test_the_shipped_default_config_is_accepted_by_the_validator():
-    """config/lmi.json is what `lmi install claude` reads from a checkout.
+    """default-config/lmi.json is the only default that ships.
 
-    Unlike examples/lmi.json it is not copied and edited first, so a shape the
-    validator rejects is not a bad first day - it is the command failing where
-    it is supposed to work. It deliberately omits `cafile`: that key is checked
-    to exist, so a placeholder path would be exit 2 on every machine.
+    It used to be the checkout's config/lmi.json; that folder is gone, and this
+    is the file that reaches a machine with nothing else on it - the easy path
+    failing where it is supposed to be easiest. Unlike examples/lmi.json it is
+    not copied and edited first. It deliberately omits `cafile`: that key is
+    checked to exist, so a placeholder path would be exit 2 on every machine.
     """
-    shipped = REPO / config.CWD_CONFIG_DIR / config.CWD_CONFIG_NAME
-    assert shipped.is_file(), "%s must exist" % config.CWD_CONFIG
+    shipped = defaults.CONFIG
+    assert shipped.is_file(), "%s must exist" % shipped
     cfg = config.build_config(Args(str(shipped)))
     assert cfg.registry
     assert cfg.settings, "and the template beside it, which build_config loads"
     assert "cafile" not in json.loads(shipped.read_text(encoding="utf-8"))["claude"]
 
 
-def test_the_shipped_config_folder_carries_the_statusline_it_declares():
-    """MANDATORY. Silent failure: a checkout that installs half a statusline.
+def test_the_packaged_config_folder_carries_the_statusline_it_declares():
+    """MANDATORY. Silent failure: an install that provisions half a statusline.
 
-    config/settings.json runs `node ~/.claude/statusline.js`, and the file that
-    puts a script there is config/statusline.js beside it. Deleting or moving
-    the script - back into scripts/, say, which is not shipped in the wheel -
-    leaves an install that reports success and shows no statusline. It is a
-    warning at run time rather than an error, deliberately, which is exactly
-    why the shipped pair needs pinning here instead.
-    """
-    folder = REPO / config.CWD_CONFIG_DIR
-    doc = json.loads((folder / template.NAME).read_text(encoding="utf-8"))
-    assert statusline.declares(doc), \
-        "config/settings.json is expected to declare a statusline"
-    assert statusline.find(folder / config.CWD_CONFIG_NAME) is not None, \
-        "%s must exist beside it" % statusline.NAME
+    One folder ships now - lmi/commands/install/default-config/ - and a
+    statusline is two files in it: the `statusLine` block in settings.json and
+    the script its command runs. Either half alone reports success and shows no
+    statusline: a command pointing at a file nothing writes, or a script in
+    ~/.claude that nothing runs. It is a [WARN] at run time rather than an
+    error, deliberately, which is exactly why the shipped pair needs pinning
+    somewhere that fails.
 
-
-def test_the_packaged_config_folder_declares_no_statusline():
-    """MANDATORY. The mirror of the test above, for the folder in the wheel.
-
-    The checkout's config/ ships both halves. The packaged folder ships
-    neither, and must keep declaring neither: no statusline.js goes into the
-    package - statusline.py says why - so a `statusLine` block in the packaged
-    template would install a command pointing at a file nothing writes, on
-    every machine that falls through to the default, and report success.
+    This replaces two earlier tests - one for the checkout's config/ folder,
+    which no longer exists, and one asserting the packaged folder declared
+    NO statusline, which was true only while it shipped no script. The rule
+    they both served is unchanged: the halves must agree.
     """
     doc = json.loads(defaults.TEMPLATE.read_text(encoding="utf-8"))
-    assert not statusline.declares(doc)
-    assert statusline.find(defaults.CONFIG) is None
+    assert statusline.declares(doc), \
+        "the packaged settings.json is expected to declare a statusline"
+    assert statusline.find(defaults.CONFIG) is not None, \
+        "%s must exist beside it" % statusline.NAME
 
 
 def test_the_readme_documents_the_packaged_default():
@@ -222,13 +215,13 @@ def test_the_readme_documents_the_statusline_script():
 
 def test_the_shipped_default_config_is_rejected_by_the_upgrade_validator():
     """The mirror image of the test above, and load-bearing in the other
-    direction: config/lmi.json must NOT carry an "lmi" section, because lmi is
+    direction: default-config/lmi.json must NOT carry an "lmi" section, because lmi is
     never published anywhere and a live index there could only ever resolve a
     stranger's package of that name. If someone re-adds one - even a
     placeholder - this catches it before it ships, rather than a checkout
     quietly starting to point `lmi upgrade` at public PyPI.
     """
-    shipped = REPO / config.CWD_CONFIG_DIR / config.CWD_CONFIG_NAME
+    shipped = defaults.CONFIG
     assert "lmi" not in json.loads(shipped.read_text(encoding="utf-8"))
     with pytest.raises(LmiError) as exc:
         upgrade_config.build_config(Args(str(shipped)))
