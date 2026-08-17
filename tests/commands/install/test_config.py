@@ -168,19 +168,25 @@ def test_the_packaged_default_is_the_last_resort(bare_search):
     assert cfg.settings["env"]["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "256000"
 
 
-def test_the_packaged_default_carries_no_statusline(bare_search):
+def test_the_packaged_default_carries_both_halves_of_its_statusline(bare_search):
     """MANDATORY. Item 32's two warnings must stay quiet on the packaged pair.
 
-    No statusline.js ships inside the package - statusline.py says why - so the
-    packaged template must not declare a `statusLine` either. Declaring one
-    would install a command pointing at a file that is never written, on every
-    machine that falls through to the default, and say so in a [WARN] nobody
-    can act on.
+    The packaged folder is now the only default that ships, and it ships a
+    statusline - so it has to ship BOTH halves. This used to assert the
+    opposite (neither half), which was the same rule applied to a folder that
+    carried no script; what must never happen is one half without the other.
+
+    Through build_config rather than by reading the files, so the assertion
+    covers what discovery and statusline.find actually resolve: a script that
+    ships in the wheel but is not found beside the resolved config file is
+    still a `statusLine` command pointing at nothing.
     """
     from lmi.commands.install import statusline
     cfg = config.build_config(Args())
-    assert cfg.statusline is None
-    assert not statusline.declares(cfg.settings)
+    assert cfg.statusline is not None, \
+        "the packaged folder must ship the script its template declares"
+    assert statusline.declares(cfg.settings), \
+        "and the template must declare the script it ships"
 
 
 def test_the_packaged_default_does_not_mask_the_old_path(tmp_path, bare_search):

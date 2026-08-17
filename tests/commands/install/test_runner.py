@@ -6,7 +6,8 @@ import stat
 
 import pytest
 
-from lmi.commands.install import defaults, gitbash, prompts, runner, sdk, settings
+from lmi.commands.install import (defaults, gitbash, prompts, runner, sdk,
+                                  settings, statusline)
 from lmi.commands.schedule import backend
 from lmi.core.errors import LmiError
 from tests.conftest import skip_as_root
@@ -220,6 +221,39 @@ def test_the_packaged_default_installs_with_no_config_file_at_all(
     out = capsys.readouterr().out
     assert "(packaged default)" in out, \
         "the one config nobody chose has to say so before npm runs"
+
+
+def test_the_packaged_statusline_is_installed_into_the_claude_folder(
+        tmp_path, monkeypatch, fake_npm, sdk_pip, home, answers, no_claude,
+        capsys):
+    """MANDATORY. Both halves of the packaged statusline reach the machine.
+
+    The packaged folder ships a `statusline.js` and a template whose
+    `statusLine` command runs it. The script has to arrive at
+    ~/.claude/statusline.js, byte for byte, or the command points at nothing
+    and item 32's warning fires - on every machine that falls through to the
+    default, which is every machine installed from a bare `pip install lmi`.
+    Silent: the install reports success and the statusline simply is not there.
+    """
+    monkeypatch.delenv("LMI_CONFIG", raising=False)
+    monkeypatch.setenv("FAKE_IMPORTABLE", "1")
+    (tmp_path / "work").mkdir()
+    monkeypatch.chdir(tmp_path / "work")
+    answers["secret"] = ["sk-x"]
+    answers["confirm"] = [True]
+
+    assert runner.run(Args(None)) == 0
+
+    landed = home / ".claude" / statusline.NAME
+    assert landed.is_file(), "%s must be installed" % statusline.NAME
+    assert landed.read_bytes() == (defaults.DIR / statusline.NAME).read_bytes()
+    # And the other half: the template that declares the command that runs it.
+    assert statusline.declares(read_settings(home))
+    # Item 32's two warnings specifically, not any [WARN]: the fake npm never
+    # creates a real `claude`, so "not on PATH" always fires in this harness.
+    out = capsys.readouterr().out
+    assert "found beside it" not in out, "the script was found, so no warning"
+    assert "nothing will run it" not in out, "the template declares it"
 
 
 def test_the_packaged_default_is_adopted_before_the_mode_is_written(

@@ -78,8 +78,10 @@ lmi/commands/schedule/      the command, as a self-contained package
   exit_codes.py             this command's own codes (1, 3, 4)
 lmi/commands/install/       `lmi install claude`, as a self-contained package
   config.py                 arguments, config-file discovery, the frozen Config
-  defaults.py               the packaged config folder, and adopting it
-  default-config/           that folder: lmi.json and settings.json, in the wheel
+  defaults.py               the packaged config folder: adopting all of it,
+                            and backing up what ~/.lmi already held
+  default-config/           that folder, and the ONLY one that ships: lmi.json,
+                            settings.json and the statusline.js it declares
   template.py               finding and validating the settings.json template
   statusline.py             finding and copying the statusline.js beside it
   prompts.py                every question, and the no-terminal guard
@@ -515,8 +517,9 @@ hand in two different files in the same folder:
     never run — each reporting success, each showing up only as a statusline
     that is not there, with nothing tying it back to the install.
     `runner._write_statusline` prints a `[WARN]` for each case and
-    `tests/test_docs.py` pins the shipped `config/` pair, because neither is an
-    error: only the operator knows what their command actually runs, and
+    `tests/test_docs.py` pins the shipped pair — now the one in
+    `install/default-config/`, since the checkout's `config/` folder is gone —
+    because neither is an error: only the operator knows what their command actually runs, and
     refusing would break a site whose `statusLine` runs something else
     entirely. `statusline.declares` deliberately lives outside
     `template._validate`, whose contract is that every key but `env` passes
@@ -778,24 +781,55 @@ And two for the config folder packaged inside the wheel, which is what makes
     installs successfully from whatever registry the wheel carries, with output
     indistinguishable from a run that read the site's own file.
 
-    `defaults.adopt` copies both files to `~/.lmi/` immediately before
-    `_write_mode`. **Silent without it:** `schedule.mode` written into
-    `site-packages` is item 39 reached from a new direction — a file with
-    exactly the right contents in it that `lmi schedule` never reads and the
-    next `pip install --upgrade` replaces. Both halves are copied, or an
-    operator editing the config lmi just made them meets "no settings template
-    found" from a folder lmi created. It runs *after* the last Claude write, so
-    a failed install leaves no config folder claiming to have provisioned the
-    machine.
+    `defaults.adopt` copies **every file in the folder** to `~/.lmi/`
+    immediately before `_write_mode`. **Silent without it:** `schedule.mode`
+    written into `site-packages` is item 39 reached from a new direction — a
+    file with exactly the right contents in it that `lmi schedule` never reads
+    and the next `pip install --upgrade` replaces. It runs *after* the last
+    Claude write, so a failed install leaves no config folder claiming to have
+    provisioned the machine.
+
+    Every file rather than the two it used to name, because the packaged folder
+    is now the only default that ships: a `statusline.js` or a
+    `settings_switch_<name>.json` in it is part of that default, and copying
+    only `lmi.json` and `settings.json` leaves the rest in `site-packages`,
+    where `lmi config switch` never looks. `lmi.json` becomes `config.json` —
+    the home-level name discovery searches for — and everything else keeps its
+    own name; adopting the config under its packaged name would produce a
+    folder the next search walks straight past. A folder missing either
+    required half is `BROKEN_PACKAGE`, a broken lmi rather than a
+    misconfiguration, refused before anything is copied.
+
+    `_back_up` is the other half of copying into a folder that may not be
+    empty, and it must stay **before the first write and fatal**, for exactly
+    item 31's reason. `adopt` fires when discovery found no config *file*,
+    which does not mean an empty folder: a `~/.lmi` holding only a
+    `settings.json`, only switch files, or a previous backup still falls
+    through and is copied into. Those files are the operator's and this copy is
+    the only version that survives, so a failed backup stops the adoption with
+    nothing changed — the packaged default is still in the wheel and the
+    command can be re-run. Earlier `backup_` directories are **skipped, not
+    copied**: they live inside the folder being backed up, so including one
+    nests every generation inside the next, the directory doubling on each
+    adoption while the oldest copy sinks a level deeper each time.
 
     Two smaller ones ride along. `pyproject.toml` needs the
     `[tool.setuptools.package-data]` entry or the folder is in the checkout and
     **not** in the wheel — a green suite and broken installs, which is why
     `test_declares_the_packaged_config_folder_as_package_data` asserts the
-    declaration itself; from a checkout there is nothing else to look at. And no
-    `statusline.js` ships in the package and the packaged template declares no
-    `statusLine`, so item 32's two warnings stay quiet — see statusline.py on
-    why one script in the wheel would be the wrong shape.
+    declaration itself; from a checkout there is nothing else to look at. Its
+    glob is `default-config/*`, not `*.json`: the folder now carries a
+    `statusline.js` too, and a `.json`-only glob would ship the checkout's
+    behaviour and not the wheel's.
+
+    The folder **does** now ship a `statusline.js`, and its template declares
+    the `statusLine` that runs it — the operator asked for that, and it
+    reverses what this item used to say. Item 32's rule is unchanged and is
+    what makes it safe: both halves or neither, checked out loud. The earlier
+    reasoning against it — one script in the wheel gives every site the same
+    statusline — is answered by `adopt` copying it to `~/.lmi/`, where a site
+    edits its own copy, and by the packaged folder being the only default that
+    ships rather than an unavoidable one.
 
     Its two URLs are the public npm registry and public PyPI, so the fallback
     path provisions a machine with internet access end to end. That is **not**
@@ -879,10 +913,10 @@ argument for the first time.
    nothing — several bugs above only appear with awkward paths, or only when a
    claude call fails.
 
-   **750 passed, 19 skipped, in under four seconds** — measured, not estimated.
+   **756 passed, 19 skipped, in under four seconds** — measured, not estimated.
    It was 505 (1 skipped) before the two-backend work, 664 before item 47, 704
-   before item 30 grew its keep-the-existing-token branch, and 722 before named
-   switch files.
+   before item 30 grew its keep-the-existing-token branch, 722 before named
+   switch files, and 750 before the packaged folder became the only default.
 
    The number written here had drifted to 669 while the suite was actually at
    704, which is worth a sentence because of what it costs: the point of
@@ -897,12 +931,12 @@ argument for the first time.
    `sdk` extra is absent; the nineteenth is a Windows-only clause. So the
    default run leaves the SDK backend's shapes unchecked, and
    `pip install -e ".[sdk]"` then `python3 -m pytest tests/ -q` is the run that
-   checks them: **768 passed, 1 skipped**. Both numbers are worth knowing,
+   checks them: **774 passed, 1 skipped**. Both numbers are worth knowing,
    because a green default run is not evidence that the SDK backend matches the
    SDK it will meet.
 
-   The second number is the one to distrust in a report. 750 was measured on a
-   machine with no `sdk` extra installed; 768 is 750 plus the 18 shape tests
+   The second number is the one to distrust in a report. 756 was measured on a
+   machine with no `sdk` extra installed; 774 is 756 plus the 18 shape tests
    that skipped there, which is arithmetic and not a run. Re-measure it the
    next time the extra is present — it has now been arithmetic for three
    consecutive changes.
@@ -950,8 +984,8 @@ argument for the first time.
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 750 passed, 19 skipped - no install needed
-pip install -e ".[sdk]"              # then 768 passed, 1 skipped: the 18 skips
+python3 -m pytest tests/ -q          # 756 passed, 19 skipped - no install needed
+pip install -e ".[sdk]"              # then 774 passed, 1 skipped: the 18 skips
 python3 -m pytest tests/ -q          # are the SDK shape checks. See 4.1
 ```
 
