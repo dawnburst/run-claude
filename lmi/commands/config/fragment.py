@@ -33,11 +33,38 @@ EXAMPLE = """{
 
 
 def load(explicit):
-    """(the fragment, the path it came from). Raises LmiError on anything wrong."""
-    path = _find(explicit)
+    """(the fragment, the path it came from). Raises LmiError on anything wrong.
+
+    The --file path, or the unnamed working-directory default. `catalog.py`
+    resolves a *named* switch file and calls `read` with the result: finding is
+    what differs between the two, reading and validating is not.
+    """
+    return read(_find(explicit))
+
+
+def read(path):
+    """(the fragment, `path`). Raises LmiError on anything wrong with it.
+
+    Split out of load() so that a caller which already knows the path - the
+    named-file catalog - shares this validation rather than growing a second
+    copy of it. A fragment that reached settings.json unvalidated is item 18's
+    `"env": null` merged in, whichever route it arrived by.
+    """
     doc = _parse(path)
     _validate(doc, path)
     return doc, path
+
+
+def default_path():
+    """The unnamed working-directory default, as a path.
+
+    Exposed because `switch.py` has to ask whether it exists before deciding
+    that a bare `lmi config switch` means "list". Two spellings of this path
+    would be two chances for the check and the load to disagree, which would
+    show up as a bare switch listing the names while a file it would have
+    applied sits right there.
+    """
+    return Path.cwd() / DEFAULT_NAME
 
 
 def _find(explicit):
@@ -52,7 +79,7 @@ def _find(explicit):
             )
         return path
 
-    default = Path.cwd() / DEFAULT_NAME
+    default = default_path()
     if _kind(default) == fs.FILE:
         return default
     raise LmiError(

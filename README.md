@@ -1121,15 +1121,70 @@ moving Claude Code between a gateway and the direct API, or between models,
 is one command rather than a hand edit of the file everything else depends on.
 
 ```
-lmi config switch                  apply ./config/settings_switch.json
+lmi config switch                  list the switch files you have
+lmi config switch <name>           apply settings_switch_<name>.json
 lmi config switch --file PATH      apply that fragment
 lmi config switch origin           restore the pristine settings.json
 ```
 
-`--file` (`-f`) is the **only** way to name a path. `origin` is a bare word and
-can never be anything else, so the keyword and a file called `origin` never
-occupy the same argument and no precedence rule is needed: that file is reached
-with `--file origin`, and only that way.
+### Named switch files
+
+A site usually has several configurations — a gateway, the direct API, a
+model — and wants each of them a word away from any directory. So switch files
+live **beside the `lmi.json` that discovery resolves**, exactly where
+`lmi install claude` looks for its `settings.json`, and are named
+`settings_switch_<name>.json`:
+
+```
+~/.lmi/lmi.json
+~/.lmi/settings.json                  the install template
+~/.lmi/settings_switch_gateway.json   lmi config switch gateway
+~/.lmi/settings_switch_direct.json    lmi config switch direct
+~/.lmi/settings_switch_opus.json      lmi config switch opus
+```
+
+`--config PATH` and `$LMI_CONFIG` move the folder, so the switch files travel
+with the rest of a site's configuration rather than being stranded in whichever
+directory you happened to be standing in. `lmi config switch` with no argument
+lists what is there:
+
+```
+$ lmi config switch
+Switch files in /home/u/.lmi:
+  direct    settings_switch_direct.json
+  gateway   settings_switch_gateway.json
+  opus      settings_switch_opus.json
+
+Apply one with: lmi config switch <name>
+Restore with:   lmi config switch origin
+```
+
+A folder with no switch files in it is **exit 2**, not an empty list at exit 0 —
+a bare `lmi config switch` that lists nothing has done nothing, and reporting
+that as success is the shape this project spends most of its care avoiding. An
+unknown name is exit 2 too, and names the ones that do exist: "I mistyped it"
+and "it is in the other folder" look identical otherwise.
+
+A **name is a name, not a path.** Letters, digits, dot, dash and underscore
+only — `lmi config switch ../../etc/passwd` is exit 2 rather than a way to merge
+an arbitrary JSON document into `settings.json`. Use `--file` for a fragment
+that lives somewhere else.
+
+`origin` is **reserved**: it restores, so a `settings_switch_origin.json` can
+never be selected. It is not silently ignored — the listing prints a `[WARN]`
+naming the file and telling you to rename it, because a fragment sitting in the
+folder beside the ones that work, that no command can ever reach, is otherwise
+invisible.
+
+### Everything else
+
+`--file` (`-f`) is the only way to name a **path**, and a name and a `--file`
+together are exit 2: two sources for one merge, and picking either silently is
+how the wrong configuration lands while the command reports the other.
+
+A bare `lmi config switch` still applies `./config/settings_switch.json` when
+that file exists, exactly as it did before names existed. The listing is what a
+bare switch means only when it does not.
 
 A `--file` that points at a file which does not exist is **exit 2**, never a
 quiet fall-through to `./config/settings_switch.json`. Same rule and same reason
@@ -1150,7 +1205,7 @@ path of the fragment it used and the top-level keys it wrote.
 A **raw `settings.json` fragment**, not an `lmi` config file. There is no
 wrapper key and no translation layer: what you write is what lands in
 `~/.claude/settings.json`. [`examples/settings_switch.json`](examples/settings_switch.json)
-is a complete one — copy it to `config/settings_switch.json` and edit it.
+is a complete one — copy it to `~/.lmi/settings_switch_<name>.json` and edit it.
 
 ```json
 {
