@@ -27,3 +27,9 @@ __pycache__/
 # (see "Building the wheel" in README.md).
 build/
 dist/
+
+# Claude Code release binaries staged for an air-gapped transfer:
+# tmp/claude-releases/<version>/<platform>/claude and its checksum. 1.4 GB for a
+# single version, re-fetchable from the release channel, and a `git add -A` away
+# from being committed - which is why it is named here rather than remembered.
+tmp/
