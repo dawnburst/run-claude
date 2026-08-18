@@ -40,6 +40,10 @@ No sudo, no administrator rights, and nothing to activate afterwards.
 - **Not** the Claude Code CLI. You need it to *run* `lmi schedule`, but not to
   install `lmi`: [`lmi install claude`](docs/install-claude.md) puts it there
   afterwards.
+- **Node.js 18 or newer**, but only for the `lmi install claude` step below —
+  it installs Claude Code *through npm*, so a Node runtime has to be there
+  first. `lmi` deliberately does not bootstrap one, and never invokes `sudo`.
+  Nothing else in `lmi` needs Node.
 
 ### Linux, including WSL
 
