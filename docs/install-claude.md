@@ -4,6 +4,10 @@ Installs the **Claude Code CLI itself** on a machine with no route to the public
 npm registry, then configures it: your `settings.json`, the auth token you are
 asked for, the Windows Git Bash path, and onboarding marked complete.
 
+**Prerequisite: Node.js 18 or newer.** Claude Code is an npm package and this
+command installs it with `npm install -g`, so a Node runtime has to be on the
+machine first — see [npm has to be there already](#what-it-does).
+
 [← README](../README.md) · [`lmi schedule`](schedule.md) ·
 [`lmi config`](config.md) · [`lmi upgrade`](upgrade.md) · [Status](status.md)
 
