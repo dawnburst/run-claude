@@ -276,7 +276,8 @@ def _log_header(cfg, log, state_path, chosen):
     # The source is half the line: "sdk" alone does not say whether a config
     # file chose it or nothing did.
     log.line("Backend   : %s (from %s)" % (cfg.mode, cfg.mode_source))
-    # The resolved configuration, which README's Logging section promises:
+    # The resolved configuration, which docs/schedule.md's Logging section
+    # promises:
     # where the prompt came from, which claude is being run, and the complete
     # flag list including the defaults and -f.
     if cfg.prompt_file is not None:

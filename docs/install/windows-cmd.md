@@ -11,14 +11,14 @@ files, a full `lmi schedule` run, and a bare `lmi` resolving in a new window.
 > [windows-powershell.md](windows-powershell.md). The installer is the same file;
 > only how you launch it differs.
 
+[← README](../../README.md) · other platforms: [Linux](linux.md) · [macOS](macos.md) · [Windows (PowerShell)](windows-powershell.md)
+
 ---
 
 ## What you install
 
-**One file: `lmi-0.1.0-py3-none-any.whl`**, about 22 KB. The `py3-none-any` in
-that name means any Python 3, no compiled ABI, **any operating system** — `lmi`
-is pure Python with no third-party dependencies, so the same wheel installs on
-Windows, Linux and macOS.
+**One file: `lmi-0.1.0-py3-none-any.whl`**, about 22 KB — the same file on every
+operating system ([why](../../README.md#getting-started)).
 
 `pip` turns it into a **real `lmi.exe`**. That executable is the point:
 

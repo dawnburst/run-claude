@@ -6,21 +6,16 @@ Verified on Ubuntu 24.04 (including WSL2) with Python 3.12 and 3.9.23: install,
 re-install as an upgrade, upgrade from the previous zipapp install, uninstall,
 and a refusal to overwrite a foreign `lmi`.
 
+[← README](../../README.md) · other platforms: [macOS](macos.md) · [Windows (cmd.exe)](windows-cmd.md) · [Windows (PowerShell)](windows-powershell.md)
+
 ---
 
 ## What you install
 
-**One file: `lmi-0.1.0-py3-none-any.whl`**, about 22 KB. That name is the whole
-compatibility story:
-
-| Part | Means |
-|---|---|
-| `py3` | any Python 3 (the floor, 3.9, is enforced separately) |
-| `none` | no compiled ABI |
-| `any` | **any operating system** |
-
-`lmi` is pure Python with no third-party dependencies, so the same wheel installs
-on Linux, macOS and Windows. There is no per-platform artefact.
+**One file: `lmi-0.1.0-py3-none-any.whl`**, about 22 KB — the same file on every
+operating system, because `lmi` is pure Python with no third-party dependencies.
+See [the README](../../README.md#getting-started) for what that name means; pip
+generates whatever launcher this platform needs from it.
 
 ## Before you start
 
