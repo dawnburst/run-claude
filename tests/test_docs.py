@@ -2,6 +2,13 @@
 
 The example config is the thing users copy. If it drifts from what the
 validator accepts, every new site starts with a broken file and a usage error.
+
+The `test_the_readme_*` names are kept from when the user documentation was a
+single README.md; they read `user_docs()` below, which is the whole set. The
+names stay because the design specs under docs/superpowers/ cite several of
+them by name, and a rename would leave those citations pointing at nothing -
+the same reason CLAUDE.md's numbered items are appended to and never
+renumbered.
 """
 
 import json
@@ -17,6 +24,39 @@ from lmi.commands.upgrade import config as upgrade_config
 from lmi.core.errors import LmiError
 
 REPO = Path(__file__).resolve().parent.parent
+
+# The user documentation was one file and is now several: a front page and one
+# reference per command. These tests pin *facts*, not filenames - a fact may
+# move between these files as the documentation is reorganised, and what they
+# refuse is a fact leaving them altogether.
+#
+# The list is explicit rather than a glob over docs/, for the same reason
+# commands/__init__.py registers commands by hand: a glob would quietly admit
+# docs/superpowers/, where the design specs already spell most of these needles
+# out. Every test below would then pass while the user documentation said
+# nothing at all - which is this module's own silent failure.
+USER_DOCS = (
+    "README.md",
+    "docs/schedule.md",
+    "docs/install-claude.md",
+    "docs/config.md",
+    "docs/upgrade.md",
+    "docs/status.md",
+    "docs/install/linux.md",
+    "docs/install/macos.md",
+    "docs/install/windows-cmd.md",
+    "docs/install/windows-powershell.md",
+)
+
+
+def user_docs():
+    """Every document a user is pointed at, as one string.
+
+    A missing file raises here rather than shrinking what the tests can see,
+    which is the loud half of the same rule.
+    """
+    return "\n\n".join((REPO / name).read_text(encoding="utf-8")
+                        for name in USER_DOCS)
 
 
 class Args:
@@ -115,9 +155,9 @@ def test_no_shipped_template_carries_a_real_looking_token(where):
 
 def test_the_readme_documents_the_settings_template():
     """The template is now the whole of what a site configures."""
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    docs = user_docs()
     for needle in ("config/settings.json", "ANTHROPIC_AUTH_TOKEN"):
-        assert needle in readme, "README.md must document %s" % needle
+        assert needle in docs, "the user documentation must document %s" % needle
 
 
 def test_claude_md_records_that_the_placeholder_must_not_be_installed():
@@ -151,10 +191,10 @@ def test_the_printed_example_matches_the_shipped_one():
 
 def test_the_readme_names_the_silent_keys():
     """Anyone editing these by hand needs the exact spelling in front of them."""
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    docs = user_docs()
     for key in (claude_json.ONBOARDING_KEY, settings.MARKETPLACES_KEY,
                 gitbash.VAR, "lmi install claude"):
-        assert key in readme, "README.md must document %s" % key
+        assert key in docs, "the user documentation must document %s" % key
 
 
 def test_the_shipped_default_config_is_accepted_by_the_validator():
@@ -200,17 +240,17 @@ def test_the_packaged_config_folder_carries_the_statusline_it_declares():
 def test_the_readme_documents_the_packaged_default():
     """The search order gained a fifth entry, and it is the easiest to leave
     stale: it is the one no operator can see in their own filesystem."""
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    docs = user_docs()
     for needle in (defaults.DIR_NAME, "packaged default"):
-        assert needle in readme, "README.md must document %s" % needle
+        assert needle in docs, "the user documentation must document %s" % needle
 
 
 def test_the_readme_documents_the_statusline_script():
     """Both halves, by name: the file to write and the key that runs it."""
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    docs = user_docs()
     for needle in (statusline.NAME, statusline.SETTINGS_KEY,
                    "config/statusline.js"):
-        assert needle in readme, "README.md must document %s" % needle
+        assert needle in docs, "the user documentation must document %s" % needle
 
 
 def test_the_shipped_default_config_is_rejected_by_the_upgrade_validator():
@@ -232,8 +272,8 @@ def test_the_shipped_default_config_is_rejected_by_the_upgrade_validator():
 def test_the_readme_names_the_working_directory_default():
     """The search order is the first thing an operator reads and the easiest to
     leave stale: it moved from ./lmi.json into ./config/ once already."""
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
-    assert config.CWD_CONFIG in readme
+    docs = user_docs()
+    assert config.CWD_CONFIG in docs
 
 
 def test_the_example_switch_fragment_is_accepted(tmp_path):
@@ -247,10 +287,10 @@ def test_the_example_switch_fragment_is_accepted(tmp_path):
 
 
 def test_the_readme_documents_config_switch():
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    docs = user_docs()
     for needle in ("lmi config switch", "settings.json.lmi-origin",
                    "config/settings_switch.json"):
-        assert needle in readme, "README.md must document %s" % needle
+        assert needle in docs, "the user documentation must document %s" % needle
 
 
 def test_claude_md_records_the_write_once_snapshot():
@@ -311,9 +351,9 @@ def test_the_example_config_is_accepted_by_the_upgrade_validator(tmp_path):
 
 
 def test_the_readme_documents_verbose_mode():
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    docs = user_docs()
     for needle in ("Verbose mode", "-v", "--output-format stream-json"):
-        assert needle in readme, "README.md must document %s" % needle
+        assert needle in docs, "the user documentation must document %s" % needle
 
 
 def test_the_readme_says_verbose_costs_no_tokens():
@@ -321,9 +361,9 @@ def test_the_readme_says_verbose_costs_no_tokens():
     grows the next iteration's context. It does not - the log is written by
     lmi and read back by nothing - but that is not deducible from the flag, so
     the answer has to be written down or it gets asked again."""
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
-    start = readme.index("### Verbose mode")
-    window = readme[start:start + 3000]
+    docs = user_docs()
+    start = docs.index("### Verbose mode")
+    window = docs[start:start + 3000]
     assert "costs no tokens" in window or "no tokens" in window
 
 
@@ -337,7 +377,7 @@ def test_the_readme_says_verbose_costs_no_tokens():
 
 def test_the_readme_documents_the_backend_switch():
     """Everything a reader needs that the outcome of a run cannot tell them."""
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    docs = user_docs()
     for needle in ("lmi config schedule",
                    # -f is forwarded in BOTH backends, and the four flags the
                    # SDK cannot forward are refused rather than dropped. Both
@@ -347,7 +387,7 @@ def test_the_readme_documents_the_backend_switch():
                    "--permission-mode",
                    'pip install "lmi[sdk]"',
                    "no fallback between them at run time"):
-        assert needle in readme, "README.md must document %s" % needle
+        assert needle in docs, "the user documentation must document %s" % needle
 
 
 def test_the_readme_says_sdk_mode_still_runs_a_claude_code_binary():
@@ -360,10 +400,10 @@ def test_the_readme_says_sdk_mode_still_runs_a_claude_code_binary():
     optional in SDK mode - and finds out on a machine that has no `claude`,
     which is the one place the mistake is expensive.
     """
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
-    assert "SDK mode still runs a Claude Code binary" in readme
-    start = readme.index("SDK mode still runs a Claude Code binary")
-    window = readme[start:start + 700]
+    docs = user_docs()
+    assert "SDK mode still runs a Claude Code binary" in docs
+    start = docs.index("SDK mode still runs a Claude Code binary")
+    window = docs[start:start + 700]
     assert "PATH" in window, "and that the sdist case falls back to PATH"
 
 
@@ -371,19 +411,19 @@ def test_the_readme_names_the_default_backend_as_the_code_defines_it():
     """The default is the one fact a reader is most likely to assume wrongly,
     and the only one that changes what happens when they configure nothing."""
     from lmi.commands.schedule import backend
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
-    assert "| `%s` | **The default.**" % backend.DEFAULT in readme, \
+    docs = user_docs()
+    assert "| `%s` | **The default.**" % backend.DEFAULT in docs, \
         "the Backends table must mark `%s` as the default" % backend.DEFAULT
     for mode in backend.MODES:
-        assert "`%s`" % mode in readme
+        assert "`%s`" % mode in docs
 
 
 def test_the_readme_says_cli_mode_needs_no_pip_install():
     """The 3.9 floor is the reason the SDK is an extra rather than a dependency,
     and a site running CLI mode needs to know it still holds for them."""
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
-    start = readme.index("`cli` mode needs no pip install")
-    window = readme[start:start + 400]
+    docs = user_docs()
+    start = docs.index("`cli` mode needs no pip install")
+    window = docs[start:start + 400]
     assert "3.9" in window and "standard library" in window
 
 
@@ -395,10 +435,10 @@ def test_the_readme_documents_every_config_key_the_example_prints():
     hand, in a config file, to get the default backend installed at all - and
     the config-file table is where they would look for it.
     """
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    docs = user_docs()
     for key in json.loads(config.EXAMPLE)["claude"]:
-        assert "`%s`" % key in readme, \
-            "README.md must document the claude.%s config key" % key
+        assert "`%s`" % key in docs, \
+            "the user documentation must document the claude.%s config key" % key
 
 
 def test_the_readme_and_the_runner_agree_on_the_header_line():
@@ -409,11 +449,11 @@ def test_the_readme_and_the_runner_agree_on_the_header_line():
     logs for a line that is not there, which is exactly when they are trying to
     work out why a run behaved unexpectedly.
     """
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    docs = user_docs()
     runner = (REPO / "lmi" / "commands" / "schedule" / "runner.py").read_text(
         encoding="utf-8")
     for needle in ("Backend   : ", "(from "):
-        assert needle in readme, "README.md must show %r" % needle
+        assert needle in docs, "the user documentation must show %r" % needle
         assert needle in runner, "runner.py must write %r" % needle
 
 
@@ -442,12 +482,12 @@ def test_the_readme_lists_what_only_a_real_run_can_settle():
     be the most expensive kind of stale: every silent failure in this area
     reports success.
     """
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    docs = user_docs()
     for needle in ("read-only config file",
                    "pip show claude-agent-sdk",
                    "pip download --no-deps claude-agent-sdk"):
-        assert needle in readme, \
-            "README.md's outstanding-measurements section must name %s" % needle
+        assert needle in docs, \
+            "docs/status.md must name %s" % needle
 
 
 def test_claude_md_records_why_the_full_prompt_flag_is_not_an_iteration_number():
@@ -471,9 +511,9 @@ def test_the_readme_documents_keeping_the_existing_token():
     it because an operator who sees `sk-a...9f2c` and cannot find it in the
     README has to guess whether lmi just printed their credential.
     """
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    docs = user_docs()
     for needle in ("blank to keep the existing one", "sk-a...9f2c", "****"):
-        assert needle in readme, "README.md must document %s" % needle
+        assert needle in docs, "the user documentation must document %s" % needle
 
 
 def test_claude_md_records_what_a_blank_token_may_not_mean():
@@ -504,14 +544,14 @@ def test_the_readme_documents_the_switch_file_convention():
     lmi cannot infer either half from the other: a file named wrongly is simply
     not listed, with nothing to say why.
     """
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
-    assert catalog.PREFIX + "<name>" + catalog.SUFFIX in readme
-    assert "lmi config switch <name>" in readme
+    docs = user_docs()
+    assert catalog.PREFIX + "<name>" + catalog.SUFFIX in docs
+    assert "lmi config switch <name>" in docs
 
 
 def test_the_readme_says_the_reserved_name_cannot_be_selected():
     """MANDATORY. Item 51's silent half - a fragment nothing can ever apply."""
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    docs = user_docs()
     for reserved in catalog.RESERVED:
-        assert "%s%s%s" % (catalog.PREFIX, reserved, catalog.SUFFIX) in readme
-    assert "reserved" in readme
+        assert "%s%s%s" % (catalog.PREFIX, reserved, catalog.SUFFIX) in docs
+    assert "reserved" in docs

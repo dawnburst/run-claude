@@ -31,14 +31,14 @@ SUFFIX = ".json"
 
 # `origin` is the restore keyword and cannot also select a file. The two
 # meanings share one argument, so one of them has to win; the keyword does,
-# because it is what every switch prints as the way back and what the README
+# because it is what every switch prints as the way back and what docs/config.md
 # documents. A file named for it is reported by `scan` and refused by
 # `path_for` rather than silently shadowed - see item 51.
 RESERVED = ("origin",)
 
 # The name becomes a filename, so it must not be able to be a path. Refusing
 # separators is the point; the rest of the character class is narrow because a
-# name is typed at a shell and lives in the README.
+# name is typed at a shell and lives in docs/config.md.
 _NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 # `.` and `..` match the class above and are not names. Listed rather than

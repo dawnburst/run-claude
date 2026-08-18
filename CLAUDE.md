@@ -5,9 +5,11 @@ loops `claude -p` in the foreground, carrying progress between iterations throug
 a state file; `lmi install claude` installs and configures that CLI in the first
 place, from an internal npm registry on an air-gapped machine; `lmi config
 switch` applies a `settings.json` fragment over that configuration afterwards,
-and can put the machine's original settings back. `README.md` is the user-facing
-documentation and is accurate; this file is what you need before *editing* the
-code.
+and can put the machine's original settings back. The user-facing documentation
+is `README.md` — a front page — plus one reference per command under `docs/`
+(`schedule.md`, `install-claude.md`, `config.md`, `upgrade.md`) and `docs/status.md`
+for what has actually been run on a real machine. It is accurate; this file is
+what you need before *editing* the code.
 
 Read section 3 before changing any behaviour. Every item there is a bug that was
 already paid for once, and most of them fail **silently** — a run that reports
@@ -694,8 +696,9 @@ envelope behind it.
     The general lesson is worth more than the fix: **every one of these was
     invisible to a green suite and to a code review, and all three fell out of a
     single two-iteration run with no credential at all.** That run costs
-    nothing, needs no API key, and is described in README's testing section —
-    do it before trusting any change to this backend.
+    nothing, needs no API key, and is written up as "Smoke-testing SDK mode
+    without any credential" in `docs/schedule.md` — do it before trusting any
+    change to this backend.
 46. **`-f` is forwarded in both backends, and exactly four flags are refused.**
     The operator asked for parity with CLI mode, and the SDK's own
     `extra_args` gives it without lmi learning claude's flag grammar: the SDK
@@ -1015,19 +1018,31 @@ write a state file that says `IN_PROGRESS` on line 1 while mentioning
 completion check must turn those tests red.
 
 What a fake CLI can **never** cover is how the real one behaves: regressions 1 and
-2 were both found by real runs, not by tests. `README.md` has the two real-run
-checks worth doing, names the two measurements still outstanding, and carries the
-five `lmi install claude` checks that only a real Artifactory and a real Windows
-box can settle.
+2 were both found by real runs, not by tests. `docs/status.md` is where that
+lives now: what has actually been executed on a real machine, the eight
+measurements still outstanding, and the five `lmi install claude` checks that
+only a real Artifactory and a real Windows box can settle. It is one file
+because the four places those notes used to sit could disagree with each other
+and did.
 
 `tests/test_docs.py` is the one module that tests documentation rather than code:
 that `examples/lmi.json` still passes `config.build_config` and
-`examples/settings_switch.json` still passes `fragment.load`, that the README
-still spells the three silent keys and still documents `lmi config switch`, that
-invariant 3 above stays scoped to `schedule`, that `config/` still holds the
-`statusline.js` its `settings.json` declares (item 32, which is only a `[WARN]`
-at run time and so needs pinning somewhere that fails), and that item 22 above
-is still in this file. Both examples are what a new site copies, so one going
+`examples/settings_switch.json` still passes `fragment.load`, that the user
+documentation still spells the three silent keys and still documents
+`lmi config switch`, that invariant 3 above stays scoped to `schedule`, that
+`install/default-config/` still holds the `statusline.js` its `settings.json`
+declares (item 32, which is only a `[WARN]` at run time and so needs pinning
+somewhere that fails), and that item 22 above is still in this file.
+
+Those documentation assertions read `user_docs()` — `README.md` plus the
+reference pages and the four install guides, concatenated — rather than one
+file, because the user documentation was split into several and a fact may move
+between them. `USER_DOCS` is an explicit tuple rather than a glob over `docs/`
+for the reason `commands/__init__.py` is an explicit registry: a glob would
+admit `docs/superpowers/`, where the design specs already spell most of these
+needles out, and every one of those tests would pass while the documentation a
+user reads said nothing at all. The `test_the_readme_*` names predate the split
+and are kept, because several specs cite them by name. Both examples are what a new site copies, so one going
 stale is a usage error on somebody's first day. The item-22 check is the odd
 one: it guards
 a paragraph rather than a file a user touches, because that rule exists nowhere

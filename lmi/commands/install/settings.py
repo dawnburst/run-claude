@@ -23,7 +23,7 @@ from ...core.claude import settings_path
 #
 # Nothing here writes this key any more; the operator writes it in the template.
 # The constant stays because that makes the exact spelling the operator needs
-# *more* important, not less, and tests/test_docs.py pins the README against it.
+# *more* important, not less, and tests/test_docs.py pins the docs against it.
 MARKETPLACES_KEY = "extraKnownMarketplaces"
 TOKEN_KEY = "ANTHROPIC_AUTH_TOKEN"
 ENV_KEY = "env"

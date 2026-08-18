@@ -17,22 +17,16 @@ Goal: type `lmi` and have it run. No `python3 -m`, no activating anything.
 > build step, which never runs when you carry the wheel in — see
 > [Air-gapped](#air-gapped-machines) below.
 
+[← README](../../README.md) · other platforms: [Linux](linux.md) · [Windows (cmd.exe)](windows-cmd.md) · [Windows (PowerShell)](windows-powershell.md)
+
 ---
 
 ## What you install
 
-**One file: `lmi-0.1.0-py3-none-any.whl`**, about 22 KB. That name is the whole
-compatibility story:
-
-| Part | Means |
-|---|---|
-| `py3` | any Python 3 (the floor, 3.9, is enforced separately) |
-| `none` | no compiled ABI |
-| `any` | **any operating system** |
-
-`lmi` is pure Python with no third-party dependencies, so the same wheel installs
-on macOS, Linux and Windows — Apple silicon and Intel alike, since there is
-nothing compiled to match.
+**One file: `lmi-0.1.0-py3-none-any.whl`**, about 22 KB — the same file on every
+operating system, because `lmi` is pure Python with no third-party dependencies.
+See [the README](../../README.md#getting-started) for what that name means; pip
+generates whatever launcher this platform needs from it.
 
 ## Before you start
 
