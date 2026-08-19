@@ -130,6 +130,7 @@ You do not need to install anything to run the test suite — see
 |---|---|---|
 | `lmi schedule` | Runs your task through Claude Code unattended, iteration after iteration, carrying state between them. | [docs/schedule.md](docs/schedule.md) |
 | `lmi install claude` | Installs the Claude Code CLI from an internal npm registry and configures it: settings, auth token, statusline, onboarding. | [docs/install-claude.md](docs/install-claude.md) |
+| `lmi config init` | Copies the config folder `lmi` ships into `~/.lmi`, keeping every file already there. The bootstrap scripts run it; run it yourself if that folder is gone. | [docs/config.md](docs/config.md#lmi-config-init) |
 | `lmi config switch` | Applies a partial `settings.json` over `~/.claude/settings.json`, and restores the one the machine started with. | [docs/config.md](docs/config.md) |
 | `lmi config schedule` | Shows or sets which backend `lmi schedule` runs Claude through. | [docs/config.md](docs/config.md#lmi-config-schedule) |
 | `lmi upgrade` | Installs a newer `lmi` over the installation currently running. | [docs/upgrade.md](docs/upgrade.md) |
@@ -227,7 +228,7 @@ code needed splitting.
 |---|---|
 | [docs/schedule.md](docs/schedule.md) | `lmi schedule` in full: options, backends, the state file, logging, verbose mode, encoding, known limitations |
 | [docs/install-claude.md](docs/install-claude.md) | `lmi install claude`: the config file and its search order, the settings template, the statusline script, what it asks, writes and backs up, Git Bash, troubleshooting |
-| [docs/config.md](docs/config.md) | `lmi config switch` and `lmi config schedule`: named switch files, fragments, the merge, `origin` |
+| [docs/config.md](docs/config.md) | `lmi config init`, `lmi config switch` and `lmi config schedule`: filling `~/.lmi`, named switch files, fragments, the merge, `origin` |
 | [docs/upgrade.md](docs/upgrade.md) | `lmi upgrade`: the config section, what it refuses to upgrade, how success is verified |
 | [docs/status.md](docs/status.md) | What has actually been executed on a real machine, and the list of what has not |
 | [docs/install/](docs/install/) | One step-by-step install guide per platform |

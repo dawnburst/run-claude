@@ -80,10 +80,14 @@ lmi/commands/schedule/      the command, as a self-contained package
   exit_codes.py             this command's own codes (1, 3, 4)
 lmi/commands/install/       `lmi install claude`, as a self-contained package
   config.py                 arguments, config-file discovery, the frozen Config
-  defaults.py               the packaged config folder: adopting all of it,
-                            and backing up what ~/.lmi already held
+  defaults.py               the packaged config folder and every way it lands
+                            in ~/.lmi: `adopt` (back up, then replace) for this
+                            command, `fill` (keep what is there) for
+                            `lmi config init`, and the one spelling of where
+                            that folder is and what lmi.json is renamed to
   default-config/           that folder, and the ONLY one that ships: lmi.json,
-                            settings.json and the statusline.js it declares
+                            settings.json, the statusline.js it declares and the
+                            gateway/direct switch pair
   template.py               finding and validating the settings.json template
   statusline.py             finding and copying the statusline.js beside it
   prompts.py                every question, and the no-terminal guard
@@ -100,13 +104,14 @@ lmi/commands/config/        `lmi config`, as a self-contained package
   args.py                   the nested subparser, built from that registry
   runner.py                 the dispatcher, and nothing else
   output.py                 `say`, so the dispatcher can import subcommands
+  init.py                   `lmi config init`: fill ~/.lmi from the wheel
   switch.py                 `lmi config switch`: the flow
   catalog.py                where named switch files live, and their names
   fragment.py               finding, reading and validating one switch file
   merge.py                  the recursive merge
   origin.py                 the write-once snapshot
   schedule.py               `lmi config schedule`: show and set the backend
-  exit_codes.py             this command's codes (3, 4), shared by both verbs
+  exit_codes.py             this command's codes (3, 4), shared by all three
 lmi/commands/upgrade/       `lmi upgrade`, as a self-contained package
   config.py                 arguments, the "lmi" config section, the frozen Config
   installation.py           detects the venv/--user install and refuses the rest
@@ -161,14 +166,24 @@ Three rules hold this shape together:
   no-terminal message is the caller's, so neither command's error text
   mentions the other.
 
-Three commands now import `commands/schedule/backend.py`, which is the one
-exception to "commands import only from `core/`". It is deliberate, and it is
+Three commands now import `commands/schedule/backend.py`, which is the first of
+two exceptions to "commands import only from `core/`". It is deliberate, and it is
 the same reasoning that moved `settings_path()` into `core/claude.py`: three
 copies of the valid-mode list is three chances for one command to write a value
 another refuses. It stays in `schedule/` rather than moving to `core/` because
 `schedule` owns what the value *means*, and `core/` has no opinion about
 backends. It must never import the SDK — `lmi config` and `lmi install` both
 import it, and both have to work on a machine whose SDK is missing.
+
+The second exception is `commands/config/init.py` importing
+`commands/install/defaults.py`, and it is the same reasoning again: `lmi config
+init` and `lmi install claude` copy the same packaged folder to the same `~/.lmi`,
+so where that folder is, which files in it are required, and the `lmi.json` →
+`config.json` rename must have one spelling. Two would be one command creating a
+folder the next search walks straight past — item 39 with no command to blame.
+It stays in `install/` because that command owns what the folder is *for*; only
+the copying is shared, and the exit code to raise with is a parameter, since
+`defaults.py` cannot know `config`'s codes any more than `core/` can.
 
 `lmi schedule` has two backends behind one seam, chosen by `schedule.mode` in
 the resolved `lmi.json` and defaulting to `sdk`. `runner._select_backend` is
@@ -907,6 +922,45 @@ argument for the first time.
     test went when its mechanism was removed. Repairing a test's premise is not
     relaxing its assertion; deleting it would have been.
 
+And one for `lmi config init`, the second way the packaged folder lands in
+`~/.lmi`. It exists because the first way was the *last step of provisioning
+Claude Code*: an operator who deleted `~/.lmi` had to run `lmi install claude`
+again — npm, the settings document, the onboarding keys — to recover files that
+were inside the wheel the whole time, and a plain `pip install lmi` or either
+bootstrap script created nothing, a wheel having no post-install hook. The four
+installer scripts now run the command after the wheel, warned and never fatal
+(item 36's reasoning: the install above it succeeded).
+
+52. **`fill` never overwrites, and that is not a convenience — it is the whole
+    safety of running it on every install.** `defaults.adopt` may replace what it
+    finds because `_back_up` has copied the folder into `backup_<stamp>/` first;
+    `defaults.fill` copies nothing anywhere, so the `fs.kind(dest) != fs.MISSING`
+    skip is all that stands between an operator's edited `settings.json`, their
+    own switch files and their hand-written `statusline.js` and the packaged
+    examples. **Silent:** the scripts run `lmi config init` on every install and
+    every upgrade, so an overwriting version reverts a site's whole configuration
+    on a routine re-install, at exit 0, with `created` printed for each file and
+    no copy of the previous version anywhere on the machine. The one visible
+    consequence — an install that suddenly points at `gateway.example.com`
+    again — looks like the operator's own mistake.
+
+    A destination is kept whatever it *is*, not only when it is a file: a
+    directory where `statusline.js` should be is somebody's mistake, and clearing
+    it to make room is the one delete in this command, with nothing behind it.
+    The `packaged_files` refusal (item 48's `BROKEN_PACKAGE`) runs before the
+    first write for the same reason it does in `adopt`, so a broken wheel leaves
+    the folder as it was rather than half filled.
+
+    Two smaller rules ride along. `init` takes **no `--config`**: the folder it
+    fills is the one discovery searches at the home level, which is the only
+    folder whose absence it exists to fix, and a `--config` would let it build a
+    second config folder for the operator to keep in step with the first. And the
+    shipped `direct` switch names `https://api.anthropic.com` **explicitly**
+    rather than removing `ANTHROPIC_BASE_URL`, because `deep_merge` has no delete
+    and `null` is refused by item 18 — a switch can only ever point the endpoint
+    somewhere, and `docs/config.md` says so where an operator writing their own
+    fragment will meet it.
+
 ---
 
 ## 4. Rules for editing
@@ -916,10 +970,11 @@ argument for the first time.
    nothing — several bugs above only appear with awkward paths, or only when a
    claude call fails.
 
-   **756 passed, 19 skipped, in under four seconds** — measured, not estimated.
+   **769 passed, 19 skipped, in under four seconds** — measured, not estimated.
    It was 505 (1 skipped) before the two-backend work, 664 before item 47, 704
    before item 30 grew its keep-the-existing-token branch, 722 before named
-   switch files, and 750 before the packaged folder became the only default.
+   switch files, 750 before the packaged folder became the only default, and 756
+   before `lmi config init`.
 
    The number written here had drifted to 669 while the suite was actually at
    704, which is worth a sentence because of what it costs: the point of
@@ -934,15 +989,16 @@ argument for the first time.
    `sdk` extra is absent; the nineteenth is a Windows-only clause. So the
    default run leaves the SDK backend's shapes unchecked, and
    `pip install -e ".[sdk]"` then `python3 -m pytest tests/ -q` is the run that
-   checks them: **774 passed, 1 skipped**. Both numbers are worth knowing,
+   checks them: **787 passed, 1 skipped**. Both numbers are worth knowing,
    because a green default run is not evidence that the SDK backend matches the
    SDK it will meet.
 
-   The second number is the one to distrust in a report. 756 was measured on a
-   machine with no `sdk` extra installed; 774 is 756 plus the 18 shape tests
+   The second number is the one to distrust in a report. 769 was measured on a
+   machine with no `sdk` extra installed; 787 is 769 plus the 18 shape tests
    that skipped there, which is arithmetic and not a run. Re-measure it the
-   next time the extra is present — it has now been arithmetic for three
-   consecutive changes.
+   next time the extra is present — it has now been arithmetic for four
+   consecutive changes, and this one could not settle it: the machine's Python
+   is PEP 668 externally managed, so `pip install` refuses outside a venv.
 2. **Preserve the five invariants in section 1** and everything in section 3.
    Where a comment in the code says "do not simplify this back to X", X is the
    bug.
@@ -987,8 +1043,8 @@ argument for the first time.
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 756 passed, 19 skipped - no install needed
-pip install -e ".[sdk]"              # then 774 passed, 1 skipped: the 18 skips
+python3 -m pytest tests/ -q          # 769 passed, 19 skipped - no install needed
+pip install -e ".[sdk]"              # then 787 passed, 1 skipped: the 18 skips
 python3 -m pytest tests/ -q          # are the SDK shape checks. See 4.1
 ```
 
@@ -1032,7 +1088,10 @@ documentation still spells the three silent keys and still documents
 `lmi config switch`, that invariant 3 above stays scoped to `schedule`, that
 `install/default-config/` still holds the `statusline.js` its `settings.json`
 declares (item 32, which is only a `[WARN]` at run time and so needs pinning
-somewhere that fails), and that item 22 above is still in this file.
+somewhere that fails), that every switch file in that folder is one
+`fragment.read` accepts and `catalog.scan` can name — a shipped fragment that
+exits 2, or one called `origin`, is a switch nothing can ever apply — and that
+item 22 above is still in this file.
 
 Those documentation assertions read `user_docs()` — `README.md` plus the
 reference pages and the four install guides, concatenated — rather than one

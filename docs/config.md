@@ -1,13 +1,77 @@
 # `lmi config`
 
-Two subcommands over the configuration `lmi install claude` wrote.
-**`switch`** applies a partial `settings.json` over `~/.claude/settings.json`,
-and puts back the one the machine started with. **`schedule`** shows or sets
-which backend `lmi schedule` runs Claude through.
+Three subcommands over the configuration `lmi install claude` wrote.
+**`init`** puts the config folder `lmi` ships into `~/.lmi`, so the folder
+exists before anything else needs it. **`switch`** applies a partial
+`settings.json` over `~/.claude/settings.json`, and puts back the one the
+machine started with. **`schedule`** shows or sets which backend `lmi schedule`
+runs Claude through.
 
 [← README](../README.md) · [`lmi schedule`](schedule.md) ·
 [`lmi install claude`](install-claude.md) · [`lmi upgrade`](upgrade.md) ·
 [Status](status.md)
+
+---
+
+## `lmi config init`
+
+Copies the config folder packaged inside `lmi` to `~/.lmi`, and **keeps every
+file that is already there**. Takes no arguments.
+
+```bash
+lmi config init
+```
+
+```
+Config folder: /home/you/.lmi
+  created  config.json
+  kept     settings.json
+  created  settings_switch_direct.json
+  created  settings_switch_gateway.json
+  created  statusline.js
+
+Those are lmi's defaults, not a site's: edit the registry in config.json,
+    the endpoint in the switch files, and re-run `lmi install claude` to
+    install from your own source.
+```
+
+The four bootstrap scripts run this for you after they install the wheel, so a
+fresh machine has the folder before you type anything. Run it by hand when
+`~/.lmi` has been deleted, or to pick up a file a newer `lmi` ships that your
+folder does not have yet.
+
+**Nothing is overwritten and nothing is backed up** — those are the same
+sentence. Every destination that already exists is left exactly as it is,
+whatever it holds, so running this repeatedly is safe on a folder you have spent
+a year editing: an edited `settings.json`, a switch file of your own, a
+`statusline.js` you wrote. Only the missing files are written. A second run in a
+row therefore says so and changes nothing, at exit 0.
+
+What lands is what the wheel carries — `config.json` (the packaged `lmi.json`,
+under the name discovery looks for at the home level), the `settings.json`
+template, the `statusline.js` that template declares, and a gateway/direct
+switch pair. Their URLs are the public npm registry, public PyPI and
+`gateway.example.com`: enough to work end to end on a machine with internet
+access, and **a placeholder to replace** on a machine with a registry of its
+own. See [the packaged default](install-claude.md#the-config-file) for how the
+same folder reaches a machine through `lmi install claude`.
+
+This does not provision Claude Code — no npm, no `~/.claude`. It only creates
+the folder those steps read from, which is why it is safe to run at any time and
+why the installer scripts can run it unattended.
+
+The shipped `direct` switch names `https://api.anthropic.com` explicitly rather
+than removing `ANTHROPIC_BASE_URL`. That is not a shortcut: a fragment cannot
+delete a key, and `null` is refused because `env` values must be strings. A
+switch can only ever point the endpoint somewhere.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Files were copied, or everything was already there. |
+| 3 | `~/.lmi` could not be written, or the folder inside the wheel is incomplete — a broken install of `lmi` itself. |
+| 4 | A bug in `lmi`. |
 
 ---
 

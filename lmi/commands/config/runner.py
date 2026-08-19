@@ -16,6 +16,7 @@ from ...core.errors import EXIT_USAGE, LmiError
 
 NO_SUBCOMMAND = (
     "lmi config needs a subcommand.\n"
+    "    lmi config init                    copy lmi's own config folder to ~/.lmi\n"
     "    lmi config switch                  apply config/settings_switch.json\n"
     "    lmi config switch --file PATH      apply that fragment\n"
     "    lmi config switch origin           restore the pristine settings.json\n"

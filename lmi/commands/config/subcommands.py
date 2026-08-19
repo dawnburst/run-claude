@@ -13,6 +13,6 @@ subcommand. The list order is the --help order, so it is alphabetical and
 stays that way.
 """
 
-from . import schedule, switch
+from . import init, schedule, switch
 
-SUBCOMMANDS = [schedule, switch]
+SUBCOMMANDS = [init, schedule, switch]
