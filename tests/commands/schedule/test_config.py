@@ -14,7 +14,7 @@ def _args(**kw):
     import argparse
     base = dict(prompt="do a thing", at=None, interval=None, count=None,
                 workdir=None, flags="", log=None, state=None, resume=False,
-                verbose=False)
+                verbose=False, session=None)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -303,3 +303,109 @@ def test_the_config_carries_the_mode_and_its_source(cli_mode):
     cfg = build_config(_args())
     assert cfg.mode == "cli"
     assert cfg.mode_source == FIXTURE_SOURCE
+
+
+# --- --no-session, and the -f flags it protects -----------------------------
+#
+# Continuity is on by default, so these tests are about the two ways of turning
+# it off and the precedence between them. Every one needs a mode fixture:
+# build_config resolves the backend as well.
+
+def _session(monkeypatch, on, source):
+    """Force what the config file says, so no real file can decide these."""
+    from lmi.commands.schedule import backend
+    monkeypatch.setattr(backend, "resolve_session",
+                        lambda explicit_config=None: (on, source))
+
+
+def test_session_continuity_is_on_by_default(cli_mode, monkeypatch):
+    from lmi.commands.schedule import backend
+    _session(monkeypatch, backend.SESSION_DEFAULT, backend.DEFAULT_SOURCE)
+    cfg = build_config(_args())
+    assert cfg.session is True
+    assert cfg.session_source == backend.DEFAULT_SOURCE
+
+
+def test_no_session_beats_the_config_file(cli_mode, monkeypatch):
+    """The flag is a statement about this run and must win. Whatever wins is
+    named in the header - item 58 - which is what makes the precedence readable
+    afterwards rather than guessable."""
+    from lmi.commands.schedule import config as config_mod
+    _session(monkeypatch, True, "/etc/lmi.json")
+    cfg = build_config(_args(session=False))
+    assert cfg.session is False
+    assert cfg.session_source == config_mod.SESSION_FLAG_SOURCE
+
+
+def test_the_config_file_turns_it_off_and_is_named(cli_mode, monkeypatch):
+    _session(monkeypatch, False, "/etc/lmi.json")
+    cfg = build_config(_args())
+    assert cfg.session is False
+    assert cfg.session_source == "/etc/lmi.json"
+
+
+@pytest.mark.parametrize("flag", [
+    "--resume abc", "--resume=abc", "-r abc", "--continue", "-c",
+    "--session-id abc", "--session-id=abc", "--fork-session",
+])
+def test_a_session_flag_in_f_is_refused_while_continuity_is_on(
+    flag, cli_mode, monkeypatch
+):
+    """MANDATORY - item 57.
+
+    -f is appended last and claude takes the last occurrence of a repeated
+    option, so the user's flag does not ADD anything: it replaces the one lmi is
+    using to hold the run together, and the log still reads clean. Refused
+    rather than dropped, because -f is where a site puts what it cannot say any
+    other way.
+    """
+    _session(monkeypatch, True, "default")
+    with pytest.raises(LmiError) as exc:
+        build_config(_args(flags=flag))
+    assert exc.value.code == 2
+    assert "--no-session" in str(exc.value)
+
+
+@pytest.mark.parametrize("flag", ["--resume abc", "-c", "--fork-session",
+                                  "--session-id abc"])
+def test_no_session_hands_those_flags_back(flag, cli_mode, monkeypatch):
+    """The escape hatch, and the reason refusing is not confiscating: an
+    operator who wants to drive resumption themselves says --no-session."""
+    import shlex
+    _session(monkeypatch, True, "default")
+    cfg = build_config(_args(flags=flag, session=False))
+    assert cfg.user_flags == shlex.split(flag)
+
+
+def test_the_config_file_turning_it_off_also_hands_the_flags_back(
+    cli_mode, monkeypatch
+):
+    """Whichever way continuity is off, lmi is not managing a session and has no
+    business refusing the flags."""
+    _session(monkeypatch, False, "/etc/lmi.json")
+    cfg = build_config(_args(flags="--resume abc"))
+    assert cfg.user_flags == ["--resume", "abc"]
+
+
+def test_an_unrelated_f_flag_still_passes_through(cli_mode, monkeypatch):
+    _session(monkeypatch, True, "default")
+    assert build_config(_args(flags="--model opus")).user_flags == \
+        ["--model", "opus"]
+
+
+def test_a_flag_that_merely_starts_the_same_is_not_refused(cli_mode, monkeypatch):
+    """The check is on whole tokens, not prefixes: --resume-from-checkpoint is
+    somebody else's flag and lmi has no opinion about it."""
+    _session(monkeypatch, True, "default")
+    cfg = build_config(_args(flags="--resumey x --continue-on-error"))
+    assert cfg.user_flags == ["--resumey", "x", "--continue-on-error"]
+
+
+def test_no_session_is_wired_to_the_parser():
+    """The flag exists on the real subparser, not only in build_config."""
+    import argparse
+    from lmi.commands.schedule.config import add_arguments
+    parser = argparse.ArgumentParser()
+    add_arguments(parser)
+    assert parser.parse_args(["p"]).session is None
+    assert parser.parse_args(["p", "--no-session"]).session is False

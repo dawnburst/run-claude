@@ -17,6 +17,29 @@ from ...core.errors import EXIT_USAGE, LmiError
 
 AT_FORMAT = "%Y-%m-%d %H:%M"
 
+# What the header prints when the flag, rather than a config file, turned
+# continuity off.
+SESSION_FLAG_SOURCE = "--no-session"
+
+# claude's own flags for choosing which conversation to run in. Refused inside
+# -f while lmi is managing the session, because -f is appended LAST and claude
+# takes the last occurrence of a repeated option: forwarding one of these does
+# not add a flag, it overrides the one holding the run together. Both spellings
+# of each, since -f is verbatim tokens - lmi's own -r and -c are unaffected and
+# keep meaning the state file and the iteration count.
+SESSION_FLAGS = ("--resume", "-r", "--continue", "-c", "--session-id",
+                 "--fork-session")
+
+SESSION_FLAG_IN_F = (
+    "-f cannot carry %s while lmi is keeping one claude session across the\n"
+    "    iterations: -f is appended last and claude takes the last occurrence\n"
+    "    of a repeated option, so your flag would replace lmi's own and\n"
+    "    nothing in the log would show that it had.\n"
+    "\n"
+    "    Either drop it, or take the session over yourself with --no-session,\n"
+    "    which leaves every -f flag untouched."
+)
+
 
 def add_arguments(parser):
     parser.add_argument(
@@ -56,6 +79,16 @@ def add_arguments(parser):
         "-r", dest="resume", action="store_true",
         help="resume: keep the existing state file instead of backing it up",
     )
+    # Long form only: -r, -c, -s, -i, -d, -l, -f, -t and -v are all taken, and
+    # a single letter for an opt-out nobody types often is not worth the
+    # collision. Unlike --mode, which this command deliberately does not have,
+    # a flag is right here: continuity is a property of one run's task rather
+    # than of the machine, and the header names whichever of the two chose it.
+    parser.add_argument(
+        "--no-session", dest="session", action="store_false", default=None,
+        help="do not keep one claude session across iterations; each one starts "
+             "fresh and carries only the state file",
+    )
     parser.add_argument(
         "-v", "--verbose", dest="verbose", action="store_true",
         help="log the prompt and render claude's activity live as it happens",
@@ -90,6 +123,12 @@ class Config:
     # that both exit 0 on success are told apart by nothing else.
     mode: str = backend.DEFAULT
     mode_source: str = backend.DEFAULT_SOURCE
+    # Whether one claude session spans the iterations, and what decided it. The
+    # source is carried for the same reason mode_source is: a resumed iteration
+    # and a fresh one both exit 0 and neither marks the state file, so the
+    # header line is the only thing that can ever tell them apart.
+    session: bool = backend.SESSION_DEFAULT
+    session_source: str = backend.DEFAULT_SOURCE
 
 
 def build_config(args):
@@ -109,6 +148,8 @@ def build_config(args):
     # iterations. getattr, because several callers build an args object by hand.
     mode, mode_source = backend.resolve(getattr(args, "config", None))
     _check_forwardable(mode, user_flags)
+    session, session_source = _resolve_session(args)
+    _reject_session_flags(session, user_flags)
     return Config(
         prompt_text=prompt_text,
         prompt_file=prompt_file,
@@ -123,7 +164,42 @@ def build_config(args):
         verbose=args.verbose,
         mode=mode,
         mode_source=mode_source,
+        session=session,
+        session_source=session_source,
     )
+
+
+def _resolve_session(args):
+    """(continuity on?, what decided it). The flag beats the file beats default.
+
+    `--no-session` is store_false with a None default, so "the operator said
+    off" is distinguishable from "nothing said anything" without a sentinel of
+    our own - the same trick -i and -c use to tell `-i 0` from "-i absent".
+    getattr, because several callers build an args object by hand.
+    """
+    if getattr(args, "session", None) is False:
+        return False, SESSION_FLAG_SOURCE
+    return backend.resolve_session(getattr(args, "config", None))
+
+
+def _reject_session_flags(session, user_flags):
+    """Refuse claude's conversation flags in -f while lmi manages the session.
+
+    Validation, not flag rewriting: the same narrow shape as
+    _reject_output_format - six names known by name, and only in order to
+    decline them, no grammar learned. Whole tokens, never prefixes, so somebody
+    else's --resume-from-checkpoint is none of lmi's business.
+
+    Refused rather than dropped, because -f is where a site puts what it cannot
+    say any other way and a silently ignored flag is the failure -f validation
+    exists to prevent. With continuity off, lmi is not managing a session and
+    has no business refusing any of them.
+    """
+    if not session:
+        return
+    for token in user_flags:
+        if token.split("=", 1)[0] in SESSION_FLAGS:
+            raise LmiError(SESSION_FLAG_IN_F % token.split("=", 1)[0], EXIT_USAGE)
 
 
 def _check_forwardable(mode, user_flags):

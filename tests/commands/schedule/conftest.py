@@ -209,6 +209,11 @@ def make_cfg():
             # using it on the backend it probably did not mean.
             mode=backend.CLI,
             mode_source=FIXTURE_SOURCE,
+            # Spelled out for the same reason `mode` is: the default is ON, so a
+            # factory that quietly produced a session-carrying Config would put
+            # every test using it on a path it probably did not mean.
+            session=True,
+            session_source=FIXTURE_SOURCE,
         )
         fields.update(overrides)
         return Config(**fields)
