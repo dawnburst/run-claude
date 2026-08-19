@@ -23,6 +23,12 @@ STATE_NAME = "run-claude-state.md"
 LOG_PREFIX = "run-claude-"
 LOCK_NAME = "run-claude.lock"
 
+# The session sidecar's name is DERIVED from the state file's, not fixed in the
+# folder like the lock's. A directory can legitimately hold two state files for
+# two tasks, and the session belongs to the task: one sidecar per folder would
+# have two tasks resuming each other's conversation.
+SESSION_SUFFIX = ".session.json"
+
 
 def timestamp():
     """The stamp used in generated file names."""
@@ -265,3 +271,15 @@ def resolve_log(cfg, run_ts):
         and has_extension(path.name)            # 3 has an extension: the file
     )                                           # 4 otherwise: folder
     return _ensure_parent(path if is_log_file else path / name, "log file")
+
+
+def resolve_session(state_path):
+    """Where the session id is remembered: beside the state file it belongs to.
+
+    No validation of its own, deliberately. resolve_state has already expanded
+    the path, refused a UNC one, refused a directory and ensured the parent is
+    writable - and this file lives in that same directory, so every one of those
+    verdicts already covers it. A second set of rules here would be a second
+    chance to disagree with the first.
+    """
+    return state_path.with_name(state_path.name + SESSION_SUFFIX)
