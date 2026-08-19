@@ -8,8 +8,8 @@ broken. The import therefore happens INSIDE the functions below, never at
 module scope, and `tests/test_packaging.py` fails if any other module in lmi/
 grows one.
 
-This module's whole contract is `call()`: composed prompt and Config in, the
-same `(exit code, quota?)` pair the CLI backend returns out. The runner cannot
+This module's whole contract is `call()`: composed prompt, Config and session
+handle in, the same `backend.Outcome` the CLI backend returns out. The runner cannot
 tell the two apart, and nothing above the seam knows the SDK exists.
 """
 
@@ -265,10 +265,10 @@ def _options(cfg, state_path, on_stderr):
 
 # --- the call -------------------------------------------------------------
 
-def call(cfg, log, composed, state_path):
-    """Run one iteration through the SDK. (exit code, quota?)
+def call(cfg, log, composed, state_path, handle=None):
+    """Run one iteration through the SDK. A backend.Outcome.
 
-    The CLI backend's signature and return, exactly. Everything above the seam
+    The CLI backend's signature and return, exactly - the handle included. Everything above the seam
     speaks `rc`, because `_log_iteration_result`, `ITERATION_ERROR_RC` and
     `EXIT_CALL_FAILED` already do and a second vocabulary would mean two ways
     to read the same log.
@@ -305,7 +305,7 @@ def call(cfg, log, composed, state_path):
             raise
         sink.failed(exc)
     log.line("--- end of claude activity ---")
-    return sink.rc, sink.quota
+    return backend.Outcome(sink.rc, sink.quota, sink.unresumable)
 
 
 async def _drive(cfg, composed, state_path, sink):
@@ -334,6 +334,10 @@ class _Sink:
         # default must never be 0: a stream cut off before its result would
         # otherwise be counted as a successful iteration that did nothing.
         self.rc = NO_RESULT_RC
+        # Whether claude said the conversation it was asked to resume does not
+        # exist. Read off the same raw text the quota scan reads, never off a
+        # rendered row - see _scan.
+        self.unresumable = False
         # Whether Claude answered at all, which is what call() splits on. Not
         # derivable from `rc`: NO_RESULT_RC and CALL_FAILED_RC are the same
         # number by design, so the code alone cannot say whether a result was
@@ -392,8 +396,12 @@ class _Sink:
         self.log.line(text)
 
     def _scan(self, text):
-        if text and backend.QUOTA_RE.search(text):
+        if not text:
+            return
+        if backend.QUOTA_RE.search(text):
             self.quota = True
+        if backend.UNRESUMABLE_RE.search(text):
+            self.unresumable = True
 
 
 def _rc_of(message):

@@ -22,6 +22,7 @@ commands/schedule/sdk.py's question, asked once per run by the runner.
 """
 
 import re
+from typing import NamedTuple
 
 from ...core import config as core_config
 from ...core import jsonfile
@@ -84,6 +85,27 @@ UNRESUMABLE_RE = re.compile(
     r"no conversation found|session not found|could not find session",
     re.IGNORECASE,
 )
+
+class Outcome(NamedTuple):
+    """What one call to either backend comes back with.
+
+    This was a bare `(rc, quota)` tuple until sessions arrived, and the third
+    field is the one thing only the backend can know: whether claude said the
+    conversation it was asked to resume does not exist. The runner needs it to
+    tell "this session is gone" apart from every other failure, which it must
+    not treat alike - a usage limit leaves the session perfectly usable (item
+    54) and a missing conversation makes every remaining iteration fail
+    identically (item 55).
+
+    A NamedTuple rather than something the backend mutates, so the seam stays a
+    function of its arguments: `call` reads a handle and returns a verdict, and
+    nothing below the seam can quietly change the runner's state.
+    """
+
+    rc: int
+    quota: bool
+    unresumable: bool = False
+
 
 # Whether one claude session is carried across the intervals.
 #

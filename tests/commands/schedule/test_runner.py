@@ -596,3 +596,150 @@ def test_the_header_says_nothing_about_verbose_when_it_is_off(
         tmp_path, fake_claude, cli_mode):
     main(["schedule", "x", "-d", str(tmp_path)])
     assert "Verbose" not in _log_body(tmp_path)
+
+
+# --- one session across the intervals --------------------------------------
+#
+# The mechanism, in the mode that has an argv to read: --session-id once,
+# --resume afterwards, the same id throughout. The SDK's half of the same thing
+# is asserted on the options object in test_sdk.py.
+
+def _argv(fake, n):
+    return (fake.dir / ("argv-%d.txt" % n)).read_text().splitlines()
+
+
+def _sidecar(tmp_path):
+    import json
+    return json.loads(
+        (tmp_path / (paths.STATE_NAME + paths.SESSION_SUFFIX)).read_text()
+    )
+
+
+def test_iteration_one_mints_and_the_rest_resume(tmp_path, fake_claude, cli_mode):
+    """MANDATORY - the whole feature. One session, carried across the intervals.
+
+    Without this the iterations are three unrelated conversations that happen to
+    read the same summary file, which is what the operator asked to stop having.
+    """
+    assert main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "3"]) == 0
+
+    first = _argv(fake_claude, 1)
+    assert "--session-id" in first
+    sid = first[first.index("--session-id") + 1]
+    for n in (2, 3):
+        argv = _argv(fake_claude, n)
+        assert "--resume" in argv
+        assert argv[argv.index("--resume") + 1] == sid
+        assert "--session-id" not in argv
+
+
+def test_the_minted_id_is_the_one_written_to_the_sidecar(tmp_path, fake_claude,
+                                                        cli_mode):
+    main(["schedule", "x", "-d", str(tmp_path)])
+    argv = _argv(fake_claude, 1)
+    assert _sidecar(tmp_path)["session_id"] == argv[argv.index("--session-id") + 1]
+
+
+def test_the_session_flags_come_before_the_user_flags(tmp_path, fake_claude,
+                                                      cli_mode):
+    """-f must stay last: that ordering is what item 26 and item 46 both rest
+    on, and a session flag appended after it would be overridden by the user's
+    own copy of it - which is the failure item 57 refuses."""
+    main(["schedule", "x", "-d", str(tmp_path), "-f", "--model opus"])
+    argv = _argv(fake_claude, 1)
+    assert argv.index("--session-id") < argv.index("--model")
+    assert argv[-2:] == ["--model", "opus"]
+
+
+def test_no_session_puts_no_session_flag_on_the_argv(tmp_path, fake_claude,
+                                                     cli_mode):
+    main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2",
+          "--no-session"])
+    for n in (1, 2):
+        argv = _argv(fake_claude, n)
+        assert "--session-id" not in argv and "--resume" not in argv
+
+
+def test_no_session_writes_no_sidecar(tmp_path, fake_claude, cli_mode):
+    main(["schedule", "x", "-d", str(tmp_path), "--no-session"])
+    assert not (tmp_path / (paths.STATE_NAME + paths.SESSION_SUFFIX)).exists()
+
+
+def test_the_header_names_the_session_and_what_chose_it(tmp_path, fake_claude,
+                                                        cli_mode):
+    """MANDATORY - item 58, which is item 33's rule for the second switch in
+    this command.
+
+    Both a resumed and a fresh iteration exit 0, and neither marks the state
+    file: this line is the only record an unattended run keeps of which one it
+    was. The source is half of it - "on" alone does not say whether a config
+    file, a flag, or nothing at all decided.
+    """
+    main(["schedule", "x", "-d", str(tmp_path)])
+    log = _log_body(tmp_path)
+    assert "Session   : on (from " in log
+    assert "(new)" in log
+    assert _sidecar(tmp_path)["session_id"] in log
+
+
+def test_the_header_says_off_and_names_the_flag(tmp_path, fake_claude, cli_mode):
+    main(["schedule", "x", "-d", str(tmp_path), "--no-session"])
+    assert "Session   : off (from --no-session)" in _log_body(tmp_path)
+
+
+def test_a_resumed_run_says_so_and_names_when_the_session_was_created(
+    tmp_path, fake_claude, cli_mode
+):
+    main(["schedule", "x", "-d", str(tmp_path)])
+    created = _sidecar(tmp_path)["created"]
+    main(["schedule", "x", "-d", str(tmp_path), "-r"])
+
+    logs = sorted(tmp_path.glob(paths.LOG_PREFIX + "*.log"))
+    second = logs[-1].read_text(encoding="utf-8")
+    assert "resuming, created " + created in second
+    argv = _argv(fake_claude, 2)
+    assert "--resume" in argv
+
+
+def test_the_flags_line_shows_the_session_flag_that_will_run(
+    tmp_path, fake_claude, cli_mode
+):
+    """docs/schedule.md promises the Flags line is the complete flag list. A
+    session flag missing from it makes that line no longer the argv."""
+    main(["schedule", "x", "-d", str(tmp_path)])
+    log = _log_body(tmp_path)
+    flags = [ln for ln in log.splitlines() if ln.startswith("Flags     :")][0]
+    assert "--session-id" in flags
+
+
+def test_an_iteration_that_never_reached_claude_keeps_the_session(
+    tmp_path, fake_claude, cli_mode, monkeypatch
+):
+    """Item 12 plus item 54: a skipped iteration learned nothing about the
+    session, so throwing it away would be dropping a live conversation because a
+    temp directory vanished."""
+    monkeypatch.setenv("FAKE_WRECK_TMP", "1")
+    main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2"])
+    argv = _argv(fake_claude, 1)
+    assert _sidecar(tmp_path)["session_id"] == argv[argv.index("--session-id") + 1]
+
+
+def test_the_sidecar_follows_the_state_file_without_r(tmp_path, fake_claude,
+                                                      cli_mode):
+    """MANDATORY - item 56, from the runner's side rather than the unit's.
+
+    One -r rule, two memories. A second run without -r must back BOTH up: a
+    clean state file paired with the previous run's session is two memories
+    describing different work, and the run exits 0 either way.
+    """
+    main(["schedule", "x", "-d", str(tmp_path)])
+    first = _sidecar(tmp_path)["session_id"]
+
+    main(["schedule", "x", "-d", str(tmp_path)])
+
+    assert _sidecar(tmp_path)["session_id"] != first
+    backups = list(tmp_path.glob(paths.STATE_NAME + "*.bak"))
+    # The state file's backup and the sidecar's, from the same run.
+    assert any(b.name.endswith(".bak") and paths.SESSION_SUFFIX in b.name
+               for b in backups)
+    assert any(paths.SESSION_SUFFIX not in b.name for b in backups)
