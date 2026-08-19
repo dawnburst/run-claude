@@ -101,3 +101,20 @@ def test_the_help_order_is_the_registry_order():
     positions = [text.index(command.NAME) for command in SUBCOMMANDS]
     assert positions == sorted(positions)
     assert [c.NAME for c in SUBCOMMANDS] == sorted(c.NAME for c in SUBCOMMANDS)
+
+
+# --- the third subcommand -------------------------------------------------
+
+def test_init_takes_no_arguments():
+    """Deliberately no --config.
+
+    The folder `lmi config init` fills is the one discovery searches at the home
+    level, and that is the only folder whose absence the command exists to fix.
+    A --config here would let it fill a folder somewhere else, leaving the
+    operator two config folders to keep in step.
+    """
+    ns = parser().parse_args(["init"])
+    assert getattr(ns, config_args.RUN_MARKER) == "init"
+    assert getattr(ns, "config", None) is None
+    with pytest.raises(SystemExit):
+        parser().parse_args(["init", "--config", "p.json"])

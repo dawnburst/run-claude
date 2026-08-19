@@ -15,10 +15,11 @@ prevent, shipped as a feature: a mistyped working directory used to be exit 2,
 "no config file found", and would silently become a successful install from
 whatever registry the wheel was built with.
 
-There is deliberately no statusline.js here, and the packaged template declares
-no `statusLine`. statusline.py says why: one script inside the package would
-give every site the same statusline and no way to vary it. The pair therefore
-agrees with itself and item 32's two warnings stay quiet.
+The folder ships a `statusline.js` that its `settings.json` declares, and the
+gateway/direct switch pair beside them. Item 32's rule is what makes the first
+safe - both halves or neither, checked out loud - and `adopt` and `fill` copying
+*every* file in the folder is what makes the rest useful: a file left inside
+site-packages is one `lmi config switch` never looks at.
 
 `adopt` is the other half, and the reason this is a module rather than three
 constants in config.py. A file inside site-packages cannot be the one
@@ -34,6 +35,21 @@ packaged pair to ~/.lmi/. From then on the machine has an ordinary config
 folder that every command already understands and the operator can edit, and
 the second run of this command finds it by the ordinary search and never comes
 back here.
+
+`fill` is the second way the folder lands, and the reason `packaged_files` and
+`destination` are public: `lmi config init` exists so that ~/.lmi can be
+restored without provisioning Claude Code again, and it imports this module
+rather than growing its own copy of where the packaged folder is and what
+lmi.json is renamed to. Two spellings of either would be one command creating a
+folder the next search walks straight past - the same reasoning that keeps three
+commands importing `schedule/backend.py` instead of listing the modes twice.
+
+The two differ in exactly one way, and it is the important one. `adopt` may
+replace what it finds, because `_back_up` has copied the folder first; `fill`
+backs up nothing and therefore **skips every destination that already exists**.
+There is no copy behind that skip: it is all that stands between an operator's
+edited settings.json or switch file and a re-run of the installer script, which
+calls `lmi config init` every time.
 """
 
 import shutil
@@ -123,28 +139,17 @@ def adopt(source, say):
     if not is_packaged(source):
         return source
 
-    home = core_config.expand(core_config.HOME_CONFIG)
+    home = home_config()
     folder = home.parent
-    packaged = _packaged_files()
+    packaged = packaged_files(EXIT_CONFIG_WRITE)
 
     # Before the first write, and fatal if it fails - see _back_up.
     saved, into = _back_up(folder, say)
 
     landed = []
     for path in packaged:
-        # lmi.json becomes config.json: that is the name discovery looks for at
-        # the home level, and adopting it under its packaged name would produce
-        # a folder the next search walks straight past.
-        dest = home if path.name == core_config.CWD_CONFIG_NAME else \
-            folder / path.name
-        # statusline.install, because it is already the atomic byte-for-byte
-        # copy this needs - O_BINARY, a temp file, os.replace, the source's mode
-        # preserved - and a second one here would be a second chance to get the
-        # Windows text-mode trap wrong. Bytes are right for a JSON document too:
-        # the copy is what the operator will edit, and lmi has no business
-        # rewriting its line endings on the way.
-        statusline.install(path, dest, "packaged %s" % path.name,
-                           EXIT_CONFIG_WRITE)
+        dest = destination(path, folder)
+        copy(path, dest, EXIT_CONFIG_WRITE)
         landed.append(dest)
 
     say("")
@@ -155,7 +160,67 @@ def adopt(source, say):
     return home
 
 
-def _packaged_files():
+def home_config():
+    """~/.lmi/config.json, expanded. The folder is its parent."""
+    return core_config.expand(core_config.HOME_CONFIG)
+
+
+def destination(path, folder):
+    """Where a packaged file lands inside `folder`.
+
+    lmi.json becomes config.json: that is the name discovery looks for at the
+    home level, and adopting it under its packaged name would produce a folder
+    the next search walks straight past. Everything else keeps its own name.
+
+    Public because `lmi config init` copies the same folder to the same place
+    and must rename identically. One caller renaming and one not would leave a
+    ~/.lmi that looks configured and is invisible to every command.
+    """
+    if path.name == core_config.CWD_CONFIG_NAME:
+        return folder / home_config().name
+    return folder / path.name
+
+
+def copy(src, dest, code):
+    """One packaged file to its destination, atomically and byte for byte.
+
+    statusline.install, because it is already the copy this needs - O_BINARY, a
+    temp file, os.replace, the source's mode preserved - and a second one here
+    would be a second chance to get the Windows text-mode trap wrong. Bytes are
+    right for a JSON document too: the copy is what the operator will edit, and
+    lmi has no business rewriting its line endings on the way.
+    """
+    statusline.install(src, dest, "packaged %s" % src.name, code)
+
+
+def fill(folder, code):
+    """Copy every packaged file `folder` does not already have. (created, kept).
+
+    Both lists are destinations, in packaged order. Nothing is overwritten and
+    nothing is backed up, which are the same statement: this runs on every
+    install of the wheel, so it must be safe on a folder an operator has spent
+    a year editing.
+
+    A destination that exists is kept whatever it is - a file, a directory,
+    anything. Clearing one to make room is a delete nobody asked for, and it is
+    the one operation here with no copy behind it.
+
+    The refusal in `packaged_files` happens before the first write, so a broken
+    lmi leaves the folder exactly as it was rather than half filled.
+    """
+    packaged = packaged_files(code)
+    created, kept = [], []
+    for path in packaged:
+        dest = destination(path, folder)
+        if fs.kind(dest) != fs.MISSING:
+            kept.append(dest)
+            continue
+        copy(path, dest, code)
+        created.append(dest)
+    return created, kept
+
+
+def packaged_files(code):
     """Every file in the packaged folder, config and template first.
 
     Order only matters for the report. What matters here is the refusal: a
@@ -163,12 +228,14 @@ def _packaged_files():
     and copying whatever is left would produce a config folder that fails at
     the next step with a message pointing at the operator instead of at the
     install.
+
+    `code` is the caller's exit code, for the reason core/jsonfile.py takes one:
+    two commands share this and neither owns the other's vocabulary. Both spell
+    it 3 today, which is not a reason to hard-code one of them.
     """
     for required in (CONFIG, TEMPLATE):
         if fs.kind(required) != fs.FILE:
-            raise LmiError(
-                BROKEN_PACKAGE % (required.name, DIR), EXIT_CONFIG_WRITE
-            )
+            raise LmiError(BROKEN_PACKAGE % (required.name, DIR), code)
     rest = sorted(p for p in DIR.iterdir()
                   if p.is_file() and p not in (CONFIG, TEMPLATE))
     return [CONFIG, TEMPLATE] + rest
