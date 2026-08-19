@@ -7,8 +7,11 @@ between lmi and the SDK, so anything faked on lmi's side of it would be a test
 of the fake.
 """
 
+import pytest
+
 from lmi.cli import main
 from lmi.commands.schedule import backend, paths, sdk
+from lmi.core.errors import LmiError
 
 from .conftest import FIXTURE_SOURCE, _REAL_SDK_REQUIRE
 
@@ -522,3 +525,142 @@ def test_the_missing_sdk_message_offers_all_three_fixes():
     assert 'pip install "lmi[sdk]"' in text
     assert "lmi config schedule --mode cli" in text
     assert "does not fall back" in text
+
+
+# --- one session across the intervals, in SDK mode -------------------------
+#
+# The CLI backend's --session-id / --resume pair, one for one. Both fields are
+# real fields of the real ClaudeAgentOptions at the floor version - 0.2.136 -
+# which test_sdk_fake_shapes.py asserts, because a fake that accepted a keyword
+# the real dataclass rejects would make every one of these green about a
+# TypeError.
+
+def test_a_fresh_session_is_passed_as_session_id(tmp_path, fake_sdk):
+    """MANDATORY - parity. The mechanism is the same in both backends: mint an
+    id, name it on the first call, resume it afterwards. A backend that carried
+    no session while the other did would be item 40's asymmetry again, in the
+    one thing an operator cannot see from the outcome."""
+    assert main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "3"]) == 0
+
+    first = fake_sdk.options[0]
+    assert first.session_id
+    assert first.resume is None
+    for options in fake_sdk.options[1:]:
+        assert options.resume == first.session_id
+        assert options.session_id is None
+
+
+def test_the_sdk_id_is_the_one_in_the_sidecar(tmp_path, fake_sdk):
+    import json
+    main(["schedule", "x", "-d", str(tmp_path)])
+    doc = json.loads(
+        (tmp_path / (paths.STATE_NAME + paths.SESSION_SUFFIX)).read_text()
+    )
+    assert doc["session_id"] == fake_sdk.options[0].session_id
+
+
+def test_no_session_passes_neither(tmp_path, fake_sdk):
+    main(["schedule", "x", "-d", str(tmp_path), "--no-session"])
+    assert fake_sdk.options[0].session_id is None
+    assert fake_sdk.options[0].resume is None
+
+
+def test_fork_session_is_never_set(tmp_path, fake_sdk):
+    """MANDATORY - item 59. A forked resume returns a NEW session id every
+    iteration, so the sidecar's handle goes stale while every iteration still
+    looks like a correct resume - and the run exits 0 throughout."""
+    main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2"])
+    for options in fake_sdk.options:
+        assert options._extra.get("fork_session") is None
+        assert options._extra.get("continue_conversation") is None
+
+
+def test_a_session_id_that_comes_back_different_is_warned_about(
+    tmp_path, fake_sdk, monkeypatch
+):
+    """SDK-only by declaration, not by accident: CLI mode's plain output carries
+    no session id at all, and forcing a format that does is item 26."""
+    monkeypatch.setenv("FAKE_SDK_SESSION_ID", "a-different-session")
+    main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2"])
+    body = _log_body(tmp_path)
+    assert "[WARN]" in body
+    assert "a-different-session" in body
+
+
+def test_the_echoed_id_matching_says_nothing(tmp_path, fake_sdk):
+    """The healthy case, which is what makes the warning above worth having: a
+    check that fires on every run tells nobody anything."""
+    main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2"])
+    assert "got" not in _log_body(tmp_path).replace("forgot", "")
+
+
+def test_the_unresumable_wording_on_stderr_is_reported(tmp_path, fake_sdk,
+                                                       monkeypatch):
+    """The SDK spawns the same claude binary, so its "no conversation found"
+    lands on stderr - which is why _Sink.stderr scans like everything else."""
+    monkeypatch.setenv("FAKE_SDK_STDERR",
+                       "No conversation found with session ID: 1111-2222")
+    monkeypatch.setenv("FAKE_RC", "1")
+    main(["schedule", "x", "-d", str(tmp_path)])
+    assert "No conversation found" in _log_body(tmp_path)
+
+
+def test_require_refuses_an_sdk_without_the_session_fields(monkeypatch):
+    """MANDATORY - item 59, and item 44's shape with a new field name.
+
+    Importable has never meant able to build its options: passing a keyword the
+    dataclass does not define is a TypeError on EVERY iteration. This raises
+    once, before the lock, and names both ways out.
+    """
+    import dataclasses
+    import sys
+    import types
+
+    @dataclasses.dataclass
+    class _Old:
+        cwd: str = ""
+
+    module = types.ModuleType("claude_agent_sdk")
+    module.ClaudeAgentOptions = _Old
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", module)
+
+    with pytest.raises(LmiError) as exc:
+        _REAL_SDK_REQUIRE(session=True)
+    assert exc.value.code == 2
+    assert "--no-session" in str(exc.value)
+
+
+def test_an_old_sdk_still_runs_without_continuity(monkeypatch):
+    """The check is scoped to what it protects: nothing that ran before this
+    feature existed stops running because of it."""
+    import dataclasses
+    import sys
+    import types
+
+    @dataclasses.dataclass
+    class _Old:
+        cwd: str = ""
+
+    module = types.ModuleType("claude_agent_sdk")
+    module.ClaudeAgentOptions = _Old
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", module)
+
+    _REAL_SDK_REQUIRE(session=False)
+
+
+def test_the_field_check_ignores_an_options_class_it_cannot_inspect(monkeypatch):
+    """dataclasses.fields raises for anything that is not a dataclass - the
+    suite's own fake among them. That is "nothing to check", not a failure: this
+    guard exists to catch an SDK older than the floor, not to legislate how the
+    class is built."""
+    import sys
+    import types
+
+    class _NotADataclass:
+        pass
+
+    module = types.ModuleType("claude_agent_sdk")
+    module.ClaudeAgentOptions = _NotADataclass
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", module)
+
+    _REAL_SDK_REQUIRE(session=True)

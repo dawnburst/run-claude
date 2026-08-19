@@ -229,7 +229,7 @@ def _select_backend(cfg):
     one that stops, because both backends exit 0 on success.
     """
     if cfg.mode == backend.SDK:
-        sdk.require()
+        sdk.require(cfg.session)
         return _SdkBackend()
     claude = shutil.which("claude")
     if claude is None:

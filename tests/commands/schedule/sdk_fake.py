@@ -131,6 +131,15 @@ class ClaudeAgentOptions(_Shape):
         # that awaits anything is precisely that - it would hang the run rather
         # than fail it. Recorded so a test can assert it stayed absent.
         self.can_use_tool = kw.get("can_use_tool")
+        # The session pair, spelled out rather than left to _extra for the same
+        # reason as everything above: a test asserting on them must fail loudly
+        # when sdk.py stops passing them, not read None off a silently absent
+        # attribute. Both are real fields of the real ClaudeAgentOptions at the
+        # floor version, which test_sdk_fake_shapes.py asserts - a fake that
+        # accepted a keyword the real dataclass rejects would make every session
+        # test green about a TypeError.
+        self.session_id = kw.get("session_id")
+        self.resume = kw.get("resume")
         self._extra = {k: v for k, v in kw.items() if k not in vars(self)}
 
 
@@ -167,6 +176,27 @@ def _write_state(n):
         Path(sf).write_text("TASK_STATUS: COMPLETE\n", encoding="utf-8")
 
 
+def _session_id(n, recorder):
+    """The id the fake reports back, as the real SDK reports the one in use.
+
+    Echoing the REQUESTED id is the realistic default and is what makes the
+    mismatch check testable at all: a fake that always invented an id would fire
+    the warning on every run, and the test would pass without telling anything
+    apart. FAKE_SDK_SESSION_ID forces the mismatch instead.
+    """
+    forced = _env("FAKE_SDK_SESSION_ID")
+    if forced:
+        return forced
+    # getattr, because test_sdk_fake_shapes drives _messages with a recorder
+    # stub that carries only what the stream itself needs. A generator that
+    # demanded more of its recorder than that would make the one module which
+    # checks these shapes against the real package unable to run at all.
+    options = getattr(recorder, "_current", None)
+    return (getattr(options, "resume", None)
+            or getattr(options, "session_id", None)
+            or "s%d" % n)
+
+
 def _messages(n, recorder):
     """One iteration's message stream, from the same FAKE_* knobs.
 
@@ -186,10 +216,10 @@ def _messages(n, recorder):
                            gets FAKE_SDK_RAISE_AT below instead, which is the
                            natural shape for a message stream.
     """
+    sid = _session_id(n, recorder)
     yield SystemMessage(
         subtype="init",
-        data={"model": "fake-model", "session_id": "s%d" % n,
-              "cwd": os.getcwd()},
+        data={"model": "fake-model", "session_id": sid, "cwd": os.getcwd()},
     )
     yield AssistantMessage(
         content=[TextBlock(text="fake claude call %d" % n)],
@@ -237,7 +267,7 @@ def _messages(n, recorder):
                 overage_disabled_reason=None,
                 raw={"status": _env("FAKE_SDK_RATE_LIMIT")},
             ),
-            session_id="s%d" % n,
+            session_id=sid,
         )
 
     if _env("FAKE_SDK_UNKNOWN"):
@@ -279,7 +309,7 @@ def _messages(n, recorder):
         num_turns=2,
         duration_ms=1234,
         result=result,
-        session_id="s%d" % n,
+        session_id=sid,
         total_cost_usd=0.0,
         usage={},
     )
