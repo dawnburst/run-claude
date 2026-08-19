@@ -503,12 +503,34 @@ def _one_iteration(cfg, log, state_path, chosen, task, tmp_dir, n, label, starte
     if handle is not None:
         session.warn_if_moved(handle, cfg.work_dir, log)
 
+    was_resuming = handle is not None and handle.resuming
     outcome = chosen.call(cfg, log, composed, state_path, tmp_dir, n, handle)
     if handle is not None:
         # After the call, whatever it returned. A call that failed part-way may
         # still have created the session, and item 54 is that a failure - a usage
         # limit above all - is not a reason to start the conversation over.
         handle = handle._replace(resuming=True)
+
+    if was_resuming and outcome.rc != 0 and outcome.unresumable:
+        # The one condition that drops a session, and the only retry there is.
+        #
+        # NOT "any failure": a usage limit leaves the conversation perfectly
+        # intact, and resuming it next interval is the whole point of the feature
+        # (item 54). NOT "no retry": the resume failed locally, before any API
+        # call - claude prints "No conversation found" and exits 1 - so trying
+        # again fresh costs nothing, where waiting for the next interval costs a
+        # third of a `-c 3` run. And NOT "retry until it works": exactly one
+        # attempt, so a machine that fails every resume cannot turn a single
+        # iteration into an unbounded call loop (item 55).
+        handle = session.remint(cfg, session_path, log, handle)
+        retry = chosen.call(cfg, log, composed, state_path, tmp_dir, n, handle)
+        handle = handle._replace(resuming=True)
+        # rc from the attempt that actually ran; quota from EITHER, because
+        # under-reporting [QUOTA] is the dangerous direction and a limit reported
+        # by the first attempt is no less real for the second having been made.
+        outcome = backend.Outcome(
+            retry.rc, outcome.quota or retry.quota, retry.unresumable
+        )
 
     if outcome.quota:
         # Tagged inline: [QUOTA] is this command's vocabulary, not something

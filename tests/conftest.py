@@ -71,6 +71,23 @@ if rec:
 else:
     sys.stdin.read()
 
+gone = os.environ.get("FAKE_SESSION_GONE")
+if gone and int(gone) == n and "--resume" in sys.argv:
+    # claude 2.1.235's own wording and exit code for a conversation that is not
+    # there, verified by running it. Printed and gone: the lookup is local, so no
+    # API call happens - which is what makes the runner's one retry affordable
+    # rather than a doubled bill.
+    sid = sys.argv[sys.argv.index("--resume") + 1]
+    print("No conversation found with session ID: %s" % sid)
+    if os.environ.get("FAKE_SESSION_GONE_QUOTA"):
+        # Quota wording on the FAILED attempt and nowhere else, which is the only
+        # way to tell "the tag survives the retry" from "the retry mentioned it
+        # too". With the wording in FAKE_OUT both attempts carry it and the test
+        # passes however the two flags are combined - a false green of exactly
+        # item 47's kind, found by inverting the guard and watching nothing break.
+        print("Claude AI usage limit reached|1234567890")
+    sys.exit(1)
+
 stream = os.environ.get("FAKE_STREAM")
 if stream:
     # Speak stream-json, the way `claude -p --output-format stream-json` does,
