@@ -15,7 +15,7 @@ from lmi.commands.schedule import backend
 from lmi.core import config as core_config
 from lmi.core.errors import LmiError
 
-from .conftest import _REAL_RESOLVE
+from .conftest import _REAL_RESOLVE, _REAL_RESOLVE_SESSION
 
 CODE = 3            # a command's own code, passed in as backend.write requires
 
@@ -413,3 +413,112 @@ def test_the_written_file_ends_in_lf_only(tmp_path):
     path.write_text("{}", encoding="utf-8")
     backend.write(path, "cli", CODE)
     assert b"\r\n" not in path.read_bytes()
+
+
+# --- the session key, and the wording for a session that is gone -----------
+#
+# The second key in the `schedule` section, and the second pattern beside
+# QUOTA_RE. Both are here for the reason everything else in this module is:
+# what one command writes another has to accept, and what one backend flags the
+# other has to flag too.
+
+def test_an_absent_session_key_means_the_default():
+    doc = {"schedule": {"mode": "cli"}}
+    assert backend.session_of_document(doc, "lmi.json") == (
+        backend.SESSION_DEFAULT, backend.DEFAULT_SOURCE
+    )
+
+
+def test_an_absent_schedule_section_means_the_session_default():
+    assert backend.session_of_document({}, "lmi.json") == (
+        backend.SESSION_DEFAULT, backend.DEFAULT_SOURCE
+    )
+
+
+def test_session_false_is_read_and_names_the_file():
+    on, source = backend.session_of_document(
+        {"schedule": {"session": False}}, "lmi.json"
+    )
+    assert on is False
+    assert source == "lmi.json"
+
+
+def test_an_explicit_null_session_is_refused():
+    """MANDATORY - absent is not null, the same rule's fifth home.
+
+    `.get(KEY)` alone cannot tell an absent key from `"session": null`, and
+    null is meaningful elsewhere in these documents. A null read as "the
+    default" is a value the operator wrote being silently discarded - and this
+    one would silently turn continuity back on.
+    """
+    with pytest.raises(LmiError) as exc:
+        backend.session_of_document({"schedule": {"session": None}}, "lmi.json")
+    assert exc.value.code == 2
+    assert "null" in str(exc.value)
+
+
+@pytest.mark.parametrize("raw", ["true", "false", "on", 1, 0, [], {}])
+def test_a_non_boolean_session_is_refused(raw):
+    """1 and 0 included: JSON spells this key true/false, and isinstance(1,
+    bool) is False, so the near-miss class the mode's parse() refuses is
+    refused here too rather than guessed at."""
+    with pytest.raises(LmiError) as exc:
+        backend.session_of_document({"schedule": {"session": raw}}, "lmi.json")
+    assert exc.value.code == 2
+
+
+def test_a_non_object_schedule_section_is_still_refused_for_the_session_key():
+    with pytest.raises(LmiError) as exc:
+        backend.session_of_document({"schedule": "cli"}, "lmi.json")
+    assert exc.value.code == 2
+
+
+def test_resolve_session_with_no_config_file_anywhere(nowhere, home):
+    assert _REAL_RESOLVE_SESSION(None) == (
+        backend.SESSION_DEFAULT, backend.DEFAULT_SOURCE
+    )
+
+
+def test_resolve_session_reads_the_discovered_file(nowhere, home):
+    path = nowhere / "config" / "lmi.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schedule": {"session": False}}), encoding="utf-8")
+    on, source = _REAL_RESOLVE_SESSION(None)
+    assert on is False
+    assert source == str(path)
+
+
+def test_the_verified_unresumable_wording_matches():
+    """MANDATORY - item 55. This is claude 2.1.235's own line, verified:
+
+        $ claude -p --resume 11111111-...-555555555555 "hi"
+        No conversation found with session ID: 11111111-...-555555555555
+        $ echo $?
+        1
+    """
+    line = ("No conversation found with session ID: "
+            "11111111-2222-3333-4444-555555555555")
+    assert backend.UNRESUMABLE_RE.search(line)
+
+
+def test_quota_wording_is_never_read_as_unresumable():
+    """MANDATORY - item 54. The two patterns must not overlap.
+
+    An overlap drops the session on a usage limit, which is the one case this
+    feature exists for, at exit 0 with nothing in the log to show it happened.
+    """
+    for line in ("Claude AI usage limit reached|1234567890",
+                 "rate limit exceeded, please try again later",
+                 "You have exceeded your credit balance",
+                 "API Error: 429 Too Many Requests",
+                 "Overloaded"):
+        assert backend.QUOTA_RE.search(line)
+        assert not backend.UNRESUMABLE_RE.search(line)
+
+
+def test_ordinary_claude_output_is_neither():
+    for line in ("I have updated the state file.",
+                 "Running Edit on run-claude-state.md",
+                 "TASK_STATUS: IN_PROGRESS"):
+        assert not backend.QUOTA_RE.search(line)
+        assert not backend.UNRESUMABLE_RE.search(line)
