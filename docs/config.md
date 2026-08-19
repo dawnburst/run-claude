@@ -308,6 +308,36 @@ An invalid `--mode` is exit 2 **before any file is touched**, with the same
 message `lmi schedule` produces for the same bad value in a config file — one
 list of valid names, in one place.
 
+### The other key in this section: `schedule.session`
+
+`lmi schedule` reads a second key from the same section, which this subcommand
+does **not** write — edit it by hand:
+
+```json
+{
+  "schedule": {
+    "mode": "sdk",
+    "session": false
+  }
+}
+```
+
+| Value | Meaning |
+|---|---|
+| absent | The default: **one claude session across the iterations**. |
+| `true` | The same, said explicitly. |
+| `false` | Every iteration starts a fresh conversation and carries only the state file. |
+| `null`, `"false"`, `0`, anything else | Exit 2, naming the file. |
+
+`null` is refused rather than read as the default, for the reason every other
+document lmi reads refuses it: a `null` is a value somebody wrote, and silently
+turning it into "the default" would turn continuity back **on** for a site that
+meant to switch it off.
+
+`lmi schedule --no-session` turns it off for one run and wins over this key.
+Whichever of the two decided is named in that run's log header. See
+[One session across the intervals](schedule.md#one-session-across-the-intervals).
+
 ### Exit codes
 
 | Code | Meaning |

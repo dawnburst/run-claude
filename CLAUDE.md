@@ -74,6 +74,8 @@ lmi/commands/schedule/      the command, as a self-contained package
   paths.py                  where the log, state file and lock go
   prompt.py                 composing one iteration's prompt
   state.py                  template, backup-or-resume, completion check
+  session.py                the claude session carried across the intervals:
+                            the handle, and the sidecar that remembers it
   stream.py                 `-v` only: two front ends onto one set of rows
   sdk.py                    the SDK backend; the ONLY importer of the SDK
   runner.py                 the loop, the seam, and the CLI backend
@@ -188,8 +190,12 @@ the copying is shared, and the exit code to raise with is a parameter, since
 `lmi schedule` has two backends behind one seam, chosen by `schedule.mode` in
 the resolved `lmi.json` and defaulting to `sdk`. `runner._select_backend` is
 the only place the mode decides anything; `_CliBackend` and `_SdkBackend` each
-expose `prepare` / `describe` / `call`, and `call` returns the same
-`(exit code, quota?)` pair whichever one it is. **There is deliberately no
+expose `prepare` / `describe` / `call`, and `call` takes the session handle and
+returns the same `backend.Outcome` - `(rc, quota, unresumable)` - whichever one
+it is. That third field was a bare pair until sessions arrived; it exists
+because only a backend can see claude saying the conversation it was asked to
+resume does not exist, and the runner must not treat that like any other
+failure (items 54 and 55). **There is deliberately no
 fallback between them at run time** — see item 34.
 
 The claude invocation, in `runner.py`, is the **CLI backend's** and is the
@@ -961,6 +967,88 @@ installer scripts now run the command after the wheel, warned and never fatal
     somewhere, and `docs/config.md` says so where an operator writing their own
     fragment will meet it.
 
+And seven for one claude session carried across the intervals, which is the
+first thing in this command with two memories instead of one. The state file is
+still the durable one; the session is the one that makes an iteration continue
+rather than re-read.
+
+53. **The session id is minted by lmi, never learned from claude's output.**
+    `uuid4`, written to the sidecar before the first call, passed as
+    `--session-id` and then `--resume`. Without `-v` the CLI backend logs
+    claude's plain text, which carries no session id anywhere, so observing one
+    would mean forcing `--output-format stream-json` onto a run that did not ask
+    for it - item 26 from the other side. **Silent:** an observed-id design
+    works perfectly under `-v` and silently loses continuity without it, which
+    is how most unattended runs run. Minting also means the id exists on disk
+    *before* the call, so an iteration killed mid-flight still leaves something
+    to resume.
+54. **A quota failure must not discard the session.** The handle is dropped only
+    on `backend.UNRESUMABLE_RE`, never on a non-zero exit in general, and
+    `QUOTA_RE` and that pattern must never overlap - a test asserts it.
+    **Silent:** the one scenario this feature exists for - a usage limit at
+    iteration 1 - quietly becomes N unrelated fresh sessions, each exiting 0,
+    with the state file's summary the only thing carried and nothing in the log
+    to say a conversation was thrown away. This rule is one condition in one
+    `if` in `runner._one_iteration`, and inverting it breaks no other test,
+    which is why `tests/test_docs.py` pins this paragraph by name.
+55. **The handle is dropped on exactly the failure that means it is gone, and
+    the retry happens at most once.** Never dropping it makes every remaining
+    iteration fail identically against a dead conversation, each failure looking
+    like claude's own; retrying without a bound turns one iteration into an
+    unbounded call loop. The retry is affordable *because* the failure is local:
+    claude answers a missing session with "No conversation found with session
+    ID: <id>" and exit 1 before any API call, verified on 2.1.235, so the wasted
+    attempt costs nothing while waiting for the next interval costs a third of a
+    `-c 3` run. `quota` is taken from **either** attempt, for item 43's reason.
+56. **The sidecar is backed up or kept in the same breath as the state file.**
+    One rule, `-r`, applied to both; `--no-session` touches the sidecar not at
+    all, because an opt-out for one run must not destroy the session a later
+    `-r` run would continue. **Silent:** a run without `-r` that starts a clean
+    state file and resumes yesterday's session has two memories describing
+    different work, both plausible, and exits 0 either way. The two calls are
+    adjacent rather than nested - `session.prepare` runs before the header
+    because the header must name the session (item 58), and `state.prepare`
+    after it - so the pairing is pinned by a test on the pair, not by structure.
+57. **`-f` may not carry the session flags while continuity is on.** Six names -
+    `--resume`, `-r`, `--continue`, `-c`, `--session-id`, `--fork-session` -
+    refused with exit 2, whole tokens only, with `--no-session` named as the way
+    to take over and forwarding all six untouched. **Silent:** `-f` is appended
+    last and claude takes the last occurrence of a repeated option, so the
+    user's flag replaces lmi's own rather than adding to it, and the log still
+    reads clean. This is why `_session_flags` goes *before* `cfg.user_flags` in
+    the argv and must stay there.
+58. **The header names the session and what chose it.** Item 33's rule for the
+    second switch in this command, and for the identical reason: a resumed
+    iteration and a fresh one both exit 0, neither marks the state file, and
+    cost is the only other difference. `Session   : on (from <source>) - <id>
+    (new | resuming, created <when>)`, or `off (from <source>)`. The source is
+    half the line - `on` alone does not say whether a config file, `--no-session`
+    or nothing at all decided.
+59. **`fork_session` is never set, and the SDK's session fields are checked
+    before the lock.** A forked resume returns a *new* id every iteration, so the
+    sidecar goes stale while every iteration still looks like a correct resume.
+    `continue_conversation` is absent for the neighbouring reason: it means "the
+    most recent conversation in this directory", which is claude choosing rather
+    than lmi, so any other claude run in the same `-d` between two intervals
+    would silently steal the continuity. And `sdk.require(session=True)` checks
+    `ClaudeAgentOptions` really has `session_id` and `resume`, because passing a
+    keyword a dataclass does not define is a `TypeError` on **every** iteration -
+    item 44 with a new field name. The floor did **not** have to move for this:
+    `claude-agent-sdk==0.2.136`, the version both `pyproject.toml` and
+    `install/sdk.REQUIREMENT` already name, has both fields and a `session_id` on
+    `ResultMessage`, verified by inspecting the installed package and pinned by
+    `tests/commands/schedule/test_sdk_fake_shapes.py`. The check is for a machine
+    whose installed SDK is *older* than the floor, which an air-gapped mirror can
+    easily be, and it is scoped to `session=True` so nothing that ran before this
+    feature stops running because of it.
+
+    One asymmetry is deliberate and must stay declared rather than faked: SDK
+    mode compares the session id that answers against the one it asked to resume
+    and warns on a mismatch, and CLI mode cannot, because its plain output
+    carries no id. `docs/status.md` records that gap as unmeasured; a check
+    invented for the CLI side would mean reading claude's undocumented session
+    store.
+
 ---
 
 ## 4. Rules for editing
@@ -970,11 +1058,11 @@ installer scripts now run the command after the wheel, warned and never fatal
    nothing — several bugs above only appear with awkward paths, or only when a
    claude call fails.
 
-   **769 passed, 19 skipped, in under four seconds** — measured, not estimated.
+   **859 passed, 21 skipped, in under five seconds** — measured, not estimated.
    It was 505 (1 skipped) before the two-backend work, 664 before item 47, 704
    before item 30 grew its keep-the-existing-token branch, 722 before named
-   switch files, 750 before the packaged folder became the only default, and 756
-   before `lmi config init`.
+   switch files, 750 before the packaged folder became the only default, 756
+   before `lmi config init`, and 769 before session continuity.
 
    The number written here had drifted to 669 while the suite was actually at
    704, which is worth a sentence because of what it costs: the point of
@@ -983,22 +1071,31 @@ installer scripts now run the command after the wheel, warned and never fatal
    evidence of nothing. Re-measure it, do not adjust it by the count of tests
    you think you added.
 
-   The 19 skips are the point of the number, not noise. Eighteen are
+   The 21 skips are the point of the number, not noise. Twenty are
    `test_sdk_fake_shapes.py`, which is the only module that validates the SDK
    fake against the real dataclasses and which skips rather than fails when the
-   `sdk` extra is absent; the nineteenth is a Windows-only clause. So the
-   default run leaves the SDK backend's shapes unchecked, and
-   `pip install -e ".[sdk]"` then `python3 -m pytest tests/ -q` is the run that
-   checks them: **787 passed, 1 skipped**. Both numbers are worth knowing,
-   because a green default run is not evidence that the SDK backend matches the
-   SDK it will meet.
+   `sdk` extra is absent; the twenty-first is a Windows-only clause. So the
+   default run leaves the SDK backend's shapes unchecked, and making the package
+   importable then re-running is the run that checks them: **879 passed, 1
+   skipped**. Both numbers are worth knowing, because a green default run is not
+   evidence that the SDK backend matches the SDK it will meet.
 
-   The second number is the one to distrust in a report. 769 was measured on a
-   machine with no `sdk` extra installed; 787 is 769 plus the 18 shape tests
-   that skipped there, which is arithmetic and not a run. Re-measure it the
-   next time the extra is present — it has now been arithmetic for four
-   consecutive changes, and this one could not settle it: the machine's Python
-   is PEP 668 externally managed, so `pip install` refuses outside a venv.
+   **Both numbers above are now measured**, which ends four consecutive changes
+   of the second one being arithmetic. This machine still cannot `pip install`
+   into its own interpreter — the Python is PEP 668 externally managed and
+   `python3 -m venv` fails for a missing `ensurepip` — so the way it was
+   measured, and the way to measure it again, is a `--target` install and a
+   `PYTHONPATH`:
+
+   ```bash
+   python3 -m pip install --target=/tmp/sdklib "claude-agent-sdk==0.2.136"
+   PYTHONPATH=/tmp/sdklib python3 -m pytest tests/ -q     # 879 passed, 1 skipped
+   ```
+
+   That is worth keeping written down: it is the only way this machine can run
+   the twenty tests that check the fake against the real package, and pinning
+   the floor version rather than taking the newest is what makes the run an
+   answer about the version lmi actually promises to work with.
 2. **Preserve the five invariants in section 1** and everything in section 3.
    Where a comment in the code says "do not simplify this back to X", X is the
    bug.
@@ -1043,9 +1140,13 @@ installer scripts now run the command after the wheel, warned and never fatal
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 769 passed, 19 skipped - no install needed
-pip install -e ".[sdk]"              # then 787 passed, 1 skipped: the 18 skips
-python3 -m pytest tests/ -q          # are the SDK shape checks. See 4.1
+python3 -m pytest tests/ -q          # 859 passed, 21 skipped - no install needed
+
+# The 20 skips are the SDK shape checks. Make the package importable to run
+# them; on a PEP 668 machine with no working venv, --target plus PYTHONPATH is
+# the way in. See section 4.1.
+python3 -m pip install --target=/tmp/sdklib "claude-agent-sdk==0.2.136"
+PYTHONPATH=/tmp/sdklib python3 -m pytest tests/ -q    # 879 passed, 1 skipped
 ```
 
 The SDK backend's tests need `pip install -e ".[sdk]"` for the one module that
@@ -1057,7 +1158,7 @@ Fixtures worth knowing, in `tests/conftest.py` and the four per-command
 
 | Fixture | What it gives you |
 |---|---|
-| `fake_claude` | A fake CLI on an exclusive PATH; records argv and the composed prompt per call, and can be told to misbehave through `FAKE_RC`, `FAKE_OUT`, `FAKE_STATE_FILE`, `FAKE_COMPLETE_AT`, `FAKE_PROSE`, `FAKE_BLANK_FIRST_LINE`, `FAKE_WRECK_TMP` |
+| `fake_claude` | A fake CLI on an exclusive PATH; records argv and the composed prompt per call, and can be told to misbehave through `FAKE_RC`, `FAKE_OUT`, `FAKE_STATE_FILE`, `FAKE_COMPLETE_AT`, `FAKE_PROSE`, `FAKE_BLANK_FIRST_LINE`, `FAKE_WRECK_TMP`, `FAKE_SESSION_GONE`, `FAKE_SESSION_GONE_QUOTA` |
 | `fake_npm` | The same trick for npm — an exclusive PATH, argv recorded per call, `FAKE_NPM_RC` and `FAKE_NPM_FAIL_GLOBAL` (fail only when a global flag is present, which is how the `--global` fallback is exercised without root) |
 | `fake_pip` | A fake interpreter that records every `-m pip` argv and answers `index versions`, plus a fake installed `lmi` command. pip is never found through `PATH` — it is `<interpreter> -m pip` — so the seam is the interpreter. `FAKE_PIP_RC`, `FAKE_PIP_LATEST`, `FAKE_SCRIPT_VERSION`, `FAKE_SCRIPT_RC`, `FAKE_SCRIPT_STDERR`, `FAKE_SCRIPT_BOM`, `FAKE_SCRIPT_PREFIX` |
 | `home` | A throwaway `HOME`/`USERPROFILE`, so no test can touch the developer's real `~/.claude`. Defined separately in the `install` and `config` conftests rather than shared. Every `config` test reaching `settings_path()` or the snapshot must take it, or it writes to the real home |
@@ -1067,6 +1168,13 @@ Fixtures worth knowing, in `tests/conftest.py` and the four per-command
 | `on_windows` | Takes the Windows branch of `paths.py` (patches `_on_windows`, never `os.name`, which pathlib reads at instantiation). The install suite patches `gitbash.on_windows` for the same reason |
 | `deny_touch` | Makes the writability probe fail the way `C:\Windows` does |
 | `skip_as_root` | The root-skip marker described in section 4 |
+
+`FAKE_SESSION_GONE` makes the fake answer a `--resume` with claude's own "No
+conversation found with session ID" line and exit 1, which is how item 55's
+one-shot retry is exercised without a real session store;
+`FAKE_SESSION_GONE_QUOTA` adds quota wording to **that** attempt and nowhere
+else, which is the only way to tell "the tag survives the retry" from "the retry
+mentioned it too" — with the wording in `FAKE_OUT` the test passed either way.
 
 `FAKE_PROSE` and `FAKE_BLANK_FIRST_LINE` are the fixtures for regression 2 — they
 write a state file that says `IN_PROGRESS` on line 1 while mentioning

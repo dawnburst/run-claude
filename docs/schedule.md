@@ -46,7 +46,8 @@ authoritative flag list.
 | `-f "<flags>"` | Extra claude flags, in **both** backends. `cli` appends them to the argv; `sdk` forwards them to the `claude` it spawns. Long options only. |
 | `-l <folder or file>` | Log destination. A folder receives `run-claude-<timestamp>.log`; a path with an extension is used as the log file itself. Omitted = `<workdir>/run-claude-<timestamp>.log`. |
 | `-s <file>` | State file. Omitted = `<workdir>/run-claude-state.md`. |
-| `-r` | Resume: keep the existing state file instead of backing it up and starting clean. |
+| `-r` | Resume: keep the existing state file **and the claude session beside it** instead of backing both up and starting clean. |
+| `--no-session` | Do not keep one claude session across the iterations. Every iteration starts a fresh conversation and carries only the state file, which is how `lmi schedule` behaved before continuity existed. See [One session across the intervals](#one-session-across-the-intervals). |
 | `-v`, `--verbose` | Watch the run while it runs: log the prompt lmi sends, and render claude's activity live instead of after the iteration ends. See [Verbose mode](#verbose-mode). |
 
 `-i` and `-c` are **mutually required** — either both or neither. Each alone exits
@@ -301,6 +302,81 @@ continue where the last run stopped.
 
 ---
 
+## One session across the intervals
+
+By default the iterations of a run are **one claude conversation**. Iteration 2
+continues iteration 1's session, iteration 3 continues that same one, and so on:
+claude still has the context it built, rather than re-reading a summary of it.
+
+This matters most when an iteration does not finish. An iteration cut short by a
+**usage limit** leaves its conversation intact, so the next interval picks it up
+with everything already in context. That is the case the feature exists for, and
+it is why a quota failure never starts a new session.
+
+lmi mints a session id of its own (a UUID) before the first call, passes it to
+claude as `--session-id`, and passes `--resume <that id>` on every iteration
+after. In `sdk` mode the identical pair goes to the SDK as `session_id=` and
+`resume=`. The two backends do the same thing by the same mechanism; the header
+line below names which session a run is using either way.
+
+The id is remembered in a small file beside the state file:
+
+```
+<statefile>.session.json      e.g. run-claude-state.md.session.json
+```
+
+It holds the session id, when it was minted and the working directory it belongs
+to — nothing claude reads, only what lmi and you need to see. It follows exactly
+the same `-r` rule as the state file, because the two are one memory in two
+parts:
+
+| | state file | `…session.json` |
+|---|---|---|
+| without `-r` | backed up to `.<timestamp>.bak`, fresh template | backed up the same way, new session minted |
+| with `-r` | kept, and the run continues it | kept, and the run **resumes that conversation** |
+| with `--no-session` | as above | not read, not written, not backed up |
+
+So a run that a usage limit stopped this evening is continued tomorrow with
+`-r` — same state file, same conversation.
+
+**The session belongs to the working directory.** claude stores conversations
+per directory, so a session created under one `-d` cannot be resumed from
+another. lmi warns before the call when the two differ, and the run continues
+either way.
+
+**When the session cannot be resumed** — it was pruned, the machine changed, or
+the first iteration died before claude created it — lmi says so with a `[WARN]`
+naming the id, mints a fresh session, and runs the iteration anyway. Nothing is
+lost that the state file was not already carrying, and the interval is not
+wasted: claude's "no conversation found" is answered locally, without an API
+call, so the retry is immediate. It happens at most once per iteration.
+
+**These claude flags cannot be passed in `-f`** while lmi is managing the
+session, and are refused with exit 2: `--resume`, `-r`, `--continue`, `-c`,
+`--session-id`, `--fork-session`. `-f` is appended last and claude takes the
+last occurrence of a repeated option, so any of them would silently replace
+lmi's own — and nothing in the log would show it. Pass `--no-session` to take
+the session over yourself, and all six are forwarded untouched.
+
+**What it costs.** A resumed conversation grows: iteration 3 carries iterations 1
+and 2 in its context, so the input tokens per iteration rise across a run (much
+of it cache-eligible, none of it free). A long enough session compacts itself,
+which is one more reason the state file remains the authority on what has been
+done. A site that would rather pay for the summary than the transcript can turn
+continuity off for the machine:
+
+```json
+{
+  "schedule": {
+    "session": false
+  }
+}
+```
+
+or per run, with `--no-session`. See [docs/config.md](config.md#schedule).
+
+---
+
 ## Guarantees
 
 These are treated as invariants, not aspirations, and each is covered by the test
@@ -337,6 +413,18 @@ the log file: the resolved configuration, each iteration's start, end, exit code
 and duration, state file handling, and a final summary of how many iterations ran,
 succeeded and failed. A crash inside the runner itself is logged with its full
 traceback, not merely printed to a terminal nobody may be watching.
+
+The header names both switches this command has, and what chose each of them:
+
+```
+Backend   : sdk (from /home/op/.lmi/config.json)
+Session   : on (from default) - 6f1c8b2e-… (new)
+Session   : on (from default) - 6f1c8b2e-… (resuming, created 2026-08-19 14:02:11)
+Session   : off (from --no-session)
+```
+
+Both a resumed iteration and a fresh one exit 0 and neither leaves a mark on the
+state file, so this line is the only record of which one a run actually was.
 
 A log file that cannot be written **degrades to console output** with one `[WARN]`
 — it never decides the exit code.

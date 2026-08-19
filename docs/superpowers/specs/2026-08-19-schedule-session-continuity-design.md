@@ -1,7 +1,7 @@
 # lmi — design (`lmi schedule`, one session across the intervals)
 
 **Date:** 2026-08-19
-**Status:** designed, not implemented.
+**Status:** implemented. §15 records what measurement changed.
 
 Today every iteration of `lmi schedule` is a **new claude session**. The only
 memory carried across an interval is the state file, inlined into the next
@@ -577,14 +577,37 @@ trusting any of this.
 
 ---
 
-## 15. Open questions
+## 15. What measurement settled, and two deviations
 
-None blocking. Two things are deliberately left to implementation, both
-empirical:
+Both open questions were answered before implementation, by installing the SDK
+to a scratch directory and inspecting it — this machine cannot `pip install`
+into its own interpreter (PEP 668, and `python3 -m venv` fails for a missing
+`ensurepip`), so `pip install --target` plus `PYTHONPATH` is the way in.
 
-1. **The exact `sdk` extra floor** (§9), which is read off an installed SDK
-   rather than guessed, and moves in both spellings at once.
-2. **Whether the SDK's init message exposes `session_id` on the version at the
-   floor** (§7's mismatch check). If it does not, the check is dropped rather
-   than faked, and `docs/status.md` records that the id-substitution failure is
-   unobserved in both backends — a declared gap, not a silent one.
+1. **The `sdk` extra's floor does not move.** `claude-agent-sdk==0.2.136` — the
+   version both `pyproject.toml` and `install/sdk.REQUIREMENT` already name —
+   has `session_id` and `resume` on `ClaudeAgentOptions`, and `session_id` on
+   `ResultMessage` and `AssistantMessage`. §9's floor bump is therefore dropped;
+   its runtime field check stays, for a machine whose installed SDK is *older*
+   than the floor, and `test_sdk_fake_shapes.py` now pins the fields.
+2. **The id-mismatch check is implementable and is implemented**, SDK-side only,
+   off `ResultMessage.session_id` and `SystemMessage.data["session_id"]`.
+
+Two deviations from the sections above, both recorded rather than quietly made:
+
+- **The sidecar is prepared before the header, not inside `state.prepare`.** §5
+  asked for "the same function call". The header has to name the session (item
+  58), so the handle must exist before it, while the state file's own lines
+  belong to the run's body and stay after it. The `-r` rule is one rule and is
+  pinned by a test on the *pair* — `test_the_sidecar_follows_the_state_file_without_r` —
+  rather than by the two calls sharing a frame.
+- **The header line reads `Session   : on (from <source>) - <id> (new)`**,
+  shaped like the `Backend` line above it, rather than §8's slightly different
+  wording. Same content, one column.
+
+One test premise had to be repaired during the work, and it is worth recording
+because it is item 47's lesson repeating: `test_a_quota_report_in_the_first_attempt_survives_the_retry`
+put the quota wording in `FAKE_OUT`, which the *retry* also prints — so it
+passed whether or not the two attempts' quota flags were combined. Inverting the
+guard and watching nothing go red is what found it. The wording now appears on
+the failed attempt only, through a knob of its own, and the inversion is red.

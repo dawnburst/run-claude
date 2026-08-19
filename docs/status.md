@@ -52,7 +52,7 @@ So: the **3.9 floor** is tested. **Linux** and **Windows** are tested. On
 
 ## Still to verify
 
-Eight measurements have not been taken. All are named so nobody mistakes
+Ten measurements have not been taken. All are named so nobody mistakes
 reasoning for evidence. `lmi install claude` has its own five, in
 [the checks below](#lmi-install-claude-five-checks-per-site).
 
@@ -108,6 +108,26 @@ reasoning rather than evidence.
    and the SDK is an extra rather than a dependency — but that is reasoning.
    `python3 -m pip show claude-agent-sdk` either side of an `lmi upgrade`
    settles it.
+9. **That a resumed iteration really does carry the earlier context.** The suite
+   proves `--session-id` is minted once and `--resume <that id>` passed
+   afterwards, in both backends, and that claude's own "No conversation found"
+   line is answered with one fresh retry — all of it against fakes. What no fake
+   can show is the thing the feature is for: that iteration 2 *knows* what
+   iteration 1 did without being told by the state file. The cheap version is
+   two iterations with `-i 0 -c 2` and a task whose second step is only possible
+   with the first still in context — "pick a number and remember it", then "what
+   number did you pick?" — read out of the `-v` log. The expensive version is
+   `runner-test-task.md` with `-i 1 -c 5`, which item 1 above already wants.
+10. **The id-mismatch warning, in the mode that can see it.** SDK mode compares
+    the session id that answers against the one it asked to resume and warns on
+    a mismatch. CLI mode **cannot**: its plain output carries no session id at
+    all, and forcing `--output-format stream-json` onto a non-verbose run is the
+    failure item 26 exists for. So a session silently substituted for the one
+    requested is observable in one backend and not the other — a declared gap
+    rather than a hidden one, and the only way to close it in CLI mode would be
+    reading claude's session store directly, which means lmi depending on an
+    undocumented on-disk layout. Whether the warning ever fires in practice is
+    unmeasured.
 
 ---
 
