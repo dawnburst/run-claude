@@ -59,7 +59,10 @@ upgrade.
 The script installs the wheel into a virtual environment of its own at
 `~/.local/share/lmi/venv`, then symlinks the `lmi` command pip generates into
 `~/.local/bin`. The venv holds nothing but `lmi`, so **the clone is disposable**
-afterwards.
+afterwards. Last, it runs [`lmi config init`](../config.md#lmi-config-init) to
+copy the config folder inside the wheel to `~/.lmi`, keeping any file already
+there — a warning rather than a failure if that does not work, since everything
+above it has already succeeded.
 
 ### Options
 
@@ -119,14 +122,21 @@ The only other thing you need is an already-authenticated Claude Code CLI;
 
 ## Route B — by hand
 
-What the script does, in four commands:
+What the script does, in five commands:
 
 ```bash
 python3 -m venv ~/.local/share/lmi/venv
 ~/.local/share/lmi/venv/bin/python -m pip install --no-index lmi-0.1.0-py3-none-any.whl
 mkdir -p ~/.local/bin
 ln -sfn ~/.local/share/lmi/venv/bin/lmi ~/.local/bin/lmi
+~/.local/bin/lmi config init
 ```
+
+The last one copies the config folder inside the wheel to `~/.lmi` — a
+`config.json`, the `settings.json` template, the `statusline.js` it declares and
+a gateway/direct switch pair. It keeps every file already there, so it is safe
+to re-run, and [`lmi config init`](../config.md#lmi-config-init) is how you get
+that folder back if it is ever deleted.
 
 Then check `~/.local/bin` is on your PATH:
 

@@ -296,6 +296,23 @@ step "Verifying"
 VERSION="$("$TARGET" --version 2>&1)" || die "$TARGET did not run: $VERSION"
 ok "$VERSION"
 
+# --- 6. the config folder --------------------------------------------------
+# `lmi config init` copies the config folder inside the wheel to ~/.lmi. It
+# keeps every file that is already there, so this is safe on every re-run and on
+# a machine whose folder has been edited for a year.
+#
+# Warned, never fatal - hence `if`, which `set -e` leaves alone. An lmi that is
+# installed, linked and verified is a successful install; dying here would
+# report the whole thing as a failure over a folder the user can create with one
+# command. That is the same choice `lmi install claude` makes about pip.
+step "Filling ~/.lmi with lmi's own config folder"
+if INIT_OUT="$("$TARGET" config init 2>&1)"; then
+    printf '%s\n' "$INIT_OUT" | sed 's/^/    /'
+else
+    warn "lmi config init failed - run it yourself, it changes nothing else:"
+    printf '%s\n' "$INIT_OUT" | sed 's/^/    /'
+fi
+
 ON_PATH=0
 case ":${PATH}:" in *":$LINK_DIR:"*) ON_PATH=1 ;; esac
 

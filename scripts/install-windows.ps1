@@ -310,6 +310,24 @@ $verify = Invoke-Capture $Exe @('--version')
 if ($verify.Code -ne 0) { Die "$Exe did not run:`n    $($verify.Text)" }
 Ok $verify.Last
 
+# --- 6. the config folder --------------------------------------------------
+# `lmi config init` copies the config folder inside the wheel to %USERPROFILE%\.lmi.
+# It keeps every file that is already there, so this is safe on every re-run and
+# on a machine whose folder has been edited for a year.
+#
+# Warned, never fatal. An lmi that is installed, on PATH and verified is a
+# successful install; failing here would report the whole thing as a failure
+# over a folder the user can create with one command. Through Invoke-Capture for
+# the reason everything else here is: a native program's stderr becomes error
+# records, and 'Stop' would turn the first one into a terminating error even
+# when the command succeeded.
+Step "Filling $env:USERPROFILE\.lmi with lmi's own config folder"
+$init = Invoke-Capture $Exe @('config', 'init')
+foreach ($line in $init.Text -split "`n") { Write-Host "    $line" }
+if ($init.Code -ne 0) {
+    Warn "lmi config init failed - run it yourself, it changes nothing else"
+}
+
 Write-Host ""
 Write-Host "Installed." -ForegroundColor White
 Write-Host "  Open a NEW cmd or PowerShell window, then run: lmi --version"

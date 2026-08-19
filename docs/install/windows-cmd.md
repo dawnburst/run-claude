@@ -170,6 +170,18 @@ where lmi
 lmi --version
 ```
 
+Then fill your config folder, the last thing the script does:
+
+```bat
+lmi config init
+```
+
+That copies the config folder inside the wheel to `%USERPROFILE%\.lmi` — a
+`config.json`, the `settings.json` template, the `statusline.js` it declares and
+a gateway/direct switch pair. It keeps every file already there, so it is safe to
+re-run, and [`lmi config init`](../config.md#lmi-config-init) is how you get that
+folder back if it is ever deleted.
+
 ---
 
 ## Route C — pipx
