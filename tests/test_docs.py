@@ -286,6 +286,31 @@ def test_the_example_switch_fragment_is_accepted(tmp_path):
     assert doc
 
 
+def test_every_shipped_switch_file_is_accepted_and_selectable():
+    """MANDATORY. A switch that ships and cannot be applied is invisible.
+
+    The packaged folder now carries a gateway/direct pair, which `lmi config
+    init` and `defaults.adopt` copy to ~/.lmi like every other file in it. Two
+    things can go wrong there and neither is visible at run time: a fragment
+    `fragment.read` refuses is a switch file that exits 2 the first time an
+    operator tries it, and a name the catalog will not resolve - `origin` above
+    all - is a file listed nowhere and appliable by no invocation (item 51).
+
+    Read through catalog.scan rather than by naming the files, so a third
+    shipped switch is covered the day it is added rather than the day somebody
+    remembers this test.
+    """
+    from lmi.commands.config import fragment
+    names, reserved = catalog.scan(defaults.DIR)
+    assert [name for name, _ in names] == ["direct", "gateway"]
+    assert reserved == [], \
+        "a shipped %s%s%s could never be applied" % (
+            catalog.PREFIX, catalog.RESERVED[0], catalog.SUFFIX)
+    for _, path in names:
+        doc, _ = fragment.read(path)
+        assert doc
+
+
 def test_the_readme_documents_config_switch():
     docs = user_docs()
     for needle in ("lmi config switch", "settings.json.lmi-origin",
