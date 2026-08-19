@@ -311,6 +311,19 @@ def test_every_shipped_switch_file_is_accepted_and_selectable():
         assert doc
 
 
+def test_the_readme_documents_config_init():
+    """The command that fills ~/.lmi, and the fact that it never overwrites.
+
+    Both halves matter to an operator: the first is how a deleted folder comes
+    back without provisioning Claude Code again, and the second is why running
+    it - or re-running an installer script, which runs it - is safe on a folder
+    they have spent a year editing.
+    """
+    docs = user_docs()
+    for needle in ("lmi config init", "~/.lmi"):
+        assert needle in docs, "the user documentation must document %s" % needle
+
+
 def test_the_readme_documents_config_switch():
     docs = user_docs()
     for needle in ("lmi config switch", "settings.json.lmi-origin",
