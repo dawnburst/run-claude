@@ -389,3 +389,99 @@ def fake_pip(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_PIP_COUNT", str(count_file))
     monkeypatch.setenv("FAKE_PROBE_COUNT", str(probe_file))
     return Pip(exe, recdir, count_file, probe_file, script)
+
+
+# --- git, for the repo source and the availability notice -------------------
+#
+# The same exclusive-PATH trick as fake_claude and fake_npm, for the same
+# reason: a real `git ls-remote` in a test is a network call whose answer
+# changes underneath the suite, and on a developer machine it would reach the
+# actual lmi repository.
+
+FAKE_GIT = """\
+#!{python}
+import os, sys, time
+
+rec = os.environ["FAKE_GIT_DIR"]
+n_file = os.path.join(rec, "count.txt")
+n = 0
+if os.path.exists(n_file):
+    n = int(open(n_file).read() or 0)
+n += 1
+open(n_file, "w").write(str(n))
+with open(os.path.join(rec, "argv-%d.txt" % n), "w") as fh:
+    fh.write("\\n".join(sys.argv[1:]))
+
+hang = os.environ.get("FAKE_GIT_HANG")
+if hang:
+    # Slower than any timeout the caller passes, so the test measures the
+    # caller's patience rather than the fake's speed.
+    time.sleep(float(hang))
+
+rc = int(os.environ.get("FAKE_GIT_RC", "0"))
+if rc:
+    sys.stderr.write("fatal: repository not found\\n")
+    sys.exit(rc)
+
+raw = os.environ.get("FAKE_GIT_RAW")
+if raw is not None:
+    sys.stdout.write(raw)
+else:
+    for i, name in enumerate(os.environ.get("FAKE_GIT_TAGS", "").split(",")):
+        if name:
+            sys.stdout.write("%040d\\trefs/tags/%s\\n" % (i, name))
+sys.exit(0)
+"""
+
+FAKE_GIT_BAT = '@"{python}" "%~dp0git.py" %*\r\n'
+
+
+@pytest.fixture
+def fake_git(tmp_path, monkeypatch):
+    """A fake `git` on an exclusive PATH, with the three answers that matter.
+
+    `tags()`, `raw()`, `rc()` and `hang()` rather than raw environment
+    variables, because every one of these tests is about what lmi does with an
+    answer and none of them is about how the fake is configured.
+    """
+    bindir = tmp_path / "gitbin"
+    bindir.mkdir()
+    exe = bindir / ("git.py" if os.name == "nt" else "git")
+    exe.write_text(FAKE_GIT.format(python=sys.executable), encoding="utf-8")
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    if os.name == "nt":
+        (bindir / "git.bat").write_text(
+            FAKE_GIT_BAT.format(python=sys.executable), encoding="utf-8"
+        )
+
+    recdir = tmp_path / "gitrec"
+    recdir.mkdir()
+    monkeypatch.setenv("PATH", str(bindir))
+    monkeypatch.setenv("FAKE_GIT_DIR", str(recdir))
+
+    class _Git:
+        dir = recdir
+
+        def tags(self, names):
+            monkeypatch.setenv("FAKE_GIT_TAGS", ",".join(names))
+
+        def raw(self, text):
+            monkeypatch.setenv("FAKE_GIT_RAW", text)
+
+        def rc(self, code):
+            monkeypatch.setenv("FAKE_GIT_RC", str(code))
+
+        def hang(self, seconds):
+            monkeypatch.setenv("FAKE_GIT_HANG", str(seconds))
+
+        def count(self):
+            counter = recdir / "count.txt"
+            return int(counter.read_text()) if counter.exists() else 0
+
+        def calls(self):
+            return [
+                (recdir / ("argv-%d.txt" % i)).read_text().splitlines()
+                for i in range(1, self.count() + 1)
+            ]
+
+    return _Git()
