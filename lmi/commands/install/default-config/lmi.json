@@ -2,5 +2,8 @@
   "claude": {
     "registry": "https://registry.npmjs.org/",
     "index": "https://pypi.org/simple/"
+  },
+  "lmi": {
+    "repo": "https://github.com/dawnburst/run-claude.git"
   }
 }

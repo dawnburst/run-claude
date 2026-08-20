@@ -92,3 +92,89 @@ def test_a_probe_that_cannot_even_run_is_none(fake_pip, tmp_path):
     broken = type(gone)(gone.kind, [str(tmp_path / "nope")] + gone.pip_prefix[1:],
                         gone.user_flag, gone.script, gone.where)
     assert pip.latest(broken, cfg()) is None
+
+
+# --- installing from the repo ----------------------------------------------
+
+REPO = "https://github.com/dawnburst/run-claude.git"
+
+
+def repo_cfg(index=INDEX, cafile=None):
+    return config.Config(index=index, cafile=cafile, source=Path("lmi.json"),
+                         repo=REPO, source_kind=config.SOURCE_REPO)
+
+
+def test_a_repo_install_is_one_pip_command_naming_the_tag(fake_pip):
+    pip.install(fake_pip.installation(), repo_cfg(), "v0.3.0", said([]))
+    argv = fake_pip.calls()[0]
+    assert argv[:3] == ["-m", "pip", "install"]
+    assert argv[-1] == "lmi @ git+%s@v0.3.0" % REPO
+    # pip does the clone, the build and the install. lmi runs no git of its own
+    # here, and needs no build toolchain of its own.
+    assert "--no-deps" in argv
+
+
+def test_a_bare_version_becomes_the_v_tag(fake_pip):
+    """`--version 0.3.0` and `--version v0.3.0` are the same request. The `v`
+    is added here, in one place, rather than being something an operator has to
+    know about the repository's tagging habit."""
+    pip.install(fake_pip.installation(), repo_cfg(), "0.3.0", said([]))
+    assert fake_pip.calls()[0][-1] == "lmi @ git+%s@v0.3.0" % REPO
+
+
+def test_the_index_is_passed_on_a_repo_install(fake_pip):
+    """MANDATORY - item 60.
+
+    pip's build isolation resolves setuptools from an index, so a bare
+    `git+https://` install on an air-gapped machine clones successfully and then
+    fails fetching build dependencies - at a point that reads like a build error
+    rather than a network one. The site's own index is what makes the build
+    resolvable, and dropping this makes the feature work only where there is
+    internet.
+    """
+    pip.install(fake_pip.installation(), repo_cfg(), "v0.3.0", said([]))
+    argv = fake_pip.calls()[0]
+    assert "--index-url" in argv
+    assert argv[argv.index("--index-url") + 1] == INDEX
+
+
+def test_a_cafile_is_passed_on_a_repo_install_too(fake_pip, tmp_path):
+    """Same reason: the build dependencies come over the same TLS as everything
+    else, so a private CA has to reach this install as well."""
+    ca = tmp_path / "ca.pem"
+    ca.write_text("x")
+    pip.install(fake_pip.installation(), repo_cfg(cafile=ca), "v0.3.0", said([]))
+    argv = fake_pip.calls()[0]
+    assert "--cert" in argv
+    assert argv[argv.index("--cert") + 1] == str(ca)
+
+
+def test_a_repo_only_config_passes_no_index_arguments(fake_pip):
+    """A config naming a repo and no index is the internet-connected case, and
+    the only possible behaviour for it: pip resolves build dependencies from its
+    own default. Inventing one here would be item 38's inference."""
+    pip.install(fake_pip.installation(), repo_cfg(index=None), "v0.3.0", said([]))
+    argv = fake_pip.calls()[0]
+    assert "--index-url" not in argv
+    assert argv[-1] == "lmi @ git+%s@v0.3.0" % REPO
+
+
+def test_a_repo_install_with_no_version_asks_for_the_default_branch(fake_pip):
+    """`newest_tag` answering None must not become `@None` or a bare `lmi`: the
+    source is the repo, so the fallback is the repo's own default branch."""
+    pip.install(fake_pip.installation(), repo_cfg(), None, said([]))
+    argv = fake_pip.calls()[0]
+    assert argv[-1] == "lmi @ git+%s" % REPO
+    assert "--upgrade" in argv
+
+
+def test_a_failing_repo_install_names_the_repo_not_the_index(fake_pip, monkeypatch):
+    """The hypotheses printed have to match what was actually tried, or they
+    send the operator to check a URL this command never used."""
+    monkeypatch.setenv("FAKE_PIP_RC", "1")
+    with pytest.raises(LmiError) as exc:
+        pip.install(fake_pip.installation(), repo_cfg(), "v0.3.0", said([]))
+    assert exc.value.code == 1
+    message = str(exc.value)
+    assert REPO in message
+    assert "git" in message

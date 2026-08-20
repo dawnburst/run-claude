@@ -1,7 +1,9 @@
 {
   "lmi": {
     "index": "https://artifactory.example.com/api/pypi/pypi-virtual/simple/",
-    "cafile": "/etc/ssl/certs/corp-ca.pem"
+    "repo": "https://github.com/dawnburst/run-claude.git",
+    "cafile": "/etc/ssl/certs/corp-ca.pem",
+    "version_check": true
   },
   "claude": {
     "registry": "https://artifactory.example.com/api/npm/npm-virtual/",
@@ -10,6 +12,7 @@
     "strict-ssl": true
   },
   "schedule": {
-    "mode": "sdk"
+    "mode": "sdk",
+    "session": true
   }
 }

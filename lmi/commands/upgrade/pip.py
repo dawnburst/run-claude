@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 
+from . import config as cfg_module
 from .config import PACKAGE
 from .exit_codes import EXIT_PIP_FAILED
 from ...core import pip as core_pip
@@ -37,6 +38,29 @@ INSTALL_FAILED = (
     "        lmi does not populate it.\n"
 )
 
+# The same shape for a repo install, because the hypotheses have to match what
+# was actually tried: printing the index clauses for a git install sends the
+# operator to check a URL this command never used.
+#
+# The third clause is item 60 wearing its diagnostic hat. pip clones first and
+# builds second, and the build resolves setuptools from an index - so on an
+# air-gapped machine the failure arrives after a perfectly successful clone and
+# reads like a build error. An operator who does not know that looks at the
+# repository, which is the one thing that worked.
+REPO_INSTALL_FAILED = (
+    "pip install from %s failed (exit %d).\n"
+    "    pip's own output above says which of these it was:\n"
+    "      - the repository or the tag, if pip reported a git error: check the\n"
+    '        "repo" value in the config file, that git can reach it from this\n'
+    "        machine, and that the tag exists.\n"
+    "      - git itself, if pip could not run it. pip clones with the machine's\n"
+    "        own git; lmi does not bundle one.\n"
+    "      - the build, if pip cloned and then failed fetching setuptools or\n"
+    "        wheel. Those come from a package index, not from the repository,\n"
+    '        so an air-gapped machine needs the "index" key set as well as\n'
+    '        "repo" - pip cannot build without them.\n'
+)
+
 WINDOWS_CLAUSE = (
     "      - the lmi.exe being replaced is the one running this command. If pip\n"
     "        reported a permission or access error, run this from a shell where\n"
@@ -46,6 +70,16 @@ WINDOWS_CLAUSE = (
 
 
 def _index_argv(cfg):
+    """The index arguments, or none at all when no index is configured.
+
+    The empty case is this command's own concept and is guarded here rather than
+    in core/pip.py: "an index is optional because a repo can be the source" is a
+    fact about `lmi upgrade`, and core/ has no business knowing it. Passing
+    core_pip.index_argv a None index would put a literal None into the argv,
+    which subprocess rejects with a TypeError two layers from the cause.
+    """
+    if not cfg.index:
+        return []
     return core_pip.index_argv(cfg.index, cfg.cafile)
 
 
@@ -70,26 +104,60 @@ def latest(inst, cfg):
     return match.group(1).strip() if match else None
 
 
+def requirement(cfg, version):
+    """What pip is asked to install, for whichever source this run uses.
+
+        index, "0.2.0"   ->  "lmi==0.2.0"
+        index, None      ->  "lmi"           (with --upgrade)
+        repo,  "0.3.0"   ->  "lmi @ git+<url>@v0.3.0"
+        repo,  None      ->  "lmi @ git+<url>"   (the repo's default branch)
+
+    The `v` prefix is added HERE and only here, so `--version 0.3.0` and
+    `--version v0.3.0` are the same request and an operator never has to know
+    the repository's tagging habit. A version that already carries one is left
+    alone.
+    """
+    if cfg.source_kind != cfg_module.SOURCE_REPO:
+        return PACKAGE if version is None else "%s==%s" % (PACKAGE, version)
+    if version is None:
+        # NOT "@None", and not a bare `lmi` either: the source is the repo, so
+        # the fallback is the repo's own default branch. A bare `lmi` would
+        # silently install from an index instead - the wrong source, reported as
+        # a successful upgrade.
+        return "%s @ git+%s" % (PACKAGE, cfg.repo)
+    tag = version if version[:1] in ("v", "V") else "v" + version
+    return "%s @ git+%s@%s" % (PACKAGE, cfg.repo, tag)
+
+
 def install(inst, cfg, version, say):
     """Install `version`, or the newest when it is None."""
     argv = inst.pip_prefix + ["install"]
     if inst.user_flag:
         argv.append("--user")
+    # On a repo install too, and that is item 60: pip clones the repository and
+    # then builds it in an isolated environment which it populates from an
+    # INDEX. Without these the build fails on an air-gapped machine after a
+    # clone that worked perfectly.
     argv += _index_argv(cfg)
     # --no-deps: lmi declares no dependencies and tests/test_packaging.py fails
     # if that stops being true, so this changes nothing about a correct install
     # - and it means a wrong or tampered package on the index cannot pull
     # anything else onto the machine.
     argv.append("--no-deps")
+    what = requirement(cfg, version)
     if version is None:
-        argv += ["--upgrade", PACKAGE]
-    else:
-        argv.append("%s==%s" % (PACKAGE, version))
+        # --upgrade for both sources: an unpinned requirement that is already
+        # satisfied is a no-op to pip, and "lmi is unchanged" is what
+        # runner._run then reports rather than claiming an upgrade.
+        argv.append("--upgrade")
+    argv.append(what)
 
     code = core_pip.run(argv, say)
     if code != 0:
-        what = PACKAGE if version is None else "%s==%s" % (PACKAGE, version)
-        message = INSTALL_FAILED % (what, code)
+        if cfg.source_kind == cfg_module.SOURCE_REPO:
+            message = REPO_INSTALL_FAILED % (cfg.repo, code)
+        else:
+            message = INSTALL_FAILED % (what, code)
         if os.name == "nt":
-            message += WINDOWS_CLAUSE % cfg.index
+            message += WINDOWS_CLAUSE % (cfg.index or "<your index>")
         raise LmiError(message, EXIT_PIP_FAILED)

@@ -116,6 +116,10 @@ lmi/commands/config/        `lmi config`, as a self-contained package
   exit_codes.py             this command's codes (3, 4), shared by all three
 lmi/commands/upgrade/       `lmi upgrade`, as a self-contained package
   config.py                 arguments, the "lmi" config section, the frozen Config
+  repo.py                   the repo as a source of versions: its newest tag,
+                            and how two versions compare
+  notice.py                 the once-a-day "a newer lmi exists" line. The one
+                            thing cli.py imports from a command
   installation.py           detects the venv/--user install and refuses the rest
   pip.py                    the one pip command, and the version-probe read
   prompts.py                the one question, wrapping core/prompts.py
@@ -140,6 +144,10 @@ Three rules hold this shape together:
 - **`cli.py` never learns about a command.** A command is a module exposing four
   names — `NAME`, `HELP`, `add_arguments`, `run` — and is registered by one line
   in `commands/__init__.py`. Adding a command must not require editing `cli.py`.
+  It has exactly one import from a command package, and it is not a command:
+  `upgrade/notice.py`, whose line belongs to no command at all. See item 62 for
+  why that is the narrower of two evils; the registry half of this rule is
+  untouched, and adding a command still requires no edit there.
   Registration is explicit rather than `pkgutil` discovery on purpose: discovery
   makes `--help` ordering non-deterministic, imports every command on every
   startup, and turns a typo into a silently missing command.
@@ -1049,6 +1057,67 @@ rather than re-read.
     invented for the CLI side would mean reading claude's undocumented session
     store.
 
+And four for `lmi upgrade` learning a second source, and for the line every
+other command now prints.
+
+60. **The index arguments are passed on a repo install.** pip clones the
+    repository and then builds it in an isolated environment which it populates
+    **from a package index** — `setuptools` and `wheel` come from there, not from
+    the repo. So a `git+` install with no `--index-url` clones successfully and
+    then fails fetching build dependencies. Not silent, but it fails in the wrong
+    costume: on the machines least able to reach PyPI, after the one step that
+    worked, reading like a build error rather than a network one — so the
+    operator inspects the repository, which was never the problem.
+    `REPO_INSTALL_FAILED` names all three hypotheses for the same reason.
+    `upgrade/pip._index_argv` returning `[]` for an absent index is the other
+    half: `core_pip.index_argv(None, …)` would put a literal `None` into the
+    argv, and "an index is optional because a repo can be the source" is this
+    command's fact, not `core/`'s.
+61. **Every uncertainty in the version lookup is silence, and versions compare
+    as integer tuples.** No repo, no git, a non-zero exit, a timeout, a tag
+    nobody can order (`nightly`, `v1.0-rc1`), a running version that does not
+    parse — each answers None. **Silent in the corrosive direction:** a false "a
+    newer lmi is available" is indistinguishable from a true one, and after the
+    second false alarm the line is noise, so the real one months later is ignored
+    too. The tuple rule is the other half and fails the same way: `"0.10.0" >
+    "0.9.0"` is False as a string, which would report a machine as current for
+    every release from 0.10.0 onward. `repo.version_string` exists because a tag
+    NAME is not the version it carries — handing `v0.3.0` to `verify.confirm`
+    fails a correct upgrade with "expected v0.3.0, got 0.3.0", which reads
+    exactly like the stale-wheel failure that check exists to catch.
+62. **The notice never becomes an action, and never fails a command.** It
+    suggests `lmi upgrade`; it does not run it and does not prompt. Every
+    exception inside `notice.maybe_say` is swallowed — including the unparseable
+    config file `lmi upgrade` itself rightly refuses with exit 2, because a
+    diagnostic on the startup path of *every* command must not be able to break
+    the CLI. It is also the only network call on `lmi schedule`'s startup path,
+    so the `timeout=3` and the 24-hour cache are load-bearing rather than
+    tidy: without them a slow git host delays the first iteration of an
+    unattended run on every invocation, which is invariant 3's spirit with no
+    keypress involved. The cache is keyed by the repo URL, so re-pointing
+    `lmi.repo` cannot report the old remote's tags.
+
+    `tests/conftest.py`'s `_no_version_check` is the suite's half of this and
+    must stay autouse: the notice runs before every dispatched command, so
+    without it every test calling `main([...])` reads the **developer's own**
+    `~/.lmi/config.json` and runs `git ls-remote` against whatever it names — a
+    network call inside a unit test, whose answer changes underneath the suite.
+    `test_notice.py` puts the real function back for itself, the way the
+    schedule conftest does for `backend.resolve`.
+63. **A tag is not evidence of an upgrade, and the source is named.** Item 22
+    restated, because a git source makes it easier to get wrong: the tag is what
+    was asked for, and the only thing that says what is installed is
+    `verify.confirm` running the installed console script in a subprocess. The
+    `Source:` line names repo or index for item 33's reason — both end in the
+    same "Upgraded 0.2.1 → 0.3.0", so nothing else distinguishes a machine
+    upgraded from the site's audited mirror from one upgraded off a git tag. And
+    `install/default-config/lmi.json` carries `lmi.repo` but **never**
+    `lmi.index`: lmi is not published to public PyPI, so a packaged index could
+    only ever resolve a stranger's package of that name, while a git URL names
+    one repository. `test_the_shipped_default_config_names_no_package_index_for_lmi`
+    is that rule, and it is the narrowed form of a test that used to forbid the
+    whole section — the assertion moved to the danger, the danger did not move.
+
 ---
 
 ## 4. Rules for editing
@@ -1058,11 +1127,16 @@ rather than re-read.
    nothing — several bugs above only appear with awkward paths, or only when a
    claude call fails.
 
-   **859 passed, 21 skipped, in under five seconds** — measured, not estimated.
+   **964 passed, 21 skipped, in about seven seconds** — measured, not estimated.
    It was 505 (1 skipped) before the two-backend work, 664 before item 47, 704
    before item 30 grew its keep-the-existing-token branch, 722 before named
    switch files, 750 before the packaged folder became the only default, 756
-   before `lmi config init`, and 769 before session continuity.
+   before `lmi config init`, 769 before session continuity and 859 before the
+   repo source and the availability notice.
+
+   The three seconds it gained are `fake_git` and `fake_claude` subprocesses,
+   not slower code: the new suites spawn a real interpreter per call, the same
+   way the CLI backend's tests always have.
 
    The number written here had drifted to 669 while the suite was actually at
    704, which is worth a sentence because of what it costs: the point of
@@ -1076,7 +1150,7 @@ rather than re-read.
    fake against the real dataclasses and which skips rather than fails when the
    `sdk` extra is absent; the twenty-first is a Windows-only clause. So the
    default run leaves the SDK backend's shapes unchecked, and making the package
-   importable then re-running is the run that checks them: **879 passed, 1
+   importable then re-running is the run that checks them: **984 passed, 1
    skipped**. Both numbers are worth knowing, because a green default run is not
    evidence that the SDK backend matches the SDK it will meet.
 
@@ -1089,7 +1163,7 @@ rather than re-read.
 
    ```bash
    python3 -m pip install --target=/tmp/sdklib "claude-agent-sdk==0.2.136"
-   PYTHONPATH=/tmp/sdklib python3 -m pytest tests/ -q     # 879 passed, 1 skipped
+   PYTHONPATH=/tmp/sdklib python3 -m pytest tests/ -q     # 984 passed, 1 skipped
    ```
 
    That is worth keeping written down: it is the only way this machine can run
@@ -1140,13 +1214,13 @@ rather than re-read.
 ## 5. Testing
 
 ```bash
-python3 -m pytest tests/ -q          # 859 passed, 21 skipped - no install needed
+python3 -m pytest tests/ -q          # 964 passed, 21 skipped - no install needed
 
 # The 20 skips are the SDK shape checks. Make the package importable to run
 # them; on a PEP 668 machine with no working venv, --target plus PYTHONPATH is
 # the way in. See section 4.1.
 python3 -m pip install --target=/tmp/sdklib "claude-agent-sdk==0.2.136"
-PYTHONPATH=/tmp/sdklib python3 -m pytest tests/ -q    # 879 passed, 1 skipped
+PYTHONPATH=/tmp/sdklib python3 -m pytest tests/ -q    # 984 passed, 1 skipped
 ```
 
 The SDK backend's tests need `pip install -e ".[sdk]"` for the one module that
@@ -1160,6 +1234,7 @@ Fixtures worth knowing, in `tests/conftest.py` and the four per-command
 |---|---|
 | `fake_claude` | A fake CLI on an exclusive PATH; records argv and the composed prompt per call, and can be told to misbehave through `FAKE_RC`, `FAKE_OUT`, `FAKE_STATE_FILE`, `FAKE_COMPLETE_AT`, `FAKE_PROSE`, `FAKE_BLANK_FIRST_LINE`, `FAKE_WRECK_TMP`, `FAKE_SESSION_GONE`, `FAKE_SESSION_GONE_QUOTA` |
 | `fake_npm` | The same trick for npm — an exclusive PATH, argv recorded per call, `FAKE_NPM_RC` and `FAKE_NPM_FAIL_GLOBAL` (fail only when a global flag is present, which is how the `--global` fallback is exercised without root) |
+| `fake_git` | A fake `git` on an exclusive PATH, with the three answers that matter: `tags()`, `raw()`, `rc()` and `hang()`. Methods rather than raw env vars, because every test using it is about what lmi does with an answer |
 | `fake_pip` | A fake interpreter that records every `-m pip` argv and answers `index versions`, plus a fake installed `lmi` command. pip is never found through `PATH` — it is `<interpreter> -m pip` — so the seam is the interpreter. `FAKE_PIP_RC`, `FAKE_PIP_LATEST`, `FAKE_SCRIPT_VERSION`, `FAKE_SCRIPT_RC`, `FAKE_SCRIPT_STDERR`, `FAKE_SCRIPT_BOM`, `FAKE_SCRIPT_PREFIX` |
 | `home` | A throwaway `HOME`/`USERPROFILE`, so no test can touch the developer's real `~/.claude`. Defined separately in the `install` and `config` conftests rather than shared. Every `config` test reaching `settings_path()` or the snapshot must take it, or it writes to the real home |
 | `answers` | Two of these now, one per command: `tests/commands/install/test_runner.py`'s is a scripted queue behind `prompts.confirm/secret/text`; `tests/commands/upgrade/test_runner.py`'s is confirm-only, since that command asks exactly one yes/no question. Neither test reaches a real stdin |

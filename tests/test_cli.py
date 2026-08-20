@@ -46,3 +46,45 @@ def test_lmi_error_carries_its_exit_code():
     from lmi.core.errors import LmiError, EXIT_USAGE
     assert LmiError("boom").code == EXIT_USAGE
     assert LmiError("boom", 3).code == 3
+
+
+# --- the availability notice, from the outside ------------------------------
+#
+# The guarantee that the notice cannot fail a command is tested where it lives,
+# in test_notice.py. What belongs here is the wiring: that it is called, with
+# the command's own name, before the command runs, and that it does not disturb
+# the exit code either way.
+
+def test_the_notice_is_called_with_the_command_name_before_it_runs(monkeypatch,
+                                                                  tmp_path):
+    from lmi.commands.upgrade import notice
+
+    seen = []
+    monkeypatch.setattr(notice, "maybe_say", lambda command, **kw: seen.append(command))
+
+    # A command that fails at once, so nothing is installed or written: an
+    # explicit --config that does not exist is exit 2 before anything else.
+    rc = main(["upgrade", "--config", str(tmp_path / "nope.json")])
+
+    assert rc == 2
+    assert seen == ["upgrade"], "the notice ran zero times, twice, or too late"
+
+
+def test_no_notice_when_there_is_no_command_to_run(monkeypatch, capsys):
+    """`lmi` with no arguments prints help and exits 2. Nothing has been asked
+    for, so there is nothing to tell the operator about."""
+    from lmi.commands.upgrade import notice
+
+    seen = []
+    monkeypatch.setattr(notice, "maybe_say", lambda command, **kw: seen.append(command))
+
+    assert main([]) == 2
+    assert seen == []
+
+
+def test_the_notice_does_not_change_a_commands_exit_code(monkeypatch, tmp_path):
+    from lmi.commands.upgrade import notice
+
+    monkeypatch.setattr(notice, "maybe_say",
+                        lambda command, **kw: print("[lmi] a newer lmi is available"))
+    assert main(["upgrade", "--config", str(tmp_path / "nope.json")]) == 2

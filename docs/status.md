@@ -52,7 +52,7 @@ So: the **3.9 floor** is tested. **Linux** and **Windows** are tested. On
 
 ## Still to verify
 
-Ten measurements have not been taken. All are named so nobody mistakes
+Twelve measurements have not been taken. All are named so nobody mistakes
 reasoning for evidence. `lmi install claude` has its own five, in
 [the checks below](#lmi-install-claude-five-checks-per-site).
 
@@ -128,6 +128,20 @@ reasoning rather than evidence.
     reading claude's session store directly, which means lmi depending on an
     undocumented on-disk layout. Whether the warning ever fires in practice is
     unmeasured.
+11. **One real `lmi upgrade` from the repository.** The suite proves the argv -
+    `lmi @ git+<url>@v0.3.0`, with the site's `--index-url` beside it - against a
+    fake pip and a fake git. What it cannot prove is the half that only a real
+    machine has: that `git` is present and can reach the host, that pip's clone
+    succeeds, and above all that the **build** succeeds once `setuptools` comes
+    from the site's own index rather than PyPI. That last one is item 60 and is
+    the likeliest thing to fail on an air-gapped box; it needs one run, and the
+    repository needs at least one version tag, which it currently has none of.
+12. **Whether the once-a-day notice is quiet enough in practice.** It is bounded
+    by a 3-second timeout and a 24-hour cache, and every failure is silent. On a
+    machine whose git host is unreachable that means one abandoned lookup a day,
+    which is the intended cost - but "one lookup a day" is a claim about a cache
+    file's timestamps, and nobody has yet watched a week of scheduled runs to see
+    it hold. `"version_check": false` is the switch if it does not.
 
 ---
 

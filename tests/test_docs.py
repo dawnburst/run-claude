@@ -100,9 +100,17 @@ def test_the_example_documents_the_schedule_backend(tmp_path):
     """
     from lmi.commands.schedule import backend
     doc = json.loads((REPO / "examples" / "lmi.json").read_text(encoding="utf-8"))
-    assert set(doc["schedule"]) == {"mode"}
+    assert set(doc["schedule"]) == {"mode", "session"}
     mode, source = backend.of_document(doc, REPO / "examples" / "lmi.json")
     assert mode in backend.MODES
+    # And the same for the section's second key, whose validator is separate:
+    # a `session` the example carries but parse_session refuses is the same
+    # broken-on-day-one file, arriving through the other key.
+    on, session_source = backend.session_of_document(
+        doc, REPO / "examples" / "lmi.json"
+    )
+    assert isinstance(on, bool)
+    assert session_source != backend.DEFAULT_SOURCE
     assert source != backend.DEFAULT_SOURCE, \
         "the example must name a mode explicitly, not fall back to the default"
 
@@ -253,20 +261,27 @@ def test_the_readme_documents_the_statusline_script():
         assert needle in docs, "the user documentation must document %s" % needle
 
 
-def test_the_shipped_default_config_is_rejected_by_the_upgrade_validator():
-    """The mirror image of the test above, and load-bearing in the other
-    direction: default-config/lmi.json must NOT carry an "lmi" section, because lmi is
-    never published anywhere and a live index there could only ever resolve a
-    stranger's package of that name. If someone re-adds one - even a
-    placeholder - this catches it before it ships, rather than a checkout
-    quietly starting to point `lmi upgrade` at public PyPI.
+def test_the_shipped_default_config_names_no_package_index_for_lmi():
+    """default-config/lmi.json must NOT carry `lmi.index`.
+
+    This test used to assert the stronger thing - no `lmi` section at all - and
+    the rule it was written for is unchanged: lmi is not published to public
+    PyPI, so an index there could only ever resolve a stranger's package of that
+    name, and a checkout must not quietly start pointing `lmi upgrade` at it.
+
+    What changed is that the section now has a second key. `lmi.repo` names one
+    git repository and can be confused with nobody else's package, so shipping
+    it is what lets a machine provisioned from the wheel upgrade itself at all -
+    while `index` stays absent for exactly the original reason. The assertion
+    narrowed to the danger; the danger did not move. Add an `index` here and
+    this goes red.
     """
     shipped = defaults.CONFIG
-    assert "lmi" not in json.loads(shipped.read_text(encoding="utf-8"))
-    with pytest.raises(LmiError) as exc:
-        upgrade_config.build_config(Args(str(shipped)))
-    assert exc.value.code == 2
-    assert '"lmi"' in str(exc.value)
+    section = json.loads(shipped.read_text(encoding="utf-8")).get("lmi", {})
+    assert "index" not in section, \
+        "the packaged default must not point lmi upgrade at a package index"
+    assert set(section) <= {"repo"}, \
+        "a new key in the packaged lmi section needs the same argument made for it"
 
 
 def test_the_readme_names_the_working_directory_default():
@@ -357,7 +372,7 @@ def test_claude_md_scopes_the_keypress_invariant_to_schedule():
 
 def test_the_example_documents_every_upgrade_key():
     doc = json.loads((REPO / "examples" / "lmi.json").read_text(encoding="utf-8"))
-    assert set(doc["lmi"]) == {"index", "cafile"}
+    assert set(doc["lmi"]) == {"index", "repo", "cafile", "version_check"}
 
 
 def test_the_printed_upgrade_example_matches_the_shipped_one():
@@ -623,3 +638,57 @@ def test_claude_md_still_states_that_a_quota_failure_keeps_the_session():
     """
     text = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
     assert "A quota failure must not discard the session" in text
+
+
+# --- the repo source, and the availability notice ---------------------------
+
+def test_the_user_docs_document_the_repo_source():
+    docs = user_docs()
+    assert "lmi.repo" in docs
+    assert "--source" in docs
+    # The build-isolation trap, in the documentation and not only in the error
+    # message: an operator reading about the feature before trying it on an
+    # air-gapped box is the one person who can act on it in advance.
+    assert "build" in docs and "setuptools" in docs
+
+
+def test_the_user_docs_document_the_availability_notice():
+    docs = user_docs()
+    assert "version_check" in docs
+    assert "version-check.json" in docs
+
+
+def test_the_packaged_config_carries_the_repo_url():
+    """MANDATORY-adjacent: install/default-config/lmi.json is what a plain
+    `pip install lmi` plus `lmi config init` produces, so a key missing there is
+    a feature that silently does not exist on every machine provisioned that
+    way - which is item 48's whole reasoning about the packaged default."""
+    from lmi.commands.install import defaults
+    doc = json.loads(
+        (defaults.DIR / "lmi.json").read_text(encoding="utf-8")
+    )
+    assert doc["lmi"]["repo"].startswith(("https://", "http://", "git@"))
+
+
+def test_the_packaged_config_is_one_upgrade_accepts():
+    """Valid JSON is not enough: the section has to be one build_config loads,
+    or the first `lmi upgrade` on a freshly provisioned machine is exit 2."""
+    from lmi.commands.install import defaults
+    from lmi.commands.upgrade import config as upgrade_config
+
+    class _Args:
+        config = str(defaults.DIR / "lmi.json")
+        version = None
+        source = None
+
+    cfg = upgrade_config.build_config(_Args())
+    assert cfg.source_kind == upgrade_config.SOURCE_REPO
+
+
+def test_claude_md_still_states_that_the_notice_may_never_act():
+    """MANDATORY - item 62 has no symptom when inverted in the safe direction:
+    an lmi that upgraded itself because it noticed a tag would look like a
+    tidier tool right up until it changed behaviour on a machine nobody
+    touched."""
+    text = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "The notice never becomes an action" in text
