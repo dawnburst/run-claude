@@ -100,9 +100,17 @@ def test_the_example_documents_the_schedule_backend(tmp_path):
     """
     from lmi.commands.schedule import backend
     doc = json.loads((REPO / "examples" / "lmi.json").read_text(encoding="utf-8"))
-    assert set(doc["schedule"]) == {"mode"}
+    assert set(doc["schedule"]) == {"mode", "session"}
     mode, source = backend.of_document(doc, REPO / "examples" / "lmi.json")
     assert mode in backend.MODES
+    # And the same for the section's second key, whose validator is separate:
+    # a `session` the example carries but parse_session refuses is the same
+    # broken-on-day-one file, arriving through the other key.
+    on, session_source = backend.session_of_document(
+        doc, REPO / "examples" / "lmi.json"
+    )
+    assert isinstance(on, bool)
+    assert session_source != backend.DEFAULT_SOURCE
     assert source != backend.DEFAULT_SOURCE, \
         "the example must name a mode explicitly, not fall back to the default"
 
@@ -357,7 +365,7 @@ def test_claude_md_scopes_the_keypress_invariant_to_schedule():
 
 def test_the_example_documents_every_upgrade_key():
     doc = json.loads((REPO / "examples" / "lmi.json").read_text(encoding="utf-8"))
-    assert set(doc["lmi"]) == {"index", "cafile"}
+    assert set(doc["lmi"]) == {"index", "repo", "cafile", "version_check"}
 
 
 def test_the_printed_upgrade_example_matches_the_shipped_one():
