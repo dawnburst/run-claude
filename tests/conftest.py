@@ -18,7 +18,13 @@ import sys
 import pytest
 
 from lmi.commands.schedule import stream as _stream
-from lmi.commands.upgrade import installation
+from lmi.commands.upgrade import installation, notice as _notice
+
+# The real notice, for the one module that tests it. Captured before the autouse
+# guard below replaces it - the same shape as the schedule conftest's
+# _REAL_RESOLVE, and for the same reason: the guard must not make the function
+# whose job this is the one function that cannot be tested.
+_REAL_MAYBE_SAY = _notice.maybe_say
 
 # How many "padding " words FAKE_STREAM_QUOTA_TAIL sits behind.
 #
@@ -37,6 +43,23 @@ skip_as_root = pytest.mark.skipif(
     getattr(os, "geteuid", lambda: 1)() == 0,
     reason="root ignores file permissions",
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_version_check(monkeypatch):
+    """No test may let `cli.main` consult a git remote, or read a real config.
+
+    `notice.maybe_say` runs before every dispatched command, so without this
+    every test that calls `main([...])` reads the DEVELOPER's own
+    ~/.lmi/config.json and - if it names a repo - runs `git ls-remote` against
+    it. That is a network call inside a unit test, whose answer changes
+    underneath the suite, and it is exactly what the `fake_claude` PATH
+    replacement and the schedule conftest's mode guard exist to prevent.
+
+    tests/commands/upgrade/test_notice.py puts the real function back for
+    itself.
+    """
+    monkeypatch.setattr(_notice, "maybe_say", lambda *a, **kw: None)
 
 
 @pytest.fixture
