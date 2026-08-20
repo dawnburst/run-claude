@@ -19,8 +19,8 @@ line.
 import shutil
 from pathlib import Path
 
-from . import installation, pip, prompts, verify
-from .config import build_config
+from . import installation, pip, prompts, repo, verify
+from .config import SOURCE_REPO, build_config
 from .exit_codes import EXIT_INTERNAL
 from ... import __version__
 from ...core.errors import EXIT_OK, EXIT_USAGE, LmiError
@@ -59,7 +59,14 @@ def _run(args):
 
     inst = installation.detect()
     say("Running: lmi %s, installed in %s (%s)" % (RUNNING, inst.where, inst.kind))
-    say("Index:   %s" % cfg.index)
+    # Which source, named. Item 63: both sources end in the same
+    # "Upgraded 0.2.1 -> 0.3.0", so this line is the only thing that
+    # distinguishes a machine upgraded from the site's audited mirror from one
+    # upgraded off a git tag.
+    if cfg.source_kind == SOURCE_REPO:
+        say("Source:  repo %s" % cfg.repo)
+    else:
+        say("Source:  index %s" % cfg.index)
 
     target = _target(args, inst, cfg)
     if target is _NOTHING_TO_DO:
@@ -72,7 +79,12 @@ def _run(args):
 
     # --- from here the machine changes ----------------------------------
     pip.install(inst, cfg, target, say)
-    got = verify.confirm(inst.script, target)
+    # The VERSION the target names, not the target itself. On the repo path the
+    # target is a tag name - `v0.3.0` - and the installed console script reports
+    # `0.3.0`, so passing the tag through would fail a correct upgrade on a
+    # string comparison. Item 22's trap, one layer along: the tag is what was
+    # asked for, and only the subprocess says what is installed.
+    got = verify.confirm(inst.script, repo.version_string(target) or target)
 
     say("")
     if got == RUNNING:
@@ -83,7 +95,7 @@ def _run(args):
         # silent-success failure CLAUDE.md section 3 exists to prevent - an
         # already-current run claiming it upgraded on every single invocation.
         say("lmi is unchanged: still %s -> %s. Nothing was upgraded; the "
-            "index had nothing newer to install." % (RUNNING, got))
+            "source had nothing newer to install." % (RUNNING, got))
     else:
         say("Upgraded lmi %s -> %s" % (RUNNING, got))
     say("  %s" % inst.script)
@@ -98,6 +110,9 @@ _NOTHING_TO_DO = object()
 
 def _target(args, inst, cfg):
     """The version to install, None for "the newest", or _NOTHING_TO_DO."""
+    if cfg.source_kind == SOURCE_REPO:
+        return _repo_target(args, cfg)
+
     wanted = getattr(args, "version", None)
     if wanted is not None:
         wanted = wanted.strip()
@@ -124,10 +139,48 @@ def _target(args, inst, cfg):
     return newest
 
 
+def _repo_target(args, cfg):
+    """The same three answers, read off the repository's tags.
+
+    Split from the index path rather than folded into it: the two ask different
+    remotes different questions, and "newest" is a tag name here and a version
+    string there. What they share - an explicit --version wins, an unanswerable
+    lookup degrades the question rather than the command - is spelled the same
+    way in both.
+    """
+    wanted = getattr(args, "version", None)
+    if wanted is not None:
+        wanted = wanted.strip()
+        if not wanted:
+            raise LmiError('--version must not be empty', EXIT_USAGE)
+        if not repo.is_newer(wanted, RUNNING) and \
+                repo.parse_version(wanted) == repo.parse_version(RUNNING):
+            say("Already at %s - nothing to do." % wanted)
+            return _NOTHING_TO_DO
+        return wanted
+
+    tag = repo.newest_tag(cfg.repo)
+    if tag is None:
+        # Best-effort, exactly like the index probe: no git, no network, a
+        # timeout or no version tags at all. pip resolves the repository's
+        # default branch, which is the only other thing "newest" could mean.
+        say("The repository could not say which version is newest; pip will "
+            "install its default branch.")
+        return None
+    say("Newest:  %s" % tag.name)
+    if not repo.is_newer(tag.name, RUNNING):
+        # Covers equal AND older, which a string comparison would not: a repo
+        # whose newest tag is behind this machine must not produce a question
+        # offering a downgrade.
+        say("Already at %s, and the newest tag in the repository is %s - "
+            "nothing to do." % (RUNNING, tag.name))
+        return _NOTHING_TO_DO
+    return tag.name
+
+
 def _question(target):
     if target is None:
-        return ("Replace lmi %s with the newest version on the index?"
-                % RUNNING)
+        return "Replace lmi %s with the newest version available?" % RUNNING
     return "Replace lmi %s with %s?" % (RUNNING, target)
 
 

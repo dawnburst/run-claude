@@ -141,3 +141,24 @@ def test_a_hanging_git_is_abandoned_rather_than_waited_out(fake_git):
     started = time.time()
     assert repo.newest_tag(URL, timeout=1) is None
     assert time.time() - started < 10
+
+
+# --- a tag name is not the version it carries ------------------------------
+
+@pytest.mark.parametrize("text,expected", [
+    ("v0.3.0", "0.3.0"),
+    ("0.3.0", "0.3.0"),
+    ("V1.2", "1.2"),
+    ("nightly", None),
+    ("", None),
+    (None, None),
+])
+def test_the_version_a_tag_name_carries(text, expected):
+    """MANDATORY - item 22 in a new place.
+
+    `verify.confirm` compares what it was told to expect against what the
+    installed console script reports. Handed a tag name it fails a perfectly
+    good upgrade with "expected v0.3.0, got 0.3.0" - which reads exactly like
+    the stale-wheel failure that check exists to catch.
+    """
+    assert repo.version_string(text) == expected

@@ -53,6 +53,27 @@ def parse_version(text):
     return tuple(int(part) for part in match.group(1).split("."))
 
 
+def version_string(text):
+    """`"v0.3.0"` -> `"0.3.0"`. None when there is no version in it.
+
+    What a TAG NAME means as a version, which is not the same string - and
+    conflating the two is item 22's trap in a new place: `verify.confirm`
+    compares what it was told to expect against what the installed console
+    script reports, and a tag name there fails a perfectly good upgrade with
+    "expected v0.3.0, got 0.3.0".
+
+    Derived from parse_version rather than by stripping a character, so there is
+    one definition of what a version is in this module. A tag whose name and
+    whose pyproject version genuinely disagree - `v0.3` against `0.3.0` - still
+    fails verification, and should: that is the tag lying about what it carries,
+    and the message shows both.
+    """
+    version = parse_version(text)
+    if version is None:
+        return None
+    return ".".join(str(part) for part in version)
+
+
 def is_newer(candidate, running):
     """Is `candidate` a later version than `running`? False if either is unclear.
 
