@@ -12,7 +12,7 @@ from pathlib import Path
 from ...core.errors import EXIT_OK, EXIT_USAGE, LmiError
 from ...core.lock import LockBusy, LockUnusable, single_instance_lock
 from ...core.log import Logger
-from . import backend, paths, prompt, sdk, state
+from . import backend, paths, prompt, sdk, session, state
 from .config import AT_FORMAT, build_config
 from .stream import Renderer
 from .exit_codes import EXIT_CALL_FAILED, EXIT_INTERNAL, EXIT_LOCKED
@@ -128,7 +128,7 @@ class PromptLog:
 
 
 def _pump(log, lines, render=None):
-    """Log every line as it arrives. True if any smells like a quota problem.
+    """Log every line as it arrives. (quota?, unresumable?), off the RAW lines.
 
     The one place output reaches the log, so the two invocation paths - a
     finished file's splitlines(), and a live pipe - cannot drift apart in how
@@ -140,12 +140,18 @@ def _pump(log, lines, render=None):
     through would silently disable the [QUOTA] tag. Scanning before rendering
     makes that impossible however the renderer later changes.
     """
-    quota = False
+    quota = unresumable = False
     for raw in lines:
         if QUOTA_RE.search(raw):
             quota = True
+        # Read before rendering for item 28's reason and now for a second one:
+        # "No conversation found with session ID" is claude's own diagnostic, and
+        # a renderer that summarised it would leave the runner unable to tell a
+        # session that is gone from any other failure.
+        if backend.UNRESUMABLE_RE.search(raw):
+            unresumable = True
         log.line(render(raw) if render else raw)
-    return quota
+    return quota, unresumable
 
 
 def _decoded_lines(pipe):
@@ -168,16 +174,39 @@ def _log_traceback(log):
 
 
 def _claude_argv(cfg, state_path, claude):
+    """Everything that is fixed for the whole run: no session flags, no -f.
+
+    The session flags change between iterations - a fresh session is minted once
+    and resumed afterwards - so they are appended in `call`, and -f after them,
+    because -f must stay LAST. That ordering is load-bearing in both directions:
+    items 26 and 46 are about claude taking the last occurrence of a repeated
+    option, and item 57 refuses the -f flags that would exploit it here.
+    """
     verbose = VERBOSE_FLAGS if cfg.verbose else []
     return [claude, "-p"] + DEFAULT_FLAGS + verbose + \
-        ["--add-dir", str(state_path.parent)] + cfg.user_flags
+        ["--add-dir", str(state_path.parent)]
+
+
+def _session_flags(handle):
+    """The handle as an argv fragment, and the one place that translation lives.
+
+    `--session-id` names a session that does not exist yet; `--resume` continues
+    one that does. Getting them the wrong way round is not a subtle failure -
+    claude refuses both - which is the good kind of load-bearing.
+    """
+    if handle is None:
+        return []
+    if handle.resuming:
+        return ["--resume", handle.id]
+    return ["--session-id", handle.id]
 
 
 # --- the seam -------------------------------------------------------------
 #
 # Two backends, one shape. Each exposes prepare / describe / call, and `call`
-# takes the composed prompt and returns the (exit code, quota?) pair that
-# _capture_claude and _stream_claude have always returned. Below this point the
+# takes the composed prompt and a session handle, and returns the
+# `backend.Outcome` that _capture_claude and _stream_claude have always
+# returned (a bare (rc, quota) pair until sessions needed a third verdict). Below this point the
 # loop cannot tell which one it has, which is the whole design: everything that
 # reads a run - _log_iteration_result, ITERATION_ERROR_RC, EXIT_CALL_FAILED -
 # keeps its single vocabulary.
@@ -200,7 +229,7 @@ def _select_backend(cfg):
     one that stops, because both backends exit 0 on success.
     """
     if cfg.mode == backend.SDK:
-        sdk.require()
+        sdk.require(cfg.session)
         return _SdkBackend()
     claude = shutil.which("claude")
     if claude is None:
@@ -226,13 +255,18 @@ class _CliBackend:
         # Fixed for the whole run, so built once rather than per iteration.
         self.argv = _claude_argv(cfg, state_path, self.claude)
 
-    def describe(self, cfg, log):
+    def describe(self, cfg, log, handle):
         # argv[0] rather than a separate claude argument: they are the same
         # value by construction, and two parameters could disagree.
         log.line("claude    : " + self.argv[0])
-        log.line("Flags     : " + " ".join(self.argv[1:]))
+        # The complete flag list, which docs/schedule.md's Logging section
+        # promises - including the session flag this iteration will carry, so
+        # the line stays the argv that actually runs rather than most of it.
+        log.line("Flags     : " + " ".join(
+            self.argv[1:] + _session_flags(handle) + list(cfg.user_flags)
+        ))
 
-    def call(self, cfg, log, composed, state_path, tmp_dir, n):
+    def call(self, cfg, log, composed, state_path, tmp_dir, n, handle):
         prompt_path = tmp_dir / ("prompt-%d.txt" % n)
         # open(), not Path.write_text(..., newline=...): that keyword arrived
         # in Python 3.10 and pyproject declares >=3.9, so on the 3.9.6 that
@@ -240,10 +274,11 @@ class _CliBackend:
         with open(str(prompt_path), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(composed)
         out_path = tmp_dir / ("out-%d.txt" % n)
+        argv = self.argv + _session_flags(handle) + list(cfg.user_flags)
 
         if cfg.verbose:
-            return _stream_claude(cfg, log, self.argv, prompt_path)
-        return _capture_claude(cfg, log, self.argv, prompt_path, out_path)
+            return _stream_claude(cfg, log, argv, prompt_path)
+        return _capture_claude(cfg, log, argv, prompt_path, out_path)
 
 
 class _SdkBackend:
@@ -257,14 +292,30 @@ class _SdkBackend:
     def prepare(self, cfg, state_path):
         pass
 
-    def describe(self, cfg, log):
+    def describe(self, cfg, log, handle):
         sdk.describe(cfg, log)
 
-    def call(self, cfg, log, composed, state_path, tmp_dir, n):
-        return sdk.call(cfg, log, composed, state_path)
+    def call(self, cfg, log, composed, state_path, tmp_dir, n, handle):
+        return sdk.call(cfg, log, composed, state_path, handle)
 
 
-def _log_header(cfg, log, state_path, chosen):
+def _session_line(cfg, handle):
+    """One line naming the session and what chose it - item 58.
+
+    Shaped like the Backend line above it, "<value> (from <source>)", because
+    they answer the same kind of question about the same run and an operator
+    reads them together. The source is half the line: "on" alone does not say
+    whether a config file, a flag or nothing at all decided.
+    """
+    if handle is None:
+        return "Session   : off (from %s)" % cfg.session_source
+    what = ("resuming, created %s" % handle.created) if handle.resuming else "new"
+    return "Session   : on (from %s) - %s (%s)" % (
+        cfg.session_source, handle.id, what
+    )
+
+
+def _log_header(cfg, log, state_path, chosen, handle):
     log.line(RULE)
     log.line("lmi schedule starting at " + paths.now_str())
     log.line("Working directory: " + str(cfg.work_dir))
@@ -276,6 +327,10 @@ def _log_header(cfg, log, state_path, chosen):
     # The source is half the line: "sdk" alone does not say whether a config
     # file chose it or nothing did.
     log.line("Backend   : %s (from %s)" % (cfg.mode, cfg.mode_source))
+    # And whether one claude session spans the iterations, for exactly the same
+    # reason as the line above: both ways round exit 0 and neither marks the
+    # state file, so this is the only record of which one this run was.
+    log.line(_session_line(cfg, handle))
     # The resolved configuration, which docs/schedule.md's Logging section
     # promises:
     # where the prompt came from, which claude is being run, and the complete
@@ -288,7 +343,7 @@ def _log_header(cfg, log, state_path, chosen):
     # an argv and a flag list for the CLI, the options that decide what Claude
     # may do for the SDK. Everything above and below is common to both, so the
     # two logs line up everywhere except here.
-    chosen.describe(cfg, log)
+    chosen.describe(cfg, log, handle)
     log.line("State file: " + str(state_path))
     log.line("Log file  : " + str(log.path))
     log.line("Iterations: %d" % cfg.max_runs)
@@ -347,7 +402,13 @@ def _log_summary(log, state_path, runs, fails):
 
 def _run_locked(cfg, log, state_path, run_ts, chosen):
     chosen.prepare(cfg, state_path)
-    _log_header(cfg, log, state_path, chosen)
+    session_path = paths.resolve_session(state_path)
+    # Before the header, because the header has to name the session (item 58).
+    # The state file's own prepare() stays where it is, below: its lines belong
+    # to the run's body rather than to the resolved configuration. The two
+    # follow ONE -r rule, and a test pins the pair rather than either half.
+    handle = session.prepare(cfg, session_path, run_ts, log)
+    _log_header(cfg, log, state_path, chosen, handle)
 
     state.prepare(state_path, cfg.resume, run_ts, log)
     # The task text never changes, so it is read and decoded once instead of on
@@ -367,9 +428,9 @@ def _run_locked(cfg, log, state_path, run_ts, chosen):
             log.line("")
             log.line("--- iteration %s started %s ---" % (label, started))
 
-            rc = _iteration_rc(
+            rc, handle = _iteration_rc(
                 cfg, log, state_path, chosen, task, tmp_dir, iteration,
-                label, started, prompt_log
+                label, started, prompt_log, session_path, handle
             )
             runs += 1
             if not _log_iteration_result(
@@ -395,12 +456,12 @@ def _run_locked(cfg, log, state_path, run_ts, chosen):
 
 
 def _iteration_rc(cfg, log, state_path, chosen, task, tmp_dir, n, label, started,
-                  prompt_log):
-    """One iteration's exit code, with invariant 2 enforced around it."""
+                  prompt_log, session_path, handle):
+    """(exit code, the handle to use next), invariant 2 enforced around it."""
     try:
         return _one_iteration(
             cfg, log, state_path, chosen, task, tmp_dir, n, label, started,
-            prompt_log
+            prompt_log, session_path, handle
         )
     except LmiError:
         # A usage error is deterministic - a prompt file that is not UTF-8
@@ -416,7 +477,11 @@ def _iteration_rc(cfg, log, state_path, chosen, task, tmp_dir, n, label, started
         # this, one bad iteration abandoned every iteration after it.
         log.error("could not run iteration %s - it was skipped:" % label)
         _log_traceback(log)
-        return ITERATION_ERROR_RC
+        # The handle is returned unchanged, deliberately. An iteration that
+        # never reached claude learned nothing about the session, and dropping a
+        # live conversation because a temp directory vanished is item 54's
+        # mistake arriving from a different direction.
+        return ITERATION_ERROR_RC, handle
 
 
 def _sleep_between(cfg, log):
@@ -430,14 +495,44 @@ def _sleep_between(cfg, log):
 
 
 def _one_iteration(cfg, log, state_path, chosen, task, tmp_dir, n, label, started,
-                   prompt_log):
+                   prompt_log, session_path, handle):
     body = state.read_body(state_path)
     composed = prompt.compose(cfg, state_path, label, started, body, task)
     prompt_log.emit(log, composed, body)
 
-    rc, quota = chosen.call(cfg, log, composed, state_path, tmp_dir, n)
+    if handle is not None:
+        session.warn_if_moved(handle, cfg.work_dir, log)
 
-    if quota:
+    was_resuming = handle is not None and handle.resuming
+    outcome = chosen.call(cfg, log, composed, state_path, tmp_dir, n, handle)
+    if handle is not None:
+        # After the call, whatever it returned. A call that failed part-way may
+        # still have created the session, and item 54 is that a failure - a usage
+        # limit above all - is not a reason to start the conversation over.
+        handle = handle._replace(resuming=True)
+
+    if was_resuming and outcome.rc != 0 and outcome.unresumable:
+        # The one condition that drops a session, and the only retry there is.
+        #
+        # NOT "any failure": a usage limit leaves the conversation perfectly
+        # intact, and resuming it next interval is the whole point of the feature
+        # (item 54). NOT "no retry": the resume failed locally, before any API
+        # call - claude prints "No conversation found" and exits 1 - so trying
+        # again fresh costs nothing, where waiting for the next interval costs a
+        # third of a `-c 3` run. And NOT "retry until it works": exactly one
+        # attempt, so a machine that fails every resume cannot turn a single
+        # iteration into an unbounded call loop (item 55).
+        handle = session.remint(cfg, session_path, log, handle)
+        retry = chosen.call(cfg, log, composed, state_path, tmp_dir, n, handle)
+        handle = handle._replace(resuming=True)
+        # rc from the attempt that actually ran; quota from EITHER, because
+        # under-reporting [QUOTA] is the dangerous direction and a limit reported
+        # by the first attempt is no less real for the second having been made.
+        outcome = backend.Outcome(
+            retry.rc, outcome.quota or retry.quota, retry.unresumable
+        )
+
+    if outcome.quota:
         # Tagged inline: [QUOTA] is this command's vocabulary, not something
         # the shared Logger should know about.
         log.line(
@@ -448,11 +543,11 @@ def _one_iteration(cfg, log, state_path, chosen, task, tmp_dir, n, label, starte
             "[QUOTA] *** Check your usage before trusting the result of this "
             "iteration."
         )
-    return rc
+    return outcome.rc, handle
 
 
 def _capture_claude(cfg, log, argv, prompt_path, out_path):
-    """Run claude to a file and replay it afterwards. (exit code, quota?)"""
+    """Run claude to a file and replay it afterwards. A backend.Outcome."""
     log.line("--- claude output ---")
     with open(prompt_path, "rb") as stdin_fh, \
             open(out_path, "wb") as out_fh:
@@ -463,9 +558,9 @@ def _capture_claude(cfg, log, argv, prompt_path, out_path):
             stderr=subprocess.STDOUT, cwd=str(cfg.work_dir),
         )
     output = out_path.read_text(encoding="utf-8", errors="replace")
-    quota = _pump(log, output.splitlines())
+    quota, unresumable = _pump(log, output.splitlines())
     log.line("--- end of claude output ---")
-    return completed.returncode, quota
+    return backend.Outcome(completed.returncode, quota, unresumable)
 
 
 def _stream_claude(cfg, log, argv, prompt_path):
@@ -484,9 +579,10 @@ def _stream_claude(cfg, log, argv, prompt_path):
                 argv, stdin=stdin_fh, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, cwd=str(cfg.work_dir),
             ) as proc:
-        quota = _pump(log, _decoded_lines(proc.stdout), renderer.render)
+        quota, unresumable = _pump(log, _decoded_lines(proc.stdout),
+                                   renderer.render)
     log.line("--- end of claude activity ---")
-    return proc.returncode, quota
+    return backend.Outcome(proc.returncode, quota, unresumable)
 
 
 def _wait_until(target, log):

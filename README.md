@@ -5,11 +5,17 @@ A Python CLI that runs the [Claude Code](https://claude.com/claude-code) CLI
 progress across iterations through a state file, log everything, and never die
 because a single `claude` call failed.
 
-It exists because a long task usually does not fit in one session. Instead of one
-huge prompt, you give `lmi schedule` a task and an iteration count; each
-iteration is a fresh `claude -p` invocation that reads the state file the previous
-iteration wrote, continues from there, and updates it. The loop stops early the
-moment the state file reports the task is done.
+It exists because a long task usually does not fit in one sitting. Instead of one
+huge prompt, you give `lmi schedule` a task and an iteration count. The
+iterations are **one claude session by default**, so each continues with the
+context the last one built — and each also reads and updates a state file, which
+is what carries the work when a session cannot be resumed. The loop stops early
+the moment the state file reports the task is done.
+
+An iteration stopped by a **usage limit** keeps its session, so the next interval
+carries straight on; `-r` continues both the state file and the conversation on a
+later day. `--no-session` turns that off and gives every iteration a fresh
+session.
 
 Three more commands surround it: [`lmi install claude`](docs/install-claude.md)
 installs and configures Claude Code in the first place — on an air-gapped
@@ -144,7 +150,7 @@ You do not need to install anything to run the test suite — see
 ```
 lmi schedule "<prompt or prompt-file>" [-t "YYYY-MM-DD HH:MM"] [-i minutes]
              [-c count] [-d workdir] [-f "flags"] [-l logfolder]
-             [-s statefile] [-r] [-v]
+             [-s statefile] [-r] [--no-session] [-v]
 ```
 
 The prompt is the only mandatory argument — either the text itself, quoted, or
@@ -156,6 +162,8 @@ anything else:
 | `-i <minutes>` `-c <count>` | Wait this long between iterations, this many times. **Mutually required** — either both or neither, and omitting both is a single run. There is deliberately no unlimited-loop mode. |
 | `-d <dir>` | Working directory for claude. Omitted = the current directory. |
 | `-s <file>` | State file. Omitted = `<workdir>/run-claude-state.md`. |
+| `-r` | Keep the existing state file **and the claude session beside it** instead of backing both up. |
+| `--no-session` | Do not carry one claude session across the iterations; each starts a fresh conversation with only the state file. |
 | `-v` | Watch the run while it runs: log the prompt lmi sends, and render claude's activity live. |
 
 The [full option table](docs/schedule.md#options), the two backends, the state

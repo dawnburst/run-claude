@@ -22,6 +22,7 @@ commands/schedule/sdk.py's question, asked once per run by the runner.
 """
 
 import re
+from typing import NamedTuple
 
 from ...core import config as core_config
 from ...core import jsonfile
@@ -64,6 +65,57 @@ QUOTA_RE = re.compile(
     re.IGNORECASE,
 )
 
+# What earns an iteration the verdict "the session this asked to resume is
+# gone", in the one form both backends read. It sits beside QUOTA_RE for the
+# same reason - a backend that scanned for a different set of words would be
+# silently less trustworthy than the other - and with one extra rule of its own.
+#
+# **This pattern must never match quota wording.** A hit here discards the
+# session handle and mints a fresh one, and a usage limit leaves the
+# conversation perfectly intact: dropping it there loses the context in exactly
+# the case continuity exists for, at exit 0, with nothing in the log to say so.
+# A test asserts the two patterns do not overlap.
+#
+# The first alternative is claude 2.1.235's verbatim line, verified by running
+# it: "No conversation found with session ID: <uuid>", exit 1, printed locally
+# before any API call. The other two are near-misses from the same family,
+# cheap to accept because a MISS means every remaining iteration failing
+# identically against a conversation that no longer exists.
+UNRESUMABLE_RE = re.compile(
+    r"no conversation found|session not found|could not find session",
+    re.IGNORECASE,
+)
+
+class Outcome(NamedTuple):
+    """What one call to either backend comes back with.
+
+    This was a bare `(rc, quota)` tuple until sessions arrived, and the third
+    field is the one thing only the backend can know: whether claude said the
+    conversation it was asked to resume does not exist. The runner needs it to
+    tell "this session is gone" apart from every other failure, which it must
+    not treat alike - a usage limit leaves the session perfectly usable (item
+    54) and a missing conversation makes every remaining iteration fail
+    identically (item 55).
+
+    A NamedTuple rather than something the backend mutates, so the seam stays a
+    function of its arguments: `call` reads a handle and returns a verdict, and
+    nothing below the seam can quietly change the runner's state.
+    """
+
+    rc: int
+    quota: bool
+    unresumable: bool = False
+
+
+# Whether one claude session is carried across the intervals.
+#
+# On by default: an iteration cut short - by a usage limit above all -
+# continuing with the context it already had, rather than a summary of it, is
+# the behaviour this command was asked for. `--no-session` and this key turn it
+# off, and the header names which of the two did (item 58).
+SESSION_KEY = "session"
+SESSION_DEFAULT = True
+
 # What the header, the report and `lmi config schedule` print when no config
 # file said anything. Not a path, deliberately: "the default" is a different
 # fact from "this file chose it", and the two must not be confusable.
@@ -85,6 +137,17 @@ INVALID = (
     "    There is deliberately no fall back to the default here: a run that\n"
     "    silently used a backend the operator did not choose is indis-\n"
     "    tinguishable from one that used the right one, because both exit 0."
+)
+
+
+SESSION_INVALID = (
+    '"%s.%s" must be true or false\n'
+    "    Got: %s\n"
+    "    From: %s\n"
+    "    There is deliberately no fall back to the default here, for the same\n"
+    "    reason as the mode above: a run that silently dropped the session, or\n"
+    "    kept one the operator asked it not to, is indistinguishable from one\n"
+    "    that did as it was told - both exit 0."
 )
 
 
@@ -136,12 +199,12 @@ def resolve(explicit_config):
     return of_document(core_config.load(path), path)
 
 
-def of_document(doc, path):
-    """(mode, source) out of one already-loaded config document.
+def _section(doc, path):
+    """The `schedule` section, `_MISSING` when absent. Refuses a non-object.
 
-    Split from resolve() so `lmi config schedule` can report the mode of a file
-    it has already read without reading it twice, and so the sentinel rule
-    below has exactly one implementation.
+    Shared by both keys in the section deliberately: two copies of "what is a
+    valid schedule section" is two chances for one key to accept a document the
+    other refuses, in a file three commands write to.
     """
     if not isinstance(doc, dict):
         raise LmiError(
@@ -149,16 +212,68 @@ def of_document(doc, path):
         )
     section = doc.get(SECTION, _MISSING)
     if section is _MISSING:
-        return DEFAULT, DEFAULT_SOURCE
+        return _MISSING
     if not isinstance(section, dict):
         raise LmiError(
             'the "%s" section must be a JSON object: %s' % (SECTION, path),
             EXIT_USAGE,
         )
+    return section
+
+
+def of_document(doc, path):
+    """(mode, source) out of one already-loaded config document.
+
+    Split from resolve() so `lmi config schedule` can report the mode of a file
+    it has already read without reading it twice, and so the sentinel rule
+    below has exactly one implementation.
+    """
+    section = _section(doc, path)
+    if section is _MISSING:
+        return DEFAULT, DEFAULT_SOURCE
     raw = section.get(KEY, _MISSING)
     if raw is _MISSING:
         return DEFAULT, DEFAULT_SOURCE
     return parse(raw, path), str(path)
+
+
+def parse_session(raw, source):
+    """One raw value into a bool, or exit 2.
+
+    `isinstance(True, bool)`, so `1` is refused rather than folded: JSON spells
+    this key `true`, and guessing at `1` or `"true"` is the near-miss class
+    parse() refuses for the mode, for the same reason - there is nothing to be
+    gained by guessing and a whole family of typos to get wrong quietly.
+    """
+    if isinstance(raw, bool):
+        return raw
+    raise LmiError(
+        SESSION_INVALID % (SECTION, SESSION_KEY, _shown(raw), source), EXIT_USAGE
+    )
+
+
+def resolve_session(explicit_config):
+    """(continuity on?, where that came from). Never raises for a missing file.
+
+    Discovery is core/config.py's, unchanged and shared with resolve(): one
+    lookup order governs both keys in this section, so a machine cannot end up
+    reading its mode from one file and its session policy from another.
+    """
+    path, _ = core_config.find_optional(explicit_config)
+    if path is None:
+        return SESSION_DEFAULT, DEFAULT_SOURCE
+    return session_of_document(core_config.load(path), path)
+
+
+def session_of_document(doc, path):
+    """(continuity on?, source) out of one already-loaded config document."""
+    section = _section(doc, path)
+    if section is _MISSING:
+        return SESSION_DEFAULT, DEFAULT_SOURCE
+    raw = section.get(SESSION_KEY, _MISSING)
+    if raw is _MISSING:
+        return SESSION_DEFAULT, DEFAULT_SOURCE
+    return parse_session(raw, path), str(path)
 
 
 # --- writing --------------------------------------------------------------

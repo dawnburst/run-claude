@@ -25,6 +25,11 @@ _REAL_SDK_REQUIRE = sdk.require
 # tested.
 _REAL_RESOLVE = backend.resolve
 
+# The same, for the session key. Kept separately because the two are resolved
+# separately: one run reads both, and a test of either must be able to reach
+# the real thing.
+_REAL_RESOLVE_SESSION = backend.resolve_session
+
 # A fixed run timestamp, so a resolved log file name is predictable.
 TS = "20260803-101500"
 
@@ -83,6 +88,26 @@ def _force(monkeypatch, mode):
         backend, "resolve", lambda explicit_config=None: (mode, FIXTURE_SOURCE)
     )
     return mode
+
+
+@pytest.fixture(autouse=True)
+def _session_is_hermetic(monkeypatch):
+    """Answer `backend.resolve_session` from the documented default, never from
+    this machine's config file.
+
+    Deliberately a default rather than the refusal `_mode_must_be_declared`
+    installs, and the asymmetry is the point. A test that does not name a
+    backend is testing an unknown one, because there are two and they behave
+    differently; a test that does not mention continuity is testing the
+    behaviour every run gets, which is `on`. What must NOT happen either way is
+    reading the developer's own ~/.lmi/config.json - a `"session": false` there
+    would quietly leave the whole feature untested while the suite stayed
+    green.
+    """
+    monkeypatch.setattr(
+        backend, "resolve_session",
+        lambda explicit_config=None: (backend.SESSION_DEFAULT, FIXTURE_SOURCE),
+    )
 
 
 @pytest.fixture
@@ -184,6 +209,11 @@ def make_cfg():
             # using it on the backend it probably did not mean.
             mode=backend.CLI,
             mode_source=FIXTURE_SOURCE,
+            # Spelled out for the same reason `mode` is: the default is ON, so a
+            # factory that quietly produced a session-carrying Config would put
+            # every test using it on a path it probably did not mean.
+            session=True,
+            session_source=FIXTURE_SOURCE,
         )
         fields.update(overrides)
         return Config(**fields)

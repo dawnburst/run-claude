@@ -376,6 +376,31 @@ def test_the_fake_module_exports_everything_the_backend_reaches_for():
         assert hasattr(real_sdk, name)
 
 
+def test_the_real_options_accept_the_session_fields():
+    """MANDATORY - the fake is only evidence if the real dataclass agrees.
+
+    `sdk._options` passes `session_id=` on a fresh session and `resume=` on a
+    resumed one. Passing a keyword a dataclass does not define is a TypeError on
+    EVERY iteration of the run - item 44's failure with a new field name - and
+    the suite's fake would happily accept both whatever the real package does.
+
+    Verified by hand against 0.2.136, the floor named in pyproject.toml and
+    install/sdk.REQUIREMENT: both fields exist there, which is why that floor did
+    not have to move for session continuity. This is the assertion that keeps
+    that true.
+    """
+    names = {f.name for f in dataclasses.fields(real_sdk.ClaudeAgentOptions)}
+    assert {"session_id", "resume"} <= names
+
+
+def test_the_real_result_message_carries_a_session_id():
+    """What sdk._session_id_of reads, and the SDK-only id-mismatch check with
+    it. A ResultMessage without one makes that warning permanently silent -
+    which looks exactly like a run where nothing was substituted."""
+    names = {f.name for f in dataclasses.fields(real_sdk.ResultMessage)}
+    assert "session_id" in names
+
+
 def test_the_renderer_reads_the_real_classes_as_readily_as_the_fakes():
     """One real-typed message through the real front end.
 

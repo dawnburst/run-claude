@@ -8,8 +8,8 @@ broken. The import therefore happens INSIDE the functions below, never at
 module scope, and `tests/test_packaging.py` fails if any other module in lmi/
 grows one.
 
-This module's whole contract is `call()`: composed prompt and Config in, the
-same `(exit code, quota?)` pair the CLI backend returns out. The runner cannot
+This module's whole contract is `call()`: composed prompt, Config and session
+handle in, the same `backend.Outcome` the CLI backend returns out. The runner cannot
 tell the two apart, and nothing above the seam knows the SDK exists.
 """
 
@@ -75,14 +75,67 @@ def _import():
     return claude_agent_sdk
 
 
-def require():
+def require(session=False):
     """Fail now if this backend cannot run at all.
 
     Called once per run, before the lock and before the header, so a machine
     with no SDK produces one message rather than N skipped iterations - and
     produces it before the log claims a run started.
+
+    `session` is checked separately from the import because the two failures have
+    different fixes and different blast radii: no SDK at all stops every run,
+    while an SDK too old for `session_id` stops only the runs that want
+    continuity - and those can still run with --no-session.
     """
-    _import()
+    module = _import()
+    if session:
+        _require_session_fields(module)
+
+
+# The two ClaudeAgentOptions fields one session across the intervals needs.
+#
+# Present in 0.2.136, the floor both pyproject.toml and install/sdk.REQUIREMENT
+# name - verified by inspecting the installed package, which is why that floor
+# does not move for this feature. The check below is for a machine whose
+# installed SDK is OLDER than the floor, which an air-gapped mirror can easily
+# be.
+SESSION_FIELDS = ("session_id", "resume")
+
+OLD_SDK = (
+    "the installed Claude Agent SDK cannot carry one claude session across the\n"
+    "    iterations: its ClaudeAgentOptions has no `%s` field.\n"
+    "\n"
+    "    Two ways out:\n"
+    "\n"
+    "      - upgrade it, which is what the `sdk` extra already pins:\n"
+    '            pip install --upgrade "lmi[sdk]"\n'
+    "      - or run without continuity, which is how `lmi schedule` behaved\n"
+    "        before this existed - every iteration fresh, the state file\n"
+    "        carrying the work forward:\n"
+    "            lmi schedule ... --no-session\n"
+    "\n"
+    "    Checked here, once, rather than at the call: passing a keyword the\n"
+    "    dataclass does not define is a TypeError on every iteration of the\n"
+    "    run, and importable has never meant able to build its options."
+)
+
+
+def _require_session_fields(module):
+    """Exit 2 when the installed options object has no session fields.
+
+    `dataclasses.fields` raises TypeError for anything that is not a dataclass -
+    the suite's own fake among them - and that is treated as "nothing to check"
+    rather than as a failure: this guard exists to catch an SDK older than the
+    floor, not to legislate how the class is built.
+    """
+    import dataclasses
+    try:
+        names = {f.name for f in dataclasses.fields(module.ClaudeAgentOptions)}
+    except TypeError:
+        return
+    missing = [name for name in SESSION_FIELDS if name not in names]
+    if missing:
+        raise LmiError(OLD_SDK % missing[0], EXIT_USAGE)
 
 
 def describe(cfg, log):
@@ -236,7 +289,7 @@ PERMISSION_MODE = "acceptEdits"
 SETTING_SOURCES = ["user", "project", "local"]
 
 
-def _options(cfg, state_path, on_stderr):
+def _options(cfg, state_path, on_stderr, handle):
     """ClaudeAgentOptions carrying exactly what _claude_argv carries.
 
     One for one with the CLI backend's argv, which is the specification:
@@ -251,7 +304,7 @@ def _options(cfg, state_path, on_stderr):
     mysteriously cannot write the state file in the other.
     """
     module = _import()
-    return module.ClaudeAgentOptions(
+    kwargs = dict(
         allowed_tools=list(backend.ALLOWED_TOOLS),
         add_dirs=[str(state_path.parent)],
         cwd=str(cfg.work_dir),
@@ -261,14 +314,31 @@ def _options(cfg, state_path, on_stderr):
         # -f, onto the argv of the `claude` the SDK spawns - see parse_flags.
         extra_args=parse_flags(cfg.user_flags),
     )
+    if handle is not None:
+        # The CLI backend's --session-id / --resume pair, one for one: exactly
+        # one of the two, ever.
+        #
+        # `fork_session` is never set here and must not be. A forked resume
+        # returns a NEW session id every iteration, so the sidecar's handle goes
+        # stale while every iteration still looks like a correct resume - and the
+        # run exits 0 throughout. `continue_conversation` is absent for a
+        # related reason: it means "the most recent conversation in this
+        # directory", which is claude choosing rather than lmi, and any other
+        # claude run in the same -d between two intervals would silently steal
+        # the continuity.
+        if handle.resuming:
+            kwargs["resume"] = handle.id
+        else:
+            kwargs["session_id"] = handle.id
+    return module.ClaudeAgentOptions(**kwargs)
 
 
 # --- the call -------------------------------------------------------------
 
-def call(cfg, log, composed, state_path):
-    """Run one iteration through the SDK. (exit code, quota?)
+def call(cfg, log, composed, state_path, handle=None):
+    """Run one iteration through the SDK. A backend.Outcome.
 
-    The CLI backend's signature and return, exactly. Everything above the seam
+    The CLI backend's signature and return, exactly - the handle included. Everything above the seam
     speaks `rc`, because `_log_iteration_result`, `ITERATION_ERROR_RC` and
     `EXIT_CALL_FAILED` already do and a second vocabulary would mean two ways
     to read the same log.
@@ -297,20 +367,20 @@ def call(cfg, log, composed, state_path):
     iteration with no [QUOTA] tag, which is the wrong fact twice over.
     """
     log.line("--- claude activity ---")
-    sink = _Sink(cfg, log)
+    sink = _Sink(cfg, log, handle)
     try:
-        asyncio.run(_drive(cfg, composed, state_path, sink))
+        asyncio.run(_drive(cfg, composed, state_path, sink, handle))
     except Exception as exc:                # noqa: BLE001 - see the docstring
         if not sink.saw_result:
             raise
         sink.failed(exc)
     log.line("--- end of claude activity ---")
-    return sink.rc, sink.quota
+    return backend.Outcome(sink.rc, sink.quota, sink.unresumable)
 
 
-async def _drive(cfg, composed, state_path, sink):
+async def _drive(cfg, composed, state_path, sink, handle):
     module = _import()
-    options = _options(cfg, state_path, sink.stderr)
+    options = _options(cfg, state_path, sink.stderr, handle)
     # prompt as a plain string: query() takes the text directly, so there is no
     # prompt-N.txt and no out-N.txt in this mode. The runner's temp workspace
     # still exists for the CLI backend - this backend simply does not use it.
@@ -325,7 +395,7 @@ class _Sink:
     command is the four lines that have to be.
     """
 
-    def __init__(self, cfg, log):
+    def __init__(self, cfg, log, handle=None):
         self.log = log
         self.verbose = cfg.verbose
         self.renderer = MessageRenderer(log)
@@ -334,6 +404,15 @@ class _Sink:
         # default must never be 0: a stream cut off before its result would
         # otherwise be counted as a successful iteration that did nothing.
         self.rc = NO_RESULT_RC
+        # Whether claude said the conversation it was asked to resume does not
+        # exist. Read off the same raw text the quota scan reads, never off a
+        # rendered row - see _scan.
+        self.unresumable = False
+        # The session this iteration ASKED for, so the id that answers can be
+        # compared against it. SDK-only, and declared as such: CLI mode's plain
+        # output carries no session id at all.
+        self.handle = handle
+        self._warned_id = False
         # Whether Claude answered at all, which is what call() splits on. Not
         # derivable from `rc`: NO_RESULT_RC and CALL_FAILED_RC are the same
         # number by design, so the code alone cannot say whether a result was
@@ -351,6 +430,7 @@ class _Sink:
         # result is not to be trusted. Scanning first makes that impossible
         # however stream.py evolves.
         self._scan(_raw_text(message))
+        self._check_id(message)
         if _rate_limited(message):
             self.quota = True
         if type(message).__name__ == "ResultMessage":
@@ -364,6 +444,31 @@ class _Sink:
             # else. The activity rendering is what -v buys, in both modes.
             for line in str(getattr(message, "result", "") or "").splitlines():
                 self.log.line(line)
+
+    def _check_id(self, message):
+        """Warn when the session that answered is not the one asked for.
+
+        Free here, because every message is walked already - and impossible in
+        CLI mode, whose plain output carries no id and whose format lmi must not
+        change (item 26). So this is an asymmetry between the backends, which is
+        acceptable only because it is declared: docs/status.md records that the
+        CLI cannot observe a substituted session, rather than the two modes
+        looking equally careful.
+
+        Once per iteration. A stream carries the id on nearly every message, and
+        the second warning would say nothing the first did not.
+        """
+        if self.handle is None or not self.handle.resuming or self._warned_id:
+            return
+        got = _session_id_of(message)
+        if got and got != self.handle.id:
+            self._warned_id = True
+            self.log.warn(
+                "asked to resume the claude session %s and got %s instead - "
+                "this iteration is not continuing the context the previous one "
+                "built. The state file still carries the work forward."
+                % (self.handle.id, got)
+            )
 
     def failed(self, exc):
         """The SDK raised after Claude had already answered.
@@ -392,8 +497,31 @@ class _Sink:
         self.log.line(text)
 
     def _scan(self, text):
-        if text and backend.QUOTA_RE.search(text):
+        if not text:
+            return
+        if backend.QUOTA_RE.search(text):
             self.quota = True
+        if backend.UNRESUMABLE_RE.search(text):
+            self.unresumable = True
+
+
+def _session_id_of(message):
+    """The session id a message reports, across the two shapes that carry one.
+
+    ResultMessage and AssistantMessage have a `session_id` field; SystemMessage
+    carries its init payload in `data`. Both verified against 0.2.136, the floor
+    version - which is also why no version check guards this: the fields have
+    been there as long as the floor has.
+    """
+    direct = getattr(message, "session_id", None)
+    if isinstance(direct, str) and direct:
+        return direct
+    data = getattr(message, "data", None)
+    if isinstance(data, dict):
+        got = data.get("session_id")
+        if isinstance(got, str) and got:
+            return got
+    return None
 
 
 def _rc_of(message):

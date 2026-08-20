@@ -596,3 +596,283 @@ def test_the_header_says_nothing_about_verbose_when_it_is_off(
         tmp_path, fake_claude, cli_mode):
     main(["schedule", "x", "-d", str(tmp_path)])
     assert "Verbose" not in _log_body(tmp_path)
+
+
+# --- one session across the intervals --------------------------------------
+#
+# The mechanism, in the mode that has an argv to read: --session-id once,
+# --resume afterwards, the same id throughout. The SDK's half of the same thing
+# is asserted on the options object in test_sdk.py.
+
+def _argv(fake, n):
+    return (fake.dir / ("argv-%d.txt" % n)).read_text().splitlines()
+
+
+def _sidecar(tmp_path):
+    import json
+    return json.loads(
+        (tmp_path / (paths.STATE_NAME + paths.SESSION_SUFFIX)).read_text()
+    )
+
+
+def test_iteration_one_mints_and_the_rest_resume(tmp_path, fake_claude, cli_mode):
+    """MANDATORY - the whole feature. One session, carried across the intervals.
+
+    Without this the iterations are three unrelated conversations that happen to
+    read the same summary file, which is what the operator asked to stop having.
+    """
+    assert main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "3"]) == 0
+
+    first = _argv(fake_claude, 1)
+    assert "--session-id" in first
+    sid = first[first.index("--session-id") + 1]
+    for n in (2, 3):
+        argv = _argv(fake_claude, n)
+        assert "--resume" in argv
+        assert argv[argv.index("--resume") + 1] == sid
+        assert "--session-id" not in argv
+
+
+def test_the_minted_id_is_the_one_written_to_the_sidecar(tmp_path, fake_claude,
+                                                        cli_mode):
+    main(["schedule", "x", "-d", str(tmp_path)])
+    argv = _argv(fake_claude, 1)
+    assert _sidecar(tmp_path)["session_id"] == argv[argv.index("--session-id") + 1]
+
+
+def test_the_session_flags_come_before_the_user_flags(tmp_path, fake_claude,
+                                                      cli_mode):
+    """-f must stay last: that ordering is what item 26 and item 46 both rest
+    on, and a session flag appended after it would be overridden by the user's
+    own copy of it - which is the failure item 57 refuses."""
+    main(["schedule", "x", "-d", str(tmp_path), "-f", "--model opus"])
+    argv = _argv(fake_claude, 1)
+    assert argv.index("--session-id") < argv.index("--model")
+    assert argv[-2:] == ["--model", "opus"]
+
+
+def test_no_session_puts_no_session_flag_on_the_argv(tmp_path, fake_claude,
+                                                     cli_mode):
+    main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2",
+          "--no-session"])
+    for n in (1, 2):
+        argv = _argv(fake_claude, n)
+        assert "--session-id" not in argv and "--resume" not in argv
+
+
+def test_no_session_writes_no_sidecar(tmp_path, fake_claude, cli_mode):
+    main(["schedule", "x", "-d", str(tmp_path), "--no-session"])
+    assert not (tmp_path / (paths.STATE_NAME + paths.SESSION_SUFFIX)).exists()
+
+
+def test_the_header_names_the_session_and_what_chose_it(tmp_path, fake_claude,
+                                                        cli_mode):
+    """MANDATORY - item 58, which is item 33's rule for the second switch in
+    this command.
+
+    Both a resumed and a fresh iteration exit 0, and neither marks the state
+    file: this line is the only record an unattended run keeps of which one it
+    was. The source is half of it - "on" alone does not say whether a config
+    file, a flag, or nothing at all decided.
+    """
+    main(["schedule", "x", "-d", str(tmp_path)])
+    log = _log_body(tmp_path)
+    assert "Session   : on (from " in log
+    assert "(new)" in log
+    assert _sidecar(tmp_path)["session_id"] in log
+
+
+def test_the_header_says_off_and_names_the_flag(tmp_path, fake_claude, cli_mode):
+    main(["schedule", "x", "-d", str(tmp_path), "--no-session"])
+    assert "Session   : off (from --no-session)" in _log_body(tmp_path)
+
+
+def test_a_resumed_run_says_so_and_names_when_the_session_was_created(
+    tmp_path, fake_claude, cli_mode
+):
+    main(["schedule", "x", "-d", str(tmp_path)])
+    created = _sidecar(tmp_path)["created"]
+    main(["schedule", "x", "-d", str(tmp_path), "-r"])
+
+    logs = sorted(tmp_path.glob(paths.LOG_PREFIX + "*.log"))
+    second = logs[-1].read_text(encoding="utf-8")
+    assert "resuming, created " + created in second
+    argv = _argv(fake_claude, 2)
+    assert "--resume" in argv
+
+
+def test_the_flags_line_shows_the_session_flag_that_will_run(
+    tmp_path, fake_claude, cli_mode
+):
+    """docs/schedule.md promises the Flags line is the complete flag list. A
+    session flag missing from it makes that line no longer the argv."""
+    main(["schedule", "x", "-d", str(tmp_path)])
+    log = _log_body(tmp_path)
+    flags = [ln for ln in log.splitlines() if ln.startswith("Flags     :")][0]
+    assert "--session-id" in flags
+
+
+def test_an_iteration_that_never_reached_claude_keeps_the_session(
+    tmp_path, fake_claude, cli_mode, monkeypatch
+):
+    """Item 12 plus item 54: a skipped iteration learned nothing about the
+    session, so throwing it away would be dropping a live conversation because a
+    temp directory vanished."""
+    monkeypatch.setenv("FAKE_WRECK_TMP", "1")
+    main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2"])
+    argv = _argv(fake_claude, 1)
+    assert _sidecar(tmp_path)["session_id"] == argv[argv.index("--session-id") + 1]
+
+
+def test_the_sidecar_follows_the_state_file_without_r(tmp_path, fake_claude,
+                                                      cli_mode):
+    """MANDATORY - item 56, from the runner's side rather than the unit's.
+
+    One -r rule, two memories. A second run without -r must back BOTH up: a
+    clean state file paired with the previous run's session is two memories
+    describing different work, and the run exits 0 either way.
+    """
+    main(["schedule", "x", "-d", str(tmp_path)])
+    first = _sidecar(tmp_path)["session_id"]
+
+    main(["schedule", "x", "-d", str(tmp_path)])
+
+    assert _sidecar(tmp_path)["session_id"] != first
+    backups = list(tmp_path.glob(paths.STATE_NAME + "*.bak"))
+    # The state file's backup and the sidecar's, from the same run.
+    assert any(b.name.endswith(".bak") and paths.SESSION_SUFFIX in b.name
+               for b in backups)
+    assert any(paths.SESSION_SUFFIX not in b.name for b in backups)
+
+
+# --- the two failures that must not be confused ----------------------------
+#
+# Both are a non-zero exit from claude with the session flag on the argv, and
+# they call for opposite responses. Treating them alike breaks the feature in one
+# direction or makes it useless in the other.
+
+def test_a_quota_failure_keeps_the_session(tmp_path, fake_claude, cli_mode,
+                                           monkeypatch):
+    """MANDATORY - item 54, and the reason this feature was asked for.
+
+    Iteration 1 fails on a usage limit. Iteration 2 must resume ITS session
+    rather than start a new one: the conversation is intact, and starting over is
+    exactly what the operator asked to stop happening. Dropping it here would
+    lose the context in the one case continuity exists for, at exit 0 for the
+    iterations that follow, with nothing in the log to say so.
+    """
+    monkeypatch.setenv("FAKE_RC", "1")
+    monkeypatch.setenv("FAKE_OUT", "Claude AI usage limit reached|1234567890")
+
+    assert main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2"]) == 1
+
+    first, second = _argv(fake_claude, 1), _argv(fake_claude, 2)
+    sid = first[first.index("--session-id") + 1]
+    assert second[second.index("--resume") + 1] == sid
+    body = _log_body(tmp_path)
+    assert "[QUOTA]" in body
+    assert "could not be resumed" not in body       # nothing was dropped
+    assert _sidecar(tmp_path)["session_id"] == sid
+
+
+def test_a_session_that_is_gone_is_dropped_and_retried_once(
+    tmp_path, fake_claude, cli_mode, monkeypatch
+):
+    """MANDATORY - item 55.
+
+    Iteration 2's resume fails because the conversation does not exist. The
+    iteration mints a fresh session and runs, rather than burning the interval or
+    failing every iteration after it identically against a dead id.
+    """
+    monkeypatch.setenv("FAKE_SESSION_GONE", "2")
+
+    assert main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "3"]) == 0
+    assert _count(fake_claude) == 4          # 1, 2 (dead), 2's retry, 3
+
+    old = _argv(fake_claude, 1)[_argv(fake_claude, 1).index("--session-id") + 1]
+    retry = _argv(fake_claude, 3)
+    assert "--session-id" in retry
+    new = retry[retry.index("--session-id") + 1]
+    assert new != old
+
+    third = _argv(fake_claude, 4)
+    assert third[third.index("--resume") + 1] == new
+    assert _sidecar(tmp_path)["session_id"] == new
+
+    body = _log_body(tmp_path)
+    assert "[WARN]" in body and old in body
+
+
+def test_the_retry_happens_at_most_once_per_iteration(
+    tmp_path, fake_claude, cli_mode, monkeypatch
+):
+    """MANDATORY - item 55's bound. A machine that fails EVERY resume must not
+    turn one iteration into an unbounded call loop."""
+    monkeypatch.setenv("FAKE_RC", "1")
+    monkeypatch.setenv("FAKE_OUT", "No conversation found with session ID: x")
+
+    assert main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2"]) == 1
+    # Iteration 1 mints, so it has no resume that could fail: one call. Iteration
+    # 2 resumes, fails, and retries exactly once: two. Three in total, and the
+    # per-iteration ceiling is two however many iterations there are - which the
+    # -c 3 case below states as a number rather than as a maximum, because "at
+    # most" would keep passing if the retry silently stopped happening at all.
+    assert _count(fake_claude) == 3
+
+    # Same fake, one more iteration: 1 + 2 + 2. If a second retry ever crept in
+    # this would be 7, and an unbounded loop would not terminate.
+    for stale in tmp_path.glob("run-claude-state.md*"):
+        stale.unlink()
+    fake_claude.count_file.write_text("0")
+    assert main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "3"]) == 1
+    assert _count(fake_claude) == 5
+
+
+def test_a_quota_report_in_the_first_attempt_survives_the_retry(
+    tmp_path, fake_claude, cli_mode, monkeypatch
+):
+    """[QUOTA] under-reporting is the dangerous direction (item 43), so the tag
+    belongs to either attempt - a limit reported by the first is no less real for
+    the second having been made."""
+    monkeypatch.setenv("FAKE_SESSION_GONE", "2")
+    # On the failed attempt ONLY. Putting it in FAKE_OUT would have the retry
+    # report it too, and the test would pass whether or not the two flags are
+    # combined - which is what it looked like until the guard was inverted and
+    # nothing went red.
+    monkeypatch.setenv("FAKE_SESSION_GONE_QUOTA", "1")
+
+    main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2"])
+    assert "[QUOTA]" in _log_body(tmp_path)
+
+
+def test_a_fresh_first_iteration_is_never_retried(tmp_path, fake_claude,
+                                                  cli_mode, monkeypatch):
+    """The retry is only ever a response to a failed RESUME. A --session-id call
+    that failed for some other reason has nothing to fall back to, and calling
+    claude twice for it would double whatever went wrong."""
+    monkeypatch.setenv("FAKE_RC", "1")
+    monkeypatch.setenv("FAKE_OUT", "No conversation found with session ID: x")
+
+    assert main(["schedule", "x", "-d", str(tmp_path)]) == 1
+    assert _count(fake_claude) == 1
+
+
+def test_no_session_never_retries(tmp_path, fake_claude, cli_mode, monkeypatch):
+    monkeypatch.setenv("FAKE_RC", "1")
+    monkeypatch.setenv("FAKE_OUT", "No conversation found with session ID: x")
+    main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2",
+          "--no-session"])
+    assert _count(fake_claude) == 2
+
+
+def test_a_dead_session_in_sdk_mode_is_dropped_the_same_way(tmp_path, fake_sdk,
+                                                            monkeypatch):
+    """Parity on the failure path, not only the happy one."""
+    monkeypatch.setenv("FAKE_SDK_STDERR",
+                       "No conversation found with session ID: gone")
+    monkeypatch.setenv("FAKE_RC", "1")
+
+    main(["schedule", "x", "-d", str(tmp_path), "-i", "0", "-c", "2"])
+
+    minted = [o.session_id for o in fake_sdk.options if o.session_id]
+    assert len(minted) >= 2 and minted[0] != minted[-1]

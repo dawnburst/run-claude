@@ -593,3 +593,33 @@ def test_the_readme_says_the_reserved_name_cannot_be_selected():
     for reserved in catalog.RESERVED:
         assert "%s%s%s" % (catalog.PREFIX, reserved, catalog.SUFFIX) in docs
     assert "reserved" in docs
+
+
+# --- session continuity ----------------------------------------------------
+
+def test_the_user_docs_document_session_continuity():
+    docs = user_docs()
+    assert "--no-session" in docs
+    assert "schedule.session" in docs
+    # The sidecar by name: an operator who finds this file beside their state
+    # file has to be able to search the documentation for it.
+    assert ".session.json" in docs
+
+
+def test_the_user_docs_say_a_usage_limit_keeps_the_session():
+    """The one fact the documentation must not leave out, because it is the
+    reason the feature exists rather than a detail of it."""
+    docs = user_docs()
+    assert "usage limit" in docs
+    assert "--resume" in docs
+
+
+def test_claude_md_still_states_that_a_quota_failure_keeps_the_session():
+    """MANDATORY - the same argument as the item-22 check above.
+
+    This rule is one condition in one `if` in runner.py, has no symptom when
+    inverted - the run still exits 0 and the log still reads clean - and
+    CLAUDE.md is the only file that says why it is there.
+    """
+    text = (REPO / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "A quota failure must not discard the session" in text
