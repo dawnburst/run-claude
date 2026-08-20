@@ -145,6 +145,19 @@ You do not need to install anything to run the test suite — see
 
 ---
 
+Every command also mentions, at most once a day, when the repository named by
+`lmi.repo` has a newer version tag than the one running:
+
+```
+[lmi] a newer lmi is available: 0.3.0 (running 0.2.1). Run: lmi upgrade
+```
+
+It only ever says so — nothing upgrades itself. `"version_check": false` turns
+the line off, and [docs/upgrade.md](docs/upgrade.md#being-told-a-newer-version-exists)
+covers what it costs and when it stays quiet.
+
+---
+
 ## `lmi schedule` in brief
 
 ```
